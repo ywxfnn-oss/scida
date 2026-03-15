@@ -59,6 +59,19 @@ export type SaveExperimentPayload = {
   displayName: string;
 };
 
+export type UpdateExperimentDataItemPayload = {
+  dataItemId?: number;
+  itemName: string;
+  itemValue: string;
+  itemUnit: string;
+  sourceFileName: string;
+  sourceFilePath: string;
+  originalFileName: string;
+  originalFilePath: string;
+  replacementSourcePath?: string;
+  replacementOriginalName?: string;
+};
+
 export type SaveExperimentResult = ActionResult & {
   experimentId?: number;
 };
@@ -125,15 +138,7 @@ export type UpdateExperimentPayload = {
     sampleOwner: string;
     dynamicFields: { name: string; value: string }[];
   };
-  step2: {
-    itemName: string;
-    itemValue: string;
-    itemUnit: string;
-    sourceFileName: string;
-    sourceFilePath: string;
-    originalFileName: string;
-    originalFilePath: string;
-  }[];
+  step2: UpdateExperimentDataItemPayload[];
   displayName: string;
   editReason: string;
   editor: string;
@@ -168,6 +173,7 @@ export interface ElectronAPI {
     groupBy?: GroupByType;
   }) => Promise<ExperimentGroup[]>;
   getExperimentDetail: (experimentId: number) => Promise<ExperimentDetail>;
+  deleteExperiment: (payload: { experimentId: number }) => Promise<ActionResult>;
   updateExperiment: (payload: UpdateExperimentPayload) => Promise<ActionResult>;
   exportFullExperiments: (payload: {
     experimentIds: number[];

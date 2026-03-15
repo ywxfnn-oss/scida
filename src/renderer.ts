@@ -31,6 +31,7 @@ type DynamicField = {
 
 type DataItem = {
   id: string;
+  dataItemId?: number;
   itemName: string;
   itemValue: string;
   itemUnit: string;
@@ -38,6 +39,8 @@ type DataItem = {
   sourceFilePath: string;
   originalFileName: string;
   originalFilePath: string;
+  replacementSourcePath?: string;
+  replacementOriginalName?: string;
 };
 
 type Step1FormData = {
@@ -71,6 +74,9 @@ let exportLoading = false;
 let exportMode: ExportModeType = 'full';
 let exportAvailableItemNames: string[] = [];
 let exportSelectedItemName = '';
+let deleteModalVisible = false;
+let deleteLoading = false;
+let deleteTargetIds: number[] = [];
 
 let step1FormData: Step1FormData = {
   testProject: '',
@@ -112,6 +118,10 @@ function getErrorMessage(error: unknown) {
 function handleAsyncError(error: unknown, fallbackMessage = '操作失败，请稍后重试') {
   console.error(error);
   alert(`${fallbackMessage}\n${getErrorMessage(error)}`);
+}
+
+function getPendingOriginalName(item: DataItem) {
+  return item.replacementOriginalName || item.originalFileName || '-';
 }
 
 async function ensureAppSettingsLoaded() {
@@ -157,6 +167,18 @@ function toggleSelectAllVisible() {
 function closeExportModal() {
   exportModalVisible = false;
   exportLoading = false;
+}
+
+function openDeleteModal(targetIds: number[]) {
+  deleteTargetIds = [...targetIds];
+  deleteModalVisible = true;
+  deleteLoading = false;
+}
+
+function closeDeleteModal() {
+  deleteModalVisible = false;
+  deleteLoading = false;
+  deleteTargetIds = [];
 }
 
 async function openExportModal() {
@@ -278,6 +300,45 @@ function renderExportModal() {
       </div>
     </div>
   `;
+}
+
+function renderDeleteModal() {
+  if (!deleteModalVisible || !deleteTargetIds.length) return '';
+
+  return `
+    <div class="export-modal-mask">
+      <div class="export-modal-card">
+        <div class="export-modal-title">永久删除实验数据</div>
+        <div class="export-modal-desc">
+          将永久删除 <strong>${deleteTargetIds.length}</strong> 条已选实验记录及其关联动态字段、二级数据项、编辑记录和已保存文件。此操作不可恢复。
+        </div>
+
+        <div class="export-modal-actions">
+          <button id="delete-cancel-btn" class="secondary-btn" type="button">取消</button>
+          <button
+            id="delete-confirm-btn"
+            class="danger-btn"
+            type="button"
+            ${deleteLoading ? 'disabled' : ''}
+          >
+            ${deleteLoading ? '删除中...' : '确认删除'}
+          </button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+async function renderPreservingContentScroll() {
+  const contentArea = document.querySelector('.content-area') as HTMLElement | null;
+  const scrollTop = contentArea?.scrollTop || 0;
+
+  await render();
+
+  const nextContentArea = document.querySelector('.content-area') as HTMLElement | null;
+  if (nextContentArea) {
+    nextContentArea.scrollTop = scrollTop;
+  }
 }
 
 async function render() {
@@ -668,6 +729,14 @@ async function render() {
               <button id="db-select-all-btn" class="secondary-btn">
                 ${areAllVisibleSelected() ? '取消全选' : '全选'}
               </button>
+              <button
+                id="db-delete-btn"
+                class="danger-btn ${selectedExperimentIds.length ? '' : 'disabled-danger-btn'}"
+                type="button"
+                ${selectedExperimentIds.length ? '' : 'disabled'}
+              >
+                删除
+              </button>
               <button id="db-export-btn" class="secondary-btn export-top-btn">⤴</button>
               <button id="db-refresh-btn" class="secondary-btn">刷新</button>
             </div>
@@ -701,6 +770,7 @@ async function render() {
       </div>
 
       ${renderExportModal()}
+      ${renderDeleteModal()}
     `;
 
     document.getElementById('db-menu-home')?.addEventListener('click', () => {
@@ -727,6 +797,16 @@ async function render() {
 
     document.getElementById('db-select-all-btn')?.addEventListener('click', () => {
       toggleSelectAllVisible();
+      void renderPreservingContentScroll();
+    });
+
+    document.getElementById('db-delete-btn')?.addEventListener('click', () => {
+      if (!selectedExperimentIds.length) {
+        alert('请先勾选至少一条实验数据');
+        return;
+      }
+
+      openDeleteModal(selectedExperimentIds);
       void render();
     });
 
@@ -753,7 +833,7 @@ async function render() {
         if (!id) return;
 
         toggleExperimentSelection(id);
-        void render();
+        void renderPreservingContentScroll();
       });
     });
 
@@ -778,6 +858,61 @@ async function render() {
     document.getElementById('export-cancel-btn')?.addEventListener('click', () => {
       closeExportModal();
       void render();
+    });
+
+    document.getElementById('delete-cancel-btn')?.addEventListener('click', () => {
+      closeDeleteModal();
+      void render();
+    });
+
+    document.getElementById('delete-confirm-btn')?.addEventListener('click', async () => {
+      if (!deleteTargetIds.length || deleteLoading) return;
+
+      deleteLoading = true;
+      void render();
+
+      try {
+        let successCount = 0;
+        let failureCount = 0;
+        let firstFailureReason = '';
+
+        for (const experimentId of deleteTargetIds) {
+          const result = await window.electronAPI.deleteExperiment({
+            experimentId
+          });
+
+          if (result.success) {
+            successCount += 1;
+          } else {
+            failureCount += 1;
+            if (!firstFailureReason) {
+              firstFailureReason = result.error || '删除失败';
+            }
+          }
+        }
+
+        deleteLoading = false;
+
+        selectedExperimentIds = selectedExperimentIds.filter((id) => !deleteTargetIds.includes(id));
+        closeDeleteModal();
+        await loadDatabaseList(databaseSearchKeyword, databaseGroupBy);
+
+        const summaryLines = [
+          `成功删除：${successCount} 条`,
+          `删除失败：${failureCount} 条`
+        ];
+
+        if (firstFailureReason) {
+          summaryLines.push(`首个失败原因：${firstFailureReason}`);
+        }
+
+        alert(summaryLines.join('\n'));
+        void render();
+      } catch (error) {
+        deleteLoading = false;
+        handleAsyncError(error, '删除实验数据失败');
+        void render();
+      }
     });
 
     const exportModeRadios = document.querySelectorAll('input[name="export-mode"]');
@@ -991,8 +1126,19 @@ async function render() {
                                           <td><input id="edit-item-name-${index}" class="table-input" value="${escapeHtml(item.itemName)}" /></td>
                                           <td><input id="edit-item-value-${index}" class="table-input" value="${escapeHtml(item.itemValue)}" /></td>
                                           <td><input id="edit-item-unit-${index}" class="table-input" value="${escapeHtml(item.itemUnit)}" /></td>
-                                          <td>${escapeHtml(item.sourceFileName || '-')}</td>
-                                          <td>${escapeHtml(item.originalFileName || '-')}</td>
+                                          <td>
+                                            <div class="detail-file-edit-cell">
+                                              <div>${escapeHtml(item.sourceFileName || '-')}</div>
+                                              <button
+                                                class="secondary-btn detail-replace-file-btn"
+                                                type="button"
+                                                data-edit-file-row-id="${escapeHtml(item.id)}"
+                                              >
+                                                更换文件
+                                              </button>
+                                            </div>
+                                          </td>
+                                          <td>${escapeHtml(getPendingOriginalName(item))}</td>
                                         </tr>
                                       `
             )
@@ -1182,13 +1328,16 @@ async function render() {
           step2: collected.step2
             .filter((item) => item.itemName && item.itemValue)
             .map((item) => ({
+              dataItemId: item.dataItemId,
               itemName: item.itemName,
               itemValue: item.itemValue,
               itemUnit: item.itemUnit,
               sourceFileName: item.sourceFileName,
               sourceFilePath: item.sourceFilePath,
               originalFileName: item.originalFileName,
-              originalFilePath: item.originalFilePath
+              originalFilePath: item.originalFilePath,
+              replacementSourcePath: item.replacementSourcePath,
+              replacementOriginalName: item.replacementOriginalName
             })),
           displayName: [
             collected.step1.testProject,
@@ -1219,6 +1368,35 @@ async function render() {
         if (errorBox) errorBox.textContent = '修改失败，请稍后重试';
         console.error(error);
       }
+    });
+
+    document.querySelectorAll('[data-edit-file-row-id]').forEach((button) => {
+      button.addEventListener('click', async () => {
+        const target = button as HTMLElement;
+        const rowId = target.dataset.editFileRowId;
+        if (!rowId) return;
+
+        collectDetailEditState();
+
+        try {
+          const selected = await window.electronAPI.selectSourceFile();
+          if (!selected) return;
+
+          detailEditStep2 = detailEditStep2.map((item) => {
+            if (item.id !== rowId) return item;
+
+            return {
+              ...item,
+              replacementSourcePath: selected.originalPath,
+              replacementOriginalName: selected.originalName
+            };
+          });
+
+          void render();
+        } catch (error) {
+          handleAsyncError(error, '选择替换文件失败');
+        }
+      });
     });
 
     return;
@@ -1588,28 +1766,28 @@ function renderDatabaseGroups(groups: ExperimentGroup[]) {
             ${group.items
           .map(
             (item) => `
-                  <div class="record-card selectable-record-card">
-                    <button
-                      class="select-circle-btn ${isExperimentSelected(item.id) ? 'selected-circle-btn' : ''}"
+	                  <div class="record-card selectable-record-card">
+	                    <button
+	                      class="select-circle-btn ${isExperimentSelected(item.id) ? 'selected-circle-btn' : ''}"
                       data-select-experiment-id="${item.id}"
                       type="button"
                     >
                       ${isExperimentSelected(item.id) ? '●' : '○'}
                     </button>
 
-                    <div class="record-main">
-                      <div class="record-title">${escapeHtml(item.displayName)}</div>
-                      <div class="record-meta">
+	                    <div class="record-main">
+	                      <div class="record-title">${escapeHtml(item.displayName)}</div>
+	                      <div class="record-meta">
                         <span>样品编号：${escapeHtml(item.sampleCode)}</span>
                         <span>测试项目：${escapeHtml(item.testProject)}</span>
                         <span>测试人：${escapeHtml(item.tester)}</span>
                         <span>测试仪器：${escapeHtml(item.instrument)}</span>
-                      </div>
-                    </div>
-
-                    <button class="secondary-btn" data-open-detail-id="${item.id}">查看详情</button>
-                  </div>
-                `
+	                      </div>
+	                    </div>
+	
+	                    <button class="secondary-btn" type="button" data-open-detail-id="${item.id}">查看详情</button>
+	                  </div>
+	                `
           )
           .join('')}
           </div>
@@ -1686,13 +1864,16 @@ function prepareDetailEditState() {
 
   detailEditStep2 = currentDetail.dataItems.map((item) => ({
     id: `detail_item_${item.id}`,
+    dataItemId: item.id,
     itemName: item.itemName,
     itemValue: item.itemValue,
     itemUnit: item.itemUnit || '',
     sourceFileName: item.sourceFileName || '',
     sourceFilePath: item.sourceFilePath || '',
     originalFileName: item.originalFileName || '',
-    originalFilePath: item.originalFilePath || ''
+    originalFilePath: item.originalFilePath || '',
+    replacementSourcePath: '',
+    replacementOriginalName: ''
   }));
 }
 

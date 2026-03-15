@@ -24,6 +24,8 @@ const electronAPI: ElectronAPI = {
     getExperimentDetail: (experimentId: number) =>
         ipcRenderer.invoke('experiment:getDetail', experimentId),
 
+    deleteExperiment: (payload) => ipcRenderer.invoke('experiment:delete', payload),
+
     updateExperiment: (payload) => ipcRenderer.invoke('experiment:update', payload),
 
     exportFullExperiments: (payload) => ipcRenderer.invoke('export:fullExperiments', payload),
