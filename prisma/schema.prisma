@@ -1,0 +1,77 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+model User {
+  id           Int      @id @default(autoincrement())
+  username     String   @unique
+  passwordHash String
+  role         String   @default("admin")
+  createdAt    DateTime @default(now())
+}
+
+model Experiment {
+  id            Int                    @id @default(autoincrement())
+  testProject   String
+  sampleCode    String
+  tester        String
+  instrument    String
+  testTime      String
+  sampleOwner   String?
+  displayName   String
+  createdAt     DateTime               @default(now())
+  updatedAt     DateTime               @updatedAt
+  customFields  ExperimentCustomField[]
+  dataItems     ExperimentDataItem[]
+  editLogs      EditLog[]
+}
+
+model ExperimentCustomField {
+  id            Int        @id @default(autoincrement())
+  experimentId  Int
+  fieldName     String
+  fieldValue    String
+  sortOrder     Int
+  createdAt     DateTime   @default(now())
+
+  experiment    Experiment @relation(fields: [experimentId], references: [id], onDelete: Cascade)
+}
+
+model ExperimentDataItem {
+  id                Int        @id @default(autoincrement())
+  experimentId      Int
+  itemName          String
+  itemValue         String
+  itemUnit          String?
+  sourceFileName    String?
+  sourceFilePath    String?
+  originalFileName  String?
+  originalFilePath  String?
+  rowOrder          Int
+  createdAt         DateTime   @default(now())
+
+  experiment        Experiment @relation(fields: [experimentId], references: [id], onDelete: Cascade)
+}
+
+model EditLog {
+  id               Int        @id @default(autoincrement())
+  experimentId     Int
+  editor           String
+  editReason       String
+  editedFieldsJson String
+  editedAt         DateTime   @default(now())
+
+  experiment       Experiment @relation(fields: [experimentId], references: [id], onDelete: Cascade)
+}
+
+model AppSetting {
+  id         Int      @id @default(autoincrement())
+  settingKey String   @unique
+  settingValue String
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+}
