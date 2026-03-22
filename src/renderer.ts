@@ -1,6 +1,7 @@
 import './index.css';
 import type {
   AppSettings,
+  DuplicateExperimentCheckResult,
   ExperimentDetail,
   ExperimentGroup,
   FileIntegrityReport,
@@ -182,6 +183,38 @@ function closeDeleteModal() {
   deleteModalVisible = false;
   deleteLoading = false;
   deleteTargetIds = [];
+}
+
+function buildDuplicateWarningMessage(result: DuplicateExperimentCheckResult) {
+  const lines = [
+    '发现可能重复的实验记录。',
+    '这只是提示，不会阻止保存。你仍然可以继续保存。',
+    '',
+    '最近匹配记录：',
+    ...result.matches.map(
+      (match, index) =>
+        `${index + 1}. #${match.id} ${match.displayName} | ${match.sampleCode} | ${match.testProject} | ${match.testTime}`
+    ),
+    '',
+    '是否仍然继续保存？'
+  ];
+
+  return lines.join('\n');
+}
+
+async function confirmContinueWhenLikelyDuplicate(payload: {
+  sampleCode: string;
+  testProject: string;
+  testTime: string;
+  excludeExperimentId?: number;
+}) {
+  const result = await window.electronAPI.checkDuplicateExperiments(payload);
+
+  if (!result.matches.length) {
+    return true;
+  }
+
+  return window.confirm(buildDuplicateWarningMessage(result));
 }
 
 async function openExportModal() {
@@ -1194,6 +1227,20 @@ async function render() {
       }
 
       try {
+        const shouldContinue = await confirmContinueWhenLikelyDuplicate({
+          sampleCode: collected.step1.sampleCode,
+          testProject: collected.step1.testProject,
+          testTime: collected.step1.testTime,
+          excludeExperimentId: currentDetail.id
+        });
+
+        if (!shouldContinue) {
+          if (errorBox) {
+            errorBox.textContent = '已取消修改，请确认是否为重复记录';
+          }
+          return;
+        }
+
         const result = await window.electronAPI.updateExperiment({
           experimentId: currentDetail.id,
           step1: {
@@ -1616,6 +1663,19 @@ function bindStep2Events() {
     if (errorBox) errorBox.textContent = '';
 
     try {
+      const shouldContinue = await confirmContinueWhenLikelyDuplicate({
+        sampleCode: step1FormData.sampleCode,
+        testProject: step1FormData.testProject,
+        testTime: step1FormData.testTime
+      });
+
+      if (!shouldContinue) {
+        if (errorBox) {
+          errorBox.textContent = '已取消保存，请确认是否为重复记录';
+        }
+        return;
+      }
+
       const result = await window.electronAPI.saveExperiment({
         step1: {
           testProject: step1FormData.testProject,

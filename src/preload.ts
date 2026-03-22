@@ -17,6 +17,9 @@ const electronAPI: ElectronAPI = {
     copyFileToStorage: (payload) =>
         ipcRenderer.invoke('file:copyToStorage', payload),
 
+    checkDuplicateExperiments: (payload) =>
+        ipcRenderer.invoke('experiment:checkDuplicates', payload),
+
     saveExperiment: (payload) => ipcRenderer.invoke('experiment:save', payload),
 
     listExperiments: (payload) => ipcRenderer.invoke('experiment:list', payload),

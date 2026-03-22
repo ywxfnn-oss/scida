@@ -28,6 +28,7 @@ import {
   exportFullExperiments,
   getDistinctItemNames
 } from './main/export-helpers';
+import { findLikelyDuplicateExperiments } from './main/duplicate-check';
 import { scanManagedFileIntegrity } from './main/file-integrity';
 import {
   getBundledDbPath,
@@ -601,6 +602,25 @@ app.whenReady().then(async () => {
       } catch (error) {
         console.error('copyToStorage failed:', error);
         return { success: false, error: '复制文件到存储目录失败' };
+      }
+    }
+  );
+
+  ipcMain.handle(
+    'experiment:checkDuplicates',
+    async (_event, payload: {
+      sampleCode: string;
+      testProject: string;
+      testTime: string;
+      excludeExperimentId?: number;
+    }) => {
+      try {
+        return await findLikelyDuplicateExperiments(prisma, payload);
+      } catch (error) {
+        console.error('checkDuplicateExperiments failed:', error);
+        return {
+          matches: []
+        };
       }
     }
   );

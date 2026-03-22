@@ -76,6 +76,27 @@ export type SaveExperimentResult = ActionResult & {
   experimentId?: number;
 };
 
+export type CheckDuplicateExperimentPayload = {
+  sampleCode: string;
+  testProject: string;
+  testTime: string;
+  excludeExperimentId?: number;
+};
+
+export type DuplicateExperimentMatch = {
+  id: number;
+  displayName: string;
+  sampleCode: string;
+  testProject: string;
+  testTime: string;
+  tester: string;
+  instrument: string;
+};
+
+export type DuplicateExperimentCheckResult = {
+  matches: DuplicateExperimentMatch[];
+};
+
 export type ExperimentListItem = {
   id: number;
   testProject: string;
@@ -178,6 +199,9 @@ export interface ElectronAPI {
     instrument: string;
     testTime: string;
   }) => Promise<CopyFileToStorageResult>;
+  checkDuplicateExperiments: (
+    payload: CheckDuplicateExperimentPayload
+  ) => Promise<DuplicateExperimentCheckResult>;
   saveExperiment: (payload: SaveExperimentPayload) => Promise<SaveExperimentResult>;
   listExperiments: (payload?: {
     query?: string;
