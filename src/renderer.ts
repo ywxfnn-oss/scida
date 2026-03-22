@@ -293,11 +293,11 @@ async function continueDuplicateWarningSave() {
 
   const pendingState = duplicateWarningState;
   duplicateWarningSubmitting = true;
-  void render();
+  requestRender(true);
 
   try {
     closeDuplicateWarning();
-    void render();
+    requestRender(true);
 
     if (pendingState.mode === 'create') {
       await performCreateSave(pendingState.payload);
@@ -341,7 +341,7 @@ async function openDuplicateWarningForCreate(payload: SaveExperimentPayload) {
     payload
   };
   duplicateWarningSubmitting = false;
-  void render();
+  requestRender(true);
   return true;
 }
 
@@ -366,14 +366,14 @@ async function openDuplicateWarningForUpdate(payload: UpdateExperimentPayload) {
     payload
   };
   duplicateWarningSubmitting = false;
-  void render();
+  requestRender(true);
   return true;
 }
 
 function bindDuplicateWarningModalHandlers() {
   document.getElementById('duplicate-warning-cancel-btn')?.addEventListener('click', () => {
     closeDuplicateWarning();
-    void render();
+    requestRender(true);
   });
 
   document.getElementById('duplicate-warning-continue-btn')?.addEventListener('click', async () => {
@@ -420,6 +420,15 @@ async function renderPreservingContentScroll() {
   if (nextContentArea) {
     nextContentArea.scrollTop = scrollTop;
   }
+}
+
+function requestRender(preserveContentScroll = false) {
+  if (preserveContentScroll) {
+    void renderPreservingContentScroll();
+    return;
+  }
+
+  void render();
 }
 
 async function render() {
@@ -1383,7 +1392,7 @@ async function render() {
     document.getElementById('detail-edit-btn')?.addEventListener('click', () => {
       prepareDetailEditState();
       detailEditMode = true;
-      void render();
+      requestRender(true);
     });
 
     document.getElementById('detail-cancel-edit-btn')?.addEventListener('click', () => {
@@ -1392,7 +1401,7 @@ async function render() {
       detailEditor = '';
       detailEditStep1 = null;
       detailEditStep2 = [];
-      void render();
+      requestRender(true);
     });
 
     document.getElementById('detail-save-edit-btn')?.addEventListener('click', async () => {
@@ -1502,7 +1511,7 @@ async function render() {
             };
           });
 
-          void render();
+          requestRender(true);
         } catch (error) {
           handleAsyncError(error, '选择替换文件失败');
         }
@@ -1833,7 +1842,7 @@ async function render() {
 
       fileIntegrityLoading = true;
       fileIntegrityError = '';
-      void render();
+      requestRender(true);
 
       try {
         await reloadFileIntegrityReport();
@@ -1842,7 +1851,7 @@ async function render() {
         fileIntegrityError = getErrorMessage(error) || '文件完整性检查失败';
       } finally {
         fileIntegrityLoading = false;
-        void render();
+        requestRender(true);
       }
     });
 
@@ -1877,7 +1886,7 @@ async function render() {
           selectedOrphanPaths = selectedOrphanPaths.filter((item) => item !== filePath);
         }
 
-        void render();
+        requestRender(true);
       });
     });
 
@@ -1887,12 +1896,12 @@ async function render() {
       }
 
       selectedOrphanPaths = fileIntegrityReport.orphanFiles.map((entry) => entry.filePath);
-      void render();
+      requestRender(true);
     });
 
     document.getElementById('settings-clear-orphans-btn')?.addEventListener('click', () => {
       selectedOrphanPaths = [];
-      void render();
+      requestRender(true);
     });
 
     document.getElementById('settings-export-orphan-list-btn')?.addEventListener('click', async () => {
@@ -1901,7 +1910,7 @@ async function render() {
       }
 
       fileIntegrityActionLoading = true;
-      void render();
+      requestRender(true);
 
       try {
         const result = await window.electronAPI.exportOrphanFileList({
@@ -1923,7 +1932,7 @@ async function render() {
         alert(getErrorMessage(error) || '导出孤儿文件清单失败');
       } finally {
         fileIntegrityActionLoading = false;
-        void render();
+        requestRender(true);
       }
     });
 
@@ -1940,7 +1949,7 @@ async function render() {
       }
 
       fileIntegrityActionLoading = true;
-      void render();
+      requestRender(true);
 
       try {
         const result = await window.electronAPI.quarantineOrphanFiles({
@@ -1965,7 +1974,7 @@ async function render() {
         alert(getErrorMessage(error) || '隔离孤儿文件失败');
       } finally {
         fileIntegrityActionLoading = false;
-        void render();
+        requestRender(true);
       }
     });
 
@@ -1997,7 +2006,7 @@ function bindStep1Events() {
       name: '',
       value: ''
     });
-    void render();
+    requestRender(true);
   });
 
   document.getElementById('step1-next-btn')?.addEventListener('click', () => {
@@ -2029,7 +2038,7 @@ function bindDynamicFieldEvents() {
 
       saveStep1InputsToState();
       step1FormData.dynamicFields = step1FormData.dynamicFields.filter((field) => field.id !== id);
-      void render();
+      requestRender(true);
     });
   });
 }
@@ -2047,7 +2056,7 @@ function bindStep2Events() {
       originalFileName: '',
       originalFilePath: ''
     });
-    void render();
+    requestRender(true);
   });
 
   document.getElementById('back-step1-btn-top')?.addEventListener('click', () => {
@@ -2137,7 +2146,7 @@ function bindStep2Events() {
       }
 
       step2DataItems = step2DataItems.filter((row) => row.id !== id);
-      void render();
+      requestRender(true);
     });
   });
 
@@ -2180,7 +2189,7 @@ function bindStep2Events() {
           };
         });
 
-        void render();
+        requestRender(true);
       } catch (error) {
         handleAsyncError(error, '处理原始文件失败');
       }
