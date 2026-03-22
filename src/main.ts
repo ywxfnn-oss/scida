@@ -350,11 +350,15 @@ const createWindow = (): void => {
   });
 
   if (MAIN_WINDOW_VITE_DEV_SERVER_URL) {
-    void mainWindow.loadURL(MAIN_WINDOW_VITE_DEV_SERVER_URL);
+    void mainWindow.loadURL(MAIN_WINDOW_VITE_DEV_SERVER_URL).catch((error) => {
+      console.error('[main] loadURL failed:', error);
+    });
   } else {
     void mainWindow.loadFile(
       path.join(__dirname, `../renderer/${MAIN_WINDOW_VITE_NAME}/index.html`)
-    );
+    ).catch((error) => {
+      console.error('[main] loadFile failed:', error);
+    });
   }
 };
 

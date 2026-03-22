@@ -63,6 +63,7 @@ export function getKnownMigrationTables() {
     ['20260313161434_init', ['User']],
     ['20260314023620_add_experiment_tables', ['Experiment', 'ExperimentCustomField', 'ExperimentDataItem']],
     ['20260314035050_add_edit_logs', ['EditLog']],
-    ['20260314043854_add_app_settings', ['AppSetting']]
+    ['20260314043854_add_app_settings', ['AppSetting']],
+    ['20260322103000_add_operation_logs', ['OperationLog']]
   ]);
 }

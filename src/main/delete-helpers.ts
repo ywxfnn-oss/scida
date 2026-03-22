@@ -3,6 +3,7 @@ import path from 'node:path';
 import type { PrismaClient } from '@prisma/client';
 import type { ActionResult } from '../electron-api';
 import { fileExists } from './file-helpers';
+import { getOperationActor, writeOperationLog } from './operation-log';
 
 export async function deleteExperimentPermanently(
   prisma: PrismaClient,
@@ -73,6 +74,28 @@ export async function deleteExperimentPermanently(
     await prisma.experiment.delete({
       where: { id: experimentId }
     });
+
+    try {
+      await writeOperationLog(prisma, {
+        operationType: 'experiment_delete',
+        experimentId,
+        actor: await getOperationActor(prisma),
+        summary: JSON.stringify({
+          experimentId,
+          displayName: experiment.displayName,
+          sampleCode: experiment.sampleCode,
+          testProject: experiment.testProject,
+          testTime: experiment.testTime,
+          deletedManagedFileCount: deletedFilePaths.length,
+          deletedManagedFilePaths: deletedFilePaths
+        })
+      });
+    } catch (error) {
+      console.error('writeDeleteOperationLog failed:', {
+        experimentId,
+        error
+      });
+    }
 
     return { success: true };
   } catch (error) {

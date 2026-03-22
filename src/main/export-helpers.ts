@@ -10,6 +10,7 @@ import {
   formatExportTimestamp,
   sanitizeFileNamePart
 } from './file-helpers';
+import { getOperationActor, writeOperationLog } from './operation-log';
 
 type ExportExperiment = {
   id: number;
@@ -176,6 +177,38 @@ async function chooseExportRoot() {
   return result.filePaths[0];
 }
 
+async function logExportOperation(
+  prisma: PrismaClient,
+  payload: {
+    operationType: 'export_full' | 'export_item_compare';
+    experimentIds: number[];
+    exportPath: string;
+    compressed: boolean;
+    itemNames?: string[];
+  }
+) {
+  try {
+    await writeOperationLog(prisma, {
+      operationType: payload.operationType,
+      actor: await getOperationActor(prisma),
+      summary: JSON.stringify({
+        experimentCount: payload.experimentIds.length,
+        experimentIds: payload.experimentIds,
+        exportPath: payload.exportPath,
+        compressed: payload.compressed,
+        itemNames: payload.itemNames || []
+      })
+    });
+  } catch (error) {
+    console.error('writeExportOperationLog failed:', {
+      operationType: payload.operationType,
+      experimentIds: payload.experimentIds,
+      exportPath: payload.exportPath,
+      error
+    });
+  }
+}
+
 export async function exportFullExperiments(
   prisma: PrismaClient,
   experimentIds: number[],
@@ -252,6 +285,13 @@ export async function exportFullExperiments(
     await zipDirectory(exportRootPath, zipPath);
     fs.rmSync(exportRootPath, { recursive: true, force: true });
 
+    await logExportOperation(prisma, {
+      operationType: 'export_full',
+      experimentIds,
+      exportPath: zipPath,
+      compressed: true
+    });
+
     return {
       canceled: false,
       success: true,
@@ -259,6 +299,13 @@ export async function exportFullExperiments(
       compressed: true
     };
   }
+
+  await logExportOperation(prisma, {
+    operationType: 'export_full',
+    experimentIds,
+    exportPath: exportRootPath,
+    compressed: false
+  });
 
   return {
     canceled: false,
@@ -382,6 +429,14 @@ export async function exportByItemNames(
     await zipDirectory(exportRootPath, zipPath);
     fs.rmSync(exportRootPath, { recursive: true, force: true });
 
+    await logExportOperation(prisma, {
+      operationType: 'export_item_compare',
+      experimentIds,
+      exportPath: zipPath,
+      compressed: true,
+      itemNames
+    });
+
     return {
       canceled: false,
       success: true,
@@ -389,6 +444,14 @@ export async function exportByItemNames(
       compressed: true
     };
   }
+
+  await logExportOperation(prisma, {
+    operationType: 'export_item_compare',
+    experimentIds,
+    exportPath: exportRootPath,
+    compressed: false,
+    itemNames
+  });
 
   return {
     canceled: false,

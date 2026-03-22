@@ -179,6 +179,31 @@ function buildNewSnapshot(
   };
 }
 
+function buildFileOperationDetails(
+  filePlans: UpdateFilePlan[],
+  resolvedStep2: Array<
+    UpdateExperimentDataItemPayload & {
+      sourceFileName: string;
+      sourceFilePath: string;
+      originalFileName: string;
+      originalFilePath: string;
+    }
+  >
+) {
+  return filePlans.map((plan) => ({
+    action: plan.action,
+    dataItemId: plan.dataItemId || null,
+    itemName: resolvedStep2[plan.index]?.itemName || '',
+    previousManagedFilePath: plan.currentSourcePath || null,
+    previousManagedFileName: plan.currentSourcePath
+      ? path.basename(plan.currentSourcePath)
+      : null,
+    nextManagedFilePath: plan.targetPath,
+    nextManagedFileName: plan.targetFileName,
+    replacementOriginalFileName: plan.replacementOriginalName || null
+  }));
+}
+
 async function buildUpdateFilePlans(
   prisma: PrismaClient,
   payload: UpdateExperimentPayload,
@@ -486,6 +511,8 @@ export async function updateExperimentWithManagedFiles(
   }
 
   const oldSnapshot = buildOldSnapshot(oldExperiment);
+  const newSnapshot = buildNewSnapshot(payload, resolvedStep2);
+  const fileOperations = buildFileOperationDetails(filePlans, resolvedStep2);
 
   try {
     await prisma.$transaction(async (tx) => {
@@ -536,20 +563,6 @@ export async function updateExperimentWithManagedFiles(
           }))
         });
       }
-
-      const newSnapshot = buildNewSnapshot(payload, resolvedStep2);
-
-      await tx.editLog.create({
-        data: {
-          experimentId: payload.experimentId,
-          editor: payload.editor,
-          editReason: payload.editReason,
-          editedFieldsJson: JSON.stringify({
-            before: oldSnapshot,
-            after: newSnapshot
-          })
-        }
-      });
     });
   } catch (error) {
     for (const rollback of rollbackActions) {
@@ -580,6 +593,26 @@ export async function updateExperimentWithManagedFiles(
       success: false,
       error: '实验记录已更新，但旧的保存文件清理失败，可能需要手动处理'
     };
+  }
+
+  try {
+    await prisma.editLog.create({
+      data: {
+        experimentId: payload.experimentId,
+        editor: payload.editor,
+        editReason: payload.editReason,
+        editedFieldsJson: JSON.stringify({
+          before: oldSnapshot,
+          after: newSnapshot,
+          ...(fileOperations.length ? { fileOperations } : {})
+        })
+      }
+    });
+  } catch (error) {
+    console.error('createEditLogAfterSuccessfulUpdate failed:', {
+      experimentId: payload.experimentId,
+      error
+    });
   }
 
   return { success: true };

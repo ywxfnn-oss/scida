@@ -4,6 +4,7 @@ import { MakerZIP } from '@electron-forge/maker-zip';
 import { MakerDeb } from '@electron-forge/maker-deb';
 import { MakerRpm } from '@electron-forge/maker-rpm';
 import { VitePlugin } from '@electron-forge/plugin-vite';
+import { namedHookWithTaskFn } from '@electron-forge/plugin-base';
 import { FusesPlugin } from '@electron-forge/plugin-fuses';
 import { FuseV1Options, FuseVersion } from '@electron/fuses';
 import fs from 'node:fs';
@@ -16,6 +17,52 @@ function copyDirIfExists(from: string, to: string) {
     recursive: true,
     force: true
   });
+}
+
+class ScidataVitePlugin extends VitePlugin {
+  private static alreadyStarted = false;
+
+  override getHooks = () => {
+    const hooks = super.getHooks();
+
+    return {
+      ...hooks,
+      preStart: [
+        namedHookWithTaskFn<'preStart'>(async (task) => {
+          if (ScidataVitePlugin.alreadyStarted) return;
+          ScidataVitePlugin.alreadyStarted = true;
+
+          const pluginState = this as unknown as { baseDir: string };
+          await fs.promises.rm(pluginState.baseDir, {
+            force: true,
+            recursive: true
+          });
+
+          return task?.newListr(
+            [
+              {
+                title: 'Building main process and preload bundles...',
+                task: async (_ctx, subtask) => {
+                  const result = await this.build(subtask);
+                  subtask.title = 'Built main process and preload bundles';
+                  return result;
+                }
+              },
+              {
+                title: 'Building renderer bundles...',
+                task: async (_ctx, subtask) => {
+                  const result = await this.buildRenderer(subtask);
+                  subtask.title = 'Built renderer bundles';
+                  return result;
+                }
+              }
+            ],
+            { concurrent: false }
+          );
+        }, 'Preparing Vite bundles')
+      ]
+    };
+  };
 }
 
 const config: ForgeConfig = {
@@ -82,7 +129,7 @@ const config: ForgeConfig = {
   ],
 
   plugins: [
-    new VitePlugin({
+    new ScidataVitePlugin({
       build: [
         {
           entry: 'src/main.ts',
