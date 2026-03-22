@@ -5,8 +5,6 @@ import { createHash, randomBytes, randomUUID, scryptSync, timingSafeEqual } from
 import { PrismaClient } from '@prisma/client';
 import { PrismaBetterSqlite3 } from '@prisma/adapter-better-sqlite3';
 import Database from 'better-sqlite3';
-import * as ExcelJS from 'exceljs';
-import archiver from 'archiver';
 import started from 'electron-squirrel-startup';
 import type {
   ActionResult,
@@ -18,6 +16,19 @@ import type {
   SaveExperimentResult,
   UpdateExperimentPayload
 } from './electron-api';
+import {
+  buildManagedTargetPath,
+  createManagedBackupPath,
+  createManagedTempPath,
+  ensureDir,
+  fileExists,
+  formatExportTimestamp
+} from './main/file-helpers';
+import {
+  exportByItemNames,
+  exportFullExperiments,
+  getDistinctItemNames
+} from './main/export-helpers';
 
 let prisma!: PrismaClient;
 
@@ -33,15 +44,6 @@ type MigrationFile = {
 
 type SqliteDatabase = InstanceType<typeof Database>;
 
-type ManagedFileTargetPayload = {
-  sourcePath: string;
-  testProject: string;
-  sampleCode: string;
-  tester: string;
-  instrument: string;
-  testTime: string;
-};
-
 type UpdateFilePlan = {
   index: number;
   dataItemId?: number;
@@ -51,28 +53,6 @@ type UpdateFilePlan = {
   replacementSourcePath: string;
   replacementOriginalName: string;
   action: 'rename' | 'replace' | 'create';
-};
-
-type ExportExperiment = {
-  id: number;
-  testProject: string;
-  sampleCode: string;
-  tester: string;
-  instrument: string;
-  testTime: string;
-  sampleOwner: string | null;
-  displayName: string;
-  customFields: Array<{
-    fieldName: string;
-    fieldValue: string;
-  }>;
-  dataItems: Array<{
-    itemName: string;
-    itemValue: string;
-    itemUnit: string | null;
-    sourceFileName: string | null;
-    originalFileName: string | null;
-  }>;
 };
 
 function getDefaultStorageRoot() {
@@ -110,10 +90,6 @@ function verifyPassword(password: string, storedHash: string) {
     Buffer.from(savedKey, 'hex'),
     Buffer.from(derivedKey, 'hex')
   );
-}
-
-function fileExists(filePath: string) {
-  return fs.existsSync(filePath);
 }
 
 function getMigrationFiles() {
@@ -445,86 +421,6 @@ const createWindow = (): void => {
   }
 };
 
-function sanitizeFileNamePart(value: string) {
-  return value
-    .trim()
-    .split('')
-    .map((char) => {
-      const charCode = char.charCodeAt(0);
-
-      if ('<>:"/\\|?*'.includes(char) || (charCode >= 0 && charCode <= 31)) {
-        return '_';
-      }
-
-      return char;
-    })
-    .join('')
-    .replace(/\s+/g, '_');
-}
-
-function formatTestTimeForFileName(value: string) {
-  if (!value) return '';
-  return value.replace('T', '-').replaceAll(':', '-');
-}
-
-function buildBaseName(payload: {
-  testProject: string;
-  sampleCode: string;
-  tester: string;
-  instrument: string;
-  testTime: string;
-}) {
-  const parts = [
-    payload.testProject,
-    payload.sampleCode,
-    payload.tester,
-    payload.instrument,
-    formatTestTimeForFileName(payload.testTime)
-  ]
-    .filter(Boolean)
-    .map(sanitizeFileNamePart);
-
-  return parts.join('-') || '未命名数据';
-}
-
-function ensureDir(dirPath: string) {
-  if (!fs.existsSync(dirPath)) {
-    fs.mkdirSync(dirPath, { recursive: true });
-  }
-}
-
-function buildManagedTargetPath(
-  storageRoot: string,
-  payload: ManagedFileTargetPayload
-) {
-  const projectDir = sanitizeFileNamePart(payload.testProject || '未分类项目');
-  const sampleDir = sanitizeFileNamePart(payload.sampleCode || '未分类样品');
-  const targetDir = path.join(storageRoot, projectDir, sampleDir);
-  const sourceExt = path.extname(payload.sourcePath);
-  const baseName = buildBaseName(payload);
-  const fileName = `${baseName}${sourceExt}`;
-  const fullPath = path.join(targetDir, fileName);
-
-  return {
-    targetDir,
-    fileName,
-    fullPath
-  };
-}
-
-function createManagedTempPath(filePath: string) {
-  const parsed = path.parse(filePath);
-  return path.join(
-    parsed.dir,
-    `${parsed.name}.tmp-${randomUUID()}${parsed.ext || '.tmp'}`
-  );
-}
-
-function createManagedBackupPath(filePath: string) {
-  const parsed = path.parse(filePath);
-  return path.join(parsed.dir, `${parsed.name}.bak-${randomUUID()}${parsed.ext}`);
-}
-
 async function findConflictingDataItem(
   targetPath: string,
   excludeDataItemId?: number
@@ -558,17 +454,6 @@ async function getManagedTargetConflictError(
   }
 
   return '';
-}
-
-function formatExportTimestamp() {
-  const now = new Date();
-  const yyyy = now.getFullYear();
-  const mm = String(now.getMonth() + 1).padStart(2, '0');
-  const dd = String(now.getDate()).padStart(2, '0');
-  const hh = String(now.getHours()).padStart(2, '0');
-  const mi = String(now.getMinutes()).padStart(2, '0');
-  const ss = String(now.getSeconds()).padStart(2, '0');
-  return `${yyyy}-${mm}-${dd}-${hh}-${mi}-${ss}`;
 }
 
 async function getSettingValue(key: string, fallbackValue: string) {
@@ -703,365 +588,6 @@ async function deleteExperimentPermanently(experimentId: number): Promise<Action
       error: '保存文件已删除，但数据库记录删除失败，可能需要手动恢复数据'
     };
   }
-}
-
-async function createExperimentDetailWorkbook(
-  experiment: ExportExperiment | null,
-  outputPath: string
-) {
-  if (!experiment) return;
-
-  const workbook = new ExcelJS.Workbook();
-
-  const sheet1 = workbook.addWorksheet('一级信息');
-  sheet1.columns = [
-    { header: '字段名', key: 'fieldName', width: 24 },
-    { header: '字段值', key: 'fieldValue', width: 48 }
-  ];
-
-  sheet1.addRows([
-    { fieldName: '实验编号', fieldValue: String(experiment.id) },
-    { fieldName: '测试项目', fieldValue: experiment.testProject },
-    { fieldName: '样品编号', fieldValue: experiment.sampleCode },
-    { fieldName: '测试人', fieldValue: experiment.tester },
-    { fieldName: '测试仪器', fieldValue: experiment.instrument },
-    { fieldName: '测试时间', fieldValue: experiment.testTime },
-    { fieldName: '样品所属人员', fieldValue: experiment.sampleOwner || '' },
-    { fieldName: '自动命名名称', fieldValue: experiment.displayName }
-  ]);
-
-  const sheet2 = workbook.addWorksheet('动态字段');
-  sheet2.columns = [
-    { header: '字段名称', key: 'fieldName', width: 24 },
-    { header: '字段值', key: 'fieldValue', width: 48 }
-  ];
-
-  if (experiment.customFields.length) {
-    experiment.customFields.forEach((field) => {
-      sheet2.addRow({
-        fieldName: field.fieldName,
-        fieldValue: field.fieldValue
-      });
-    });
-  } else {
-    sheet2.addRow({
-      fieldName: '无',
-      fieldValue: ''
-    });
-  }
-
-  const sheet3 = workbook.addWorksheet('二级数据项');
-  sheet3.columns = [
-    { header: '名称', key: 'itemName', width: 24 },
-    { header: '数值', key: 'itemValue', width: 20 },
-    { header: '单位', key: 'itemUnit', width: 18 },
-    { header: '保存文件名', key: 'sourceFileName', width: 42 },
-    { header: '原始文件名', key: 'originalFileName', width: 42 }
-  ];
-
-  if (experiment.dataItems.length) {
-    experiment.dataItems.forEach((item) => {
-      sheet3.addRow({
-        itemName: item.itemName,
-        itemValue: item.itemValue,
-        itemUnit: item.itemUnit || '',
-        sourceFileName: item.sourceFileName || '',
-        originalFileName: item.originalFileName || ''
-      });
-    });
-  } else {
-    sheet3.addRow({
-      itemName: '无',
-      itemValue: '',
-      itemUnit: '',
-      sourceFileName: '',
-      originalFileName: ''
-    });
-  }
-
-  await workbook.xlsx.writeFile(outputPath);
-}
-
-async function createCompareWorkbook(
-  itemName: string,
-  rows: Array<{
-    displayName: string;
-    itemValue: string;
-    itemUnit: string | null;
-  }>,
-  outputPath: string
-) {
-  const workbook = new ExcelJS.Workbook();
-  const sheet = workbook.addWorksheet(itemName);
-
-  sheet.columns = [
-    { header: '名称', key: 'displayName', width: 48 },
-    { header: '数值', key: 'itemValue', width: 20 },
-    { header: '单位', key: 'itemUnit', width: 18 }
-  ];
-
-  if (rows.length) {
-    rows.forEach((row) => {
-      sheet.addRow({
-        displayName: row.displayName,
-        itemValue: row.itemValue,
-        itemUnit: row.itemUnit || ''
-      });
-    });
-  } else {
-    sheet.addRow({
-      displayName: '无数据',
-      itemValue: '',
-      itemUnit: ''
-    });
-  }
-
-  await workbook.xlsx.writeFile(outputPath);
-}
-
-function zipDirectory(sourceDir: string, zipPath: string) {
-  return new Promise<void>((resolve, reject) => {
-    const output = fs.createWriteStream(zipPath);
-    const archive = archiver('zip', { zlib: { level: 9 } });
-
-    output.on('close', () => resolve());
-    output.on('error', (err) => reject(err));
-    archive.on('error', (err) => reject(err));
-
-    archive.pipe(output);
-    archive.directory(sourceDir, false);
-    void archive.finalize();
-  });
-}
-
-async function chooseExportRoot() {
-  const result = await dialog.showOpenDialog({
-    title: '选择导出位置',
-    properties: ['openDirectory', 'createDirectory']
-  });
-
-  if (result.canceled || !result.filePaths.length) {
-    return null;
-  }
-
-  return result.filePaths[0];
-}
-
-async function exportFullExperiments(
-  experimentIds: number[],
-  compressAfterExport: boolean
-) {
-  const targetBaseDir = await chooseExportRoot();
-
-  if (!targetBaseDir) {
-    return {
-      canceled: true
-    };
-  }
-
-  const exportRootName = `SciDataManager_导出_${formatExportTimestamp()}`;
-  const exportRootPath = path.join(targetBaseDir, exportRootName);
-
-  ensureDir(exportRootPath);
-
-  const experiments = await prisma.experiment.findMany({
-    where: {
-      id: {
-        in: experimentIds
-      }
-    },
-    include: {
-      customFields: {
-        orderBy: { sortOrder: 'asc' }
-      },
-      dataItems: {
-        orderBy: { rowOrder: 'asc' }
-      }
-    },
-    orderBy: {
-      id: 'asc'
-    }
-  });
-
-  for (const experiment of experiments) {
-    const experimentDirName = sanitizeFileNamePart(experiment.displayName);
-    const experimentDir = path.join(exportRootPath, experimentDirName);
-    ensureDir(experimentDir);
-
-    const detailWorkbookPath = path.join(
-      experimentDir,
-      `${sanitizeFileNamePart(experiment.displayName)}_详情说明.xlsx`
-    );
-
-    await createExperimentDetailWorkbook(experiment, detailWorkbookPath);
-
-    const rawFileRoot = path.join(
-      experimentDir,
-      '原始文件',
-      sanitizeFileNamePart(experiment.sampleCode || '未分类样品')
-    );
-    ensureDir(rawFileRoot);
-
-    const copiedPaths = new Set<string>();
-
-    for (const item of experiment.dataItems) {
-      if (!item.sourceFilePath) continue;
-      if (!fs.existsSync(item.sourceFilePath)) continue;
-      if (copiedPaths.has(item.sourceFilePath)) continue;
-
-      copiedPaths.add(item.sourceFilePath);
-
-      const fileName = path.basename(item.sourceFilePath);
-      const targetPath = path.join(rawFileRoot, fileName);
-      fs.copyFileSync(item.sourceFilePath, targetPath);
-    }
-  }
-
-  if (compressAfterExport) {
-    const zipPath = `${exportRootPath}.zip`;
-    await zipDirectory(exportRootPath, zipPath);
-    fs.rmSync(exportRootPath, { recursive: true, force: true });
-
-    return {
-      canceled: false,
-      success: true,
-      exportPath: zipPath,
-      compressed: true
-    };
-  }
-
-  return {
-    canceled: false,
-    success: true,
-    exportPath: exportRootPath,
-    compressed: false
-  };
-}
-
-async function getDistinctItemNames(experimentIds: number[]) {
-  const experiments = await prisma.experiment.findMany({
-    where: {
-      id: {
-        in: experimentIds
-      }
-    },
-    include: {
-      dataItems: true
-    }
-  });
-
-  const nameSet = new Set<string>();
-
-  for (const experiment of experiments) {
-    for (const item of experiment.dataItems) {
-      if (item.itemName?.trim()) {
-        nameSet.add(item.itemName.trim());
-      }
-    }
-  }
-
-  return Array.from(nameSet).sort((a, b) => a.localeCompare(b, 'zh-CN'));
-}
-
-async function exportByItemNames(
-  experimentIds: number[],
-  itemNames: string[],
-  compressAfterExport: boolean
-) {
-  const targetBaseDir = await chooseExportRoot();
-
-  if (!targetBaseDir) {
-    return {
-      canceled: true
-    };
-  }
-
-  const exportRootName = `SciDataManager_二级数据项导出_${formatExportTimestamp()}`;
-  const exportRootPath = path.join(targetBaseDir, exportRootName);
-
-  ensureDir(exportRootPath);
-
-  const experiments = await prisma.experiment.findMany({
-    where: {
-      id: {
-        in: experimentIds
-      }
-    },
-    include: {
-      dataItems: {
-        orderBy: { rowOrder: 'asc' }
-      }
-    },
-    orderBy: {
-      id: 'asc'
-    }
-  });
-
-  for (const itemName of itemNames) {
-    const safeItemFolderName = sanitizeFileNamePart(itemName);
-    const itemFolderPath = path.join(exportRootPath, safeItemFolderName);
-    ensureDir(itemFolderPath);
-
-    const compareRows: Array<{
-      displayName: string;
-      itemValue: string;
-      itemUnit: string | null;
-    }> = [];
-
-    for (const experiment of experiments) {
-      const matchedItems = experiment.dataItems.filter(
-        (item) => item.itemName.trim() === itemName
-      );
-
-      if (!matchedItems.length) continue;
-
-      for (const matchedItem of matchedItems) {
-        compareRows.push({
-          displayName: experiment.displayName,
-          itemValue: matchedItem.itemValue,
-          itemUnit: matchedItem.itemUnit
-        });
-
-        if (matchedItem.sourceFilePath && fs.existsSync(matchedItem.sourceFilePath)) {
-          const sampleDir = path.join(
-            itemFolderPath,
-            sanitizeFileNamePart(experiment.sampleCode || '未分类样品')
-          );
-          ensureDir(sampleDir);
-
-          const fileName = path.basename(matchedItem.sourceFilePath);
-          const targetPath = path.join(sampleDir, fileName);
-
-          if (!fs.existsSync(targetPath)) {
-            fs.copyFileSync(matchedItem.sourceFilePath, targetPath);
-          }
-        }
-      }
-    }
-
-    const workbookPath = path.join(itemFolderPath, `${safeItemFolderName}.xlsx`);
-    await createCompareWorkbook(itemName, compareRows, workbookPath);
-  }
-
-  if (compressAfterExport) {
-    const zipPath = `${exportRootPath}.zip`;
-    await zipDirectory(exportRootPath, zipPath);
-    fs.rmSync(exportRootPath, { recursive: true, force: true });
-
-    return {
-      canceled: false,
-      success: true,
-      exportPath: zipPath,
-      compressed: true
-    };
-  }
-
-  return {
-    canceled: false,
-    success: true,
-    exportPath: exportRootPath,
-    compressed: false
-  };
 }
 
 app.whenReady().then(async () => {
@@ -1797,6 +1323,7 @@ app.whenReady().then(async () => {
     ) => {
       try {
         return await exportFullExperiments(
+          prisma,
           payload.experimentIds,
           payload.compressAfterExport
         );
@@ -1820,7 +1347,7 @@ app.whenReady().then(async () => {
       }
     ) => {
       try {
-        return await getDistinctItemNames(payload.experimentIds);
+        return await getDistinctItemNames(prisma, payload.experimentIds);
       } catch (error) {
         console.error('getExportItemNames failed:', error);
         return [];
@@ -1841,7 +1368,7 @@ app.whenReady().then(async () => {
     ) => {
       const itemNames =
         payload.mode === 'all'
-          ? await getDistinctItemNames(payload.experimentIds)
+          ? await getDistinctItemNames(prisma, payload.experimentIds)
           : payload.selectedItemName
             ? [payload.selectedItemName]
             : [];
@@ -1856,6 +1383,7 @@ app.whenReady().then(async () => {
 
       try {
         return await exportByItemNames(
+          prisma,
           payload.experimentIds,
           itemNames,
           payload.compressAfterExport

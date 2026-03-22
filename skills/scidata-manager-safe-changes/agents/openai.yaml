@@ -1,0 +1,4 @@
+interface:
+  display_name: "Scidata Manager Safe Changes"
+  short_description: "Guardrails for safe changes in Scidata Manager"
+  default_prompt: "Use $scidata-manager-safe-changes to make the smallest safe change in this Electron app."
