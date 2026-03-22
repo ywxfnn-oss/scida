@@ -1,14 +1,13 @@
 import { app, BrowserWindow, ipcMain, dialog, shell } from 'electron';
 import path from 'node:path';
 import fs from 'node:fs';
-import { createHash, randomBytes, randomUUID, scryptSync, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, randomUUID, scryptSync } from 'node:crypto';
 import { PrismaClient } from '@prisma/client';
 import { PrismaBetterSqlite3 } from '@prisma/adapter-better-sqlite3';
 import Database from 'better-sqlite3';
 import started from 'electron-squirrel-startup';
 import type {
   ActionResult,
-  AppSettings,
   AuthenticatePayload,
   CopyFileToStorageResult,
   SaveAppSettingsPayload,
@@ -29,6 +28,12 @@ import {
   exportFullExperiments,
   getDistinctItemNames
 } from './main/export-helpers';
+import {
+  getAppSettingsForRenderer,
+  getSettingValue,
+  saveAppSettings,
+  verifyLogin
+} from './main/auth-settings';
 
 let prisma!: PrismaClient;
 
@@ -75,21 +80,6 @@ function hashPassword(password: string) {
   const salt = randomBytes(16).toString('hex');
   const derivedKey = scryptSync(password, salt, 64).toString('hex');
   return `${PASSWORD_HASH_PREFIX}:${salt}:${derivedKey}`;
-}
-
-function verifyPassword(password: string, storedHash: string) {
-  const [prefix, salt, savedKey] = storedHash.split(':');
-
-  if (prefix !== PASSWORD_HASH_PREFIX || !salt || !savedKey) {
-    return false;
-  }
-
-  const derivedKey = scryptSync(password, salt, 64).toString('hex');
-
-  return timingSafeEqual(
-    Buffer.from(savedKey, 'hex'),
-    Buffer.from(derivedKey, 'hex')
-  );
 }
 
 function getMigrationFiles() {
@@ -456,58 +446,6 @@ async function getManagedTargetConflictError(
   return '';
 }
 
-async function getSettingValue(key: string, fallbackValue: string) {
-  const record = await prisma.appSetting.findUnique({
-    where: { settingKey: key }
-  });
-
-  return record?.settingValue || fallbackValue;
-}
-
-async function upsertSetting(key: string, value: string) {
-  return prisma.appSetting.upsert({
-    where: { settingKey: key },
-    update: { settingValue: value },
-    create: {
-      settingKey: key,
-      settingValue: value
-    }
-  });
-}
-
-async function deleteSetting(key: string) {
-  return prisma.appSetting.deleteMany({
-    where: { settingKey: key }
-  });
-}
-
-async function getAppSettingsForRenderer(): Promise<AppSettings> {
-  return {
-    storageRoot: await getSettingValue('storageRoot', getDefaultStorageRoot()),
-    loginUsername: await getSettingValue('loginUsername', DEFAULT_LOGIN_USERNAME)
-  };
-}
-
-async function verifyLogin(payload: AuthenticatePayload): Promise<ActionResult> {
-  const username = payload.username.trim();
-
-  if (!username || !payload.password) {
-    return { success: false, error: '请输入账号和密码' };
-  }
-
-  const savedUsername = await getSettingValue('loginUsername', DEFAULT_LOGIN_USERNAME);
-  const savedPasswordHash = await getSettingValue(
-    'loginPasswordHash',
-    hashPassword(DEFAULT_LOGIN_PASSWORD)
-  );
-
-  if (username !== savedUsername || !verifyPassword(payload.password, savedPasswordHash)) {
-    return { success: false, error: '账号或密码错误' };
-  }
-
-  return { success: true };
-}
-
 async function deleteExperimentPermanently(experimentId: number): Promise<ActionResult> {
   const experiment = await prisma.experiment.findUnique({
     where: { id: experimentId },
@@ -604,7 +542,12 @@ app.whenReady().then(async () => {
   ipcMain.handle('system:getAppName', () => 'SciData Manager');
   ipcMain.handle('auth:authenticate', async (_event, payload: AuthenticatePayload) => {
     try {
-      return await verifyLogin(payload);
+      return await verifyLogin(prisma, payload, {
+        defaultLoginUsername: DEFAULT_LOGIN_USERNAME,
+        defaultLoginPassword: DEFAULT_LOGIN_PASSWORD,
+        getDefaultStorageRoot,
+        ensureDir
+      });
     } catch (error) {
       console.error('authenticate failed:', error);
       return { success: false, error: '登录失败，请稍后重试' };
@@ -613,7 +556,12 @@ app.whenReady().then(async () => {
 
   ipcMain.handle('settings:getAppSettings', async () => {
     try {
-      return await getAppSettingsForRenderer();
+      return await getAppSettingsForRenderer(prisma, {
+        defaultLoginUsername: DEFAULT_LOGIN_USERNAME,
+        defaultLoginPassword: DEFAULT_LOGIN_PASSWORD,
+        getDefaultStorageRoot,
+        ensureDir
+      });
     } catch (error) {
       console.error('getAppSettings failed:', error);
 
@@ -628,18 +576,12 @@ app.whenReady().then(async () => {
     'settings:saveAppSettings',
     async (_event, payload: SaveAppSettingsPayload): Promise<ActionResult> => {
       try {
-        ensureDir(payload.storageRoot);
-
-        await upsertSetting('storageRoot', payload.storageRoot);
-        await upsertSetting('loginUsername', payload.loginUsername);
-
-        if (payload.newPassword) {
-          await upsertSetting('loginPasswordHash', hashPassword(payload.newPassword));
-        }
-
-        await deleteSetting('loginPassword');
-
-        return { success: true };
+        return await saveAppSettings(prisma, payload, {
+          defaultLoginUsername: DEFAULT_LOGIN_USERNAME,
+          defaultLoginPassword: DEFAULT_LOGIN_PASSWORD,
+          getDefaultStorageRoot,
+          ensureDir
+        });
       } catch (error) {
         console.error('saveAppSettings failed:', error);
         return { success: false, error: '保存设置失败，请检查目录权限' };
@@ -683,6 +625,7 @@ app.whenReady().then(async () => {
         }
 
         const storageRoot = await getSettingValue(
+          prisma,
           'storageRoot',
           getDefaultStorageRoot()
         );
@@ -938,6 +881,7 @@ app.whenReady().then(async () => {
         }
 
         const storageRoot = await getSettingValue(
+          prisma,
           'storageRoot',
           getDefaultStorageRoot()
         );
