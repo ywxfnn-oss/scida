@@ -39,6 +39,12 @@ const electronAPI: ElectronAPI = {
 
     scanFileIntegrity: () => ipcRenderer.invoke('file:scanIntegrity'),
 
+    exportOrphanFileList: (payload) => ipcRenderer.invoke('file:exportOrphanList', payload),
+
+    quarantineOrphanFiles: (payload) => ipcRenderer.invoke('file:quarantineOrphans', payload),
+
+    openPathLocation: (payload) => ipcRenderer.invoke('file:openPathLocation', payload),
+
     openSavedFile: (payload: { filePath: string }) => ipcRenderer.invoke('file:openSavedFile', payload),
 
     openInFolder: (payload: { filePath: string }) => ipcRenderer.invoke('file:openInFolder', payload)

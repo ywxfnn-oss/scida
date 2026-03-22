@@ -182,6 +182,46 @@ export type FileIntegrityReport = {
   orphanManagedFileCount: number;
   missingExamples: string[];
   orphanExamples: string[];
+  missingReferencedFiles: Array<{
+    filePath: string;
+    affectedRecords: Array<{
+      experimentId: number;
+      displayName: string;
+      sampleCode: string;
+      testProject: string;
+      testTime: string;
+      dataItemId: number;
+      itemName: string;
+      sourceFileName: string | null;
+      originalFileName: string | null;
+    }>;
+  }>;
+  orphanFiles: Array<{
+    filePath: string;
+    relativePath: string;
+  }>;
+};
+
+export type ExportOrphanFileListPayload = {
+  storageRoot: string;
+  orphanPaths: string[];
+};
+
+export type ExportOrphanFileListResult = ActionResult & {
+  canceled?: boolean;
+  exportPath?: string;
+};
+
+export type QuarantineOrphanFilesPayload = {
+  storageRoot: string;
+  orphanPaths: string[];
+};
+
+export type QuarantineOrphanFilesResult = ActionResult & {
+  canceled?: boolean;
+  movedCount?: number;
+  skippedCount?: number;
+  quarantinePath?: string;
 };
 
 export interface ElectronAPI {
@@ -224,6 +264,13 @@ export interface ElectronAPI {
     compressAfterExport: boolean;
   }) => Promise<ExportResult>;
   scanFileIntegrity: () => Promise<FileIntegrityReport>;
+  exportOrphanFileList: (
+    payload: ExportOrphanFileListPayload
+  ) => Promise<ExportOrphanFileListResult>;
+  quarantineOrphanFiles: (
+    payload: QuarantineOrphanFilesPayload
+  ) => Promise<QuarantineOrphanFilesResult>;
+  openPathLocation: (payload: { targetPath: string }) => Promise<ActionResult>;
   openSavedFile: (payload: { filePath: string }) => Promise<ActionResult>;
   openInFolder: (payload: { filePath: string }) => Promise<ActionResult>;
 }

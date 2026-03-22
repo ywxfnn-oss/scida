@@ -95,8 +95,10 @@ let deleteModalVisible = false;
 let deleteLoading = false;
 let deleteTargetIds: number[] = [];
 let fileIntegrityLoading = false;
+let fileIntegrityActionLoading = false;
 let fileIntegrityError = '';
 let fileIntegrityReport: FileIntegrityReport | null = null;
+let selectedOrphanPaths: string[] = [];
 
 let step1FormData: Step1FormData = {
   testProject: '',
@@ -131,6 +133,24 @@ function handleAsyncError(error: unknown, fallbackMessage = '操作失败，请�
 async function ensureAppSettingsLoaded() {
   if (!appSettings.storageRoot) {
     appSettings = await window.electronAPI.getAppSettings();
+  }
+}
+
+async function reloadFileIntegrityReport() {
+  fileIntegrityReport = await window.electronAPI.scanFileIntegrity();
+  const validPaths = new Set(fileIntegrityReport.orphanFiles.map((entry) => entry.filePath));
+  selectedOrphanPaths = selectedOrphanPaths.filter((filePath) => validPaths.has(filePath));
+
+  if (!selectedOrphanPaths.length && fileIntegrityReport.orphanFiles.length) {
+    selectedOrphanPaths = fileIntegrityReport.orphanFiles.map((entry) => entry.filePath);
+  }
+}
+
+async function openPathLocation(targetPath: string) {
+  const result = await window.electronAPI.openPathLocation({ targetPath });
+
+  if (!result.success) {
+    alert(result.error || '打开路径失败');
   }
 }
 
@@ -1335,6 +1355,94 @@ async function render() {
   }
 
   if (currentView === 'settings') {
+    const selectedOrphanCount = selectedOrphanPaths.length;
+    const missingDetailsHtml = fileIntegrityReport?.missingReferencedFiles.length
+      ? `
+          <div class="detail-section">
+            <div class="detail-section-title">缺失引用文件</div>
+            <div class="detail-list">
+              ${fileIntegrityReport.missingReferencedFiles
+          .slice(0, 10)
+          .map(
+            (entry) => `
+                  <div class="detail-list-item">
+                    <div class="detail-list-key">${escapeHtml(entry.filePath)}</div>
+                    <div class="detail-list-value">
+                      受影响记录：
+                      ${entry.affectedRecords
+              .map(
+                (record) =>
+                  `#${record.experimentId} ${escapeHtml(record.displayName)} / ${escapeHtml(record.itemName)}`
+              )
+              .join('；')}
+                    </div>
+                    <button
+                      class="secondary-btn"
+                      type="button"
+                      data-open-integrity-path="${escapeHtml(entry.filePath)}"
+                    >
+                      打开相关目录
+                    </button>
+                  </div>
+                `
+          )
+          .join('')}
+            </div>
+          </div>
+        `
+      : '';
+    const orphanEntriesHtml = fileIntegrityReport?.orphanFiles.length
+      ? `
+          <div class="detail-section">
+            <div class="detail-section-title">孤儿文件</div>
+            <div class="form-action-row">
+              <button
+                id="settings-select-all-orphans-btn"
+                class="secondary-btn action-btn"
+                type="button"
+                ${fileIntegrityActionLoading ? 'disabled' : ''}
+              >
+                全选孤儿文件
+              </button>
+              <button
+                id="settings-clear-orphans-btn"
+                class="secondary-btn action-btn"
+                type="button"
+                ${fileIntegrityActionLoading ? 'disabled' : ''}
+              >
+                清空选择
+              </button>
+            </div>
+            <div class="detail-list">
+              ${fileIntegrityReport.orphanFiles
+          .slice(0, 20)
+          .map(
+            (entry) => `
+                  <div class="detail-list-item">
+                    <label class="checkbox-row">
+                      <input
+                        type="checkbox"
+                        data-select-orphan-path="${escapeHtml(entry.filePath)}"
+                        ${selectedOrphanPaths.includes(entry.filePath) ? 'checked' : ''}
+                      />
+                      <span>${escapeHtml(entry.relativePath)}</span>
+                    </label>
+                    <div class="detail-list-value">${escapeHtml(entry.filePath)}</div>
+                    <button
+                      class="secondary-btn"
+                      type="button"
+                      data-open-integrity-path="${escapeHtml(entry.filePath)}"
+                    >
+                      打开所在目录
+                    </button>
+                  </div>
+                `
+          )
+          .join('')}
+            </div>
+          </div>
+        `
+      : '';
     const missingExamplesHtml = fileIntegrityReport?.missingExamples.length
       ? `
           <div class="detail-section">
@@ -1423,6 +1531,14 @@ async function render() {
                 >
                   ${fileIntegrityLoading ? '检查中...' : '检查文件完整性'}
                 </button>
+                <button
+                  id="settings-open-storage-root-btn"
+                  class="secondary-btn action-btn"
+                  type="button"
+                  ${fileIntegrityActionLoading ? 'disabled' : ''}
+                >
+                  打开保存根目录
+                </button>
               </div>
 
               ${fileIntegrityError ? `<div class="error-message large-error">${escapeHtml(fileIntegrityError)}</div>` : ''}
@@ -1459,6 +1575,27 @@ async function render() {
                     </div>
                   </div>
 
+                  <div class="form-action-row">
+                    <button
+                      id="settings-export-orphan-list-btn"
+                      class="secondary-btn action-btn"
+                      type="button"
+                      ${fileIntegrityActionLoading || !selectedOrphanCount ? 'disabled' : ''}
+                    >
+                      导出所选孤儿文件清单
+                    </button>
+                    <button
+                      id="settings-quarantine-orphans-btn"
+                      class="secondary-btn action-btn"
+                      type="button"
+                      ${fileIntegrityActionLoading || !selectedOrphanCount ? 'disabled' : ''}
+                    >
+                      ${fileIntegrityActionLoading ? '处理中...' : '隔离所选孤儿文件'}
+                    </button>
+                  </div>
+
+                  ${missingDetailsHtml}
+                  ${orphanEntriesHtml}
                   ${missingExamplesHtml}
                   ${orphanExamplesHtml}
                 `
@@ -1541,12 +1678,135 @@ async function render() {
       void render();
 
       try {
-        fileIntegrityReport = await window.electronAPI.scanFileIntegrity();
+        await reloadFileIntegrityReport();
       } catch (error) {
         fileIntegrityReport = null;
         fileIntegrityError = getErrorMessage(error) || '文件完整性检查失败';
       } finally {
         fileIntegrityLoading = false;
+        void render();
+      }
+    });
+
+    document.getElementById('settings-open-storage-root-btn')?.addEventListener('click', async () => {
+      if (!appSettings.storageRoot) {
+        alert('当前没有可打开的保存根目录');
+        return;
+      }
+
+      await openPathLocation(appSettings.storageRoot);
+    });
+
+    document.querySelectorAll('[data-open-integrity-path]').forEach((button) => {
+      button.addEventListener('click', async () => {
+        const target = button as HTMLElement;
+        const targetPath = target.dataset.openIntegrityPath;
+        if (!targetPath) return;
+
+        await openPathLocation(targetPath);
+      });
+    });
+
+    document.querySelectorAll('[data-select-orphan-path]').forEach((checkbox) => {
+      checkbox.addEventListener('change', () => {
+        const target = checkbox as HTMLInputElement;
+        const filePath = target.dataset.selectOrphanPath;
+        if (!filePath) return;
+
+        if (target.checked) {
+          selectedOrphanPaths = Array.from(new Set([...selectedOrphanPaths, filePath]));
+        } else {
+          selectedOrphanPaths = selectedOrphanPaths.filter((item) => item !== filePath);
+        }
+
+        void render();
+      });
+    });
+
+    document.getElementById('settings-select-all-orphans-btn')?.addEventListener('click', () => {
+      if (!fileIntegrityReport?.orphanFiles.length) {
+        return;
+      }
+
+      selectedOrphanPaths = fileIntegrityReport.orphanFiles.map((entry) => entry.filePath);
+      void render();
+    });
+
+    document.getElementById('settings-clear-orphans-btn')?.addEventListener('click', () => {
+      selectedOrphanPaths = [];
+      void render();
+    });
+
+    document.getElementById('settings-export-orphan-list-btn')?.addEventListener('click', async () => {
+      if (!fileIntegrityReport?.orphanFiles.length || !selectedOrphanPaths.length || fileIntegrityActionLoading) {
+        return;
+      }
+
+      fileIntegrityActionLoading = true;
+      void render();
+
+      try {
+        const result = await window.electronAPI.exportOrphanFileList({
+          storageRoot: fileIntegrityReport.storageRoot,
+          orphanPaths: selectedOrphanPaths
+        });
+
+        if (result.canceled) {
+          return;
+        }
+
+        if (!result.success) {
+          alert(result.error || '导出孤儿文件清单失败');
+          return;
+        }
+
+        alert(`孤儿文件清单已导出：\n${result.exportPath || ''}`);
+      } catch (error) {
+        alert(getErrorMessage(error) || '导出孤儿文件清单失败');
+      } finally {
+        fileIntegrityActionLoading = false;
+        void render();
+      }
+    });
+
+    document.getElementById('settings-quarantine-orphans-btn')?.addEventListener('click', async () => {
+      if (!fileIntegrityReport?.orphanFiles.length || !selectedOrphanPaths.length || fileIntegrityActionLoading) {
+        return;
+      }
+
+      const shouldContinue = window.confirm(
+        `将把 ${selectedOrphanPaths.length} 个所选孤儿文件移动到隔离目录，不会直接删除。是否继续？`
+      );
+      if (!shouldContinue) {
+        return;
+      }
+
+      fileIntegrityActionLoading = true;
+      void render();
+
+      try {
+        const result = await window.electronAPI.quarantineOrphanFiles({
+          storageRoot: fileIntegrityReport.storageRoot,
+          orphanPaths: selectedOrphanPaths
+        });
+
+        if (result.canceled) {
+          return;
+        }
+
+        if (!result.success) {
+          alert(result.error || '隔离孤儿文件失败');
+          return;
+        }
+
+        await reloadFileIntegrityReport();
+        alert(
+          `已移动 ${result.movedCount || 0} 个文件到隔离目录。\n隔离目录：${result.quarantinePath || ''}`
+        );
+      } catch (error) {
+        alert(getErrorMessage(error) || '隔离孤儿文件失败');
+      } finally {
+        fileIntegrityActionLoading = false;
         void render();
       }
     });
