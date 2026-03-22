@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- Fixed Prisma client generation and startup resolution by restoring a valid `prisma.config.ts`.
+- Added `prisma generate` support to install/setup flow so Prisma Client is regenerated automatically after install.
+
+### Changed
+- Extracted low-risk main-process helpers from `src/main.ts` into focused modules for auth/settings, runtime DB discovery, file/path helpers, and export helpers.
+- Extracted low-risk renderer formatting and HTML string helpers into `src/renderer/render-helpers.ts`.
+
+### Added
+- Added a minimal Settings-based file integrity scan that reports the scanned `storageRoot`, missing referenced files, orphan managed files, and example paths.
+- Added a minimal non-blocking duplicate-record warning before create and update save flows.
+
 ## v1.0.1
 
 ### Fixed
