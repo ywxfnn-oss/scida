@@ -1,7 +1,7 @@
 import { app, BrowserWindow, ipcMain, dialog, shell } from 'electron';
 import path from 'node:path';
 import fs from 'node:fs';
-import { createHash, randomBytes, randomUUID, scryptSync } from 'node:crypto';
+import { randomBytes, randomUUID, scryptSync } from 'node:crypto';
 import { PrismaClient } from '@prisma/client';
 import { PrismaBetterSqlite3 } from '@prisma/adapter-better-sqlite3';
 import Database from 'better-sqlite3';
@@ -29,6 +29,14 @@ import {
   getDistinctItemNames
 } from './main/export-helpers';
 import {
+  getBundledDbPath,
+  getKnownMigrationTables,
+  getMigrationFiles,
+  getRuntimeDbPath,
+  type MigrationFile,
+  tableExists
+} from './main/runtime-db-helpers';
+import {
   getAppSettingsForRenderer,
   getSettingValue,
   saveAppSettings,
@@ -40,12 +48,6 @@ let prisma!: PrismaClient;
 const DEFAULT_LOGIN_USERNAME = 'admin';
 const DEFAULT_LOGIN_PASSWORD = '123456';
 const PASSWORD_HASH_PREFIX = 'scrypt';
-
-type MigrationFile = {
-  name: string;
-  sql: string;
-  checksum: string;
-};
 
 type SqliteDatabase = InstanceType<typeof Database>;
 
@@ -64,45 +66,10 @@ function getDefaultStorageRoot() {
   return path.join(app.getPath('userData'), 'storage', 'raw_files');
 }
 
-function getRuntimeDbPath() {
-  return path.join(app.getPath('userData'), 'scidata.db');
-}
-
-function getBundledDbPath() {
-  return path.join(app.getAppPath(), 'dev.db');
-}
-
-function getMigrationsDir() {
-  return path.join(app.getAppPath(), 'prisma', 'migrations');
-}
-
 function hashPassword(password: string) {
   const salt = randomBytes(16).toString('hex');
   const derivedKey = scryptSync(password, salt, 64).toString('hex');
   return `${PASSWORD_HASH_PREFIX}:${salt}:${derivedKey}`;
-}
-
-function getMigrationFiles() {
-  const migrationsDir = getMigrationsDir();
-
-  if (!fileExists(migrationsDir)) {
-    return [];
-  }
-
-  return fs
-    .readdirSync(migrationsDir, { withFileTypes: true })
-    .filter((entry) => entry.isDirectory())
-    .map((entry) => {
-      const sqlPath = path.join(migrationsDir, entry.name, 'migration.sql');
-      const sql = fs.readFileSync(sqlPath, 'utf8');
-
-      return {
-        name: entry.name,
-        sql,
-        checksum: createHash('sha256').update(sql).digest('hex')
-      };
-    })
-    .sort((a, b) => a.name.localeCompare(b.name));
 }
 
 function ensureMigrationTable(db: SqliteDatabase) {
@@ -118,25 +85,6 @@ function ensureMigrationTable(db: SqliteDatabase) {
       "applied_steps_count" INTEGER UNSIGNED NOT NULL DEFAULT 0
     );
   `);
-}
-
-function tableExists(db: SqliteDatabase, tableName: string) {
-  const row = db
-    .prepare(
-      `SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1`
-    )
-    .get(tableName);
-
-  return !!row;
-}
-
-function getKnownMigrationTables() {
-  return new Map<string, string[]>([
-    ['20260313161434_init', ['User']],
-    ['20260314023620_add_experiment_tables', ['Experiment', 'ExperimentCustomField', 'ExperimentDataItem']],
-    ['20260314035050_add_edit_logs', ['EditLog']],
-    ['20260314043854_add_app_settings', ['AppSetting']]
-  ]);
 }
 
 function markMigrationApplied(db: SqliteDatabase, migration: MigrationFile) {
