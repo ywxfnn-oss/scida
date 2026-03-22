@@ -11,16 +11,34 @@ The app keeps structured records in SQLite through Prisma and stores raw experim
 ## Runtime Layers
 
 ### Main Process
-**File:** `src/main.ts`
+**Files:** `src/main.ts`, `src/main/*.ts`
 
 Responsibilities:
 
-- app lifecycle and `BrowserWindow` creation
-- runtime database preparation
-- Prisma initialization
-- IPC registration
-- file copy/open operations
-- Excel and ZIP export workflows
+- `src/main.ts`
+  - app lifecycle and `BrowserWindow` creation
+  - runtime database preparation and Prisma initialization
+  - IPC registration
+  - remaining high-risk startup, delete, and update-file-mutation flows
+- `src/main/auth-settings.ts`
+  - login verification
+  - settings reads and writes
+  - password hashing and verification helpers
+- `src/main/export-helpers.ts`
+  - Excel workbook generation
+  - ZIP creation
+  - full export and item-name export flows
+- `src/main/file-helpers.ts`
+  - managed file naming
+  - path building
+  - filesystem helper utilities
+- `src/main/runtime-db-helpers.ts`
+  - runtime DB path resolution
+  - migration discovery helpers
+- `src/main/file-integrity.ts`
+  - read-only managed-file scan and report generation
+- `src/main/duplicate-check.ts`
+  - read-only duplicate-record lookup used before save/update warnings
 
 Startup database flow:
 
@@ -30,6 +48,11 @@ Startup database flow:
 4. migrate legacy auth settings to hashed password storage
 5. connect Prisma
 
+Important current reality:
+
+- `src/main.ts` is no longer fully monolithic, but still contains the highest-risk startup and mutation paths.
+- delete behavior and `experiment:update` file rename/replace/rollback logic remain concentrated in `src/main.ts`.
+
 ### Preload Bridge
 **File:** `src/preload.ts`
 
@@ -38,25 +61,37 @@ Responsibilities:
 - expose a typed `window.electronAPI`
 - keep Node/Electron access out of the renderer
 - forward renderer requests to main-process IPC handlers
+- include additive APIs for duplicate checks and file integrity scan results
 
 ### Renderer
-**File:** `src/renderer.ts`
+**Files:** `src/renderer.ts`, `src/renderer/render-helpers.ts`
 
 Responsibilities:
 
-- render the app UI
-- manage screen/view state
-- collect form input
-- call preload APIs for data access, exports, and settings
+- `src/renderer.ts`
+  - screen/view orchestration
+  - event binding
+  - DOM/state collection
+  - preload API usage
+- `src/renderer/render-helpers.ts`
+  - pure formatting helpers
+  - parameterized HTML string builders used by the renderer
+
+Current user-facing safety features:
+
+- Settings includes a minimal file integrity scan report for the configured `storageRoot`.
+- create and update save flows include a non-blocking duplicate-record warning.
 
 ## Database Layer
 
 - Schema: `prisma/schema.prisma`
 - Migration history: `prisma/migrations/`
+- Prisma config: `prisma.config.ts`
 - Bundled seed DB: `dev.db`
 - Runtime DB: `app.getPath('userData')/scidata.db`
 
 Prisma is initialized once in the main process and all database access goes through main-process IPC handlers.
+Prisma Client generation is part of repository setup through `npm run prisma:generate` and `postinstall`.
 
 ## Data Storage
 
@@ -72,8 +107,9 @@ Prisma is initialized once in the main process and all database access goes thro
 
 ## Current Structure Notes
 
-The implementation is intentionally compact:
+The implementation is still intentionally compact:
 
-- business logic currently lives mostly in `src/main.ts`
+- high-risk startup and mutation logic still lives mostly in `src/main.ts`
+- low-risk helper logic has started moving into `src/main/` and `src/renderer/`
 - the preload contract is defined in shared TypeScript types
 - no dedicated `src/storage/` code layer exists yet
