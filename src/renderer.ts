@@ -1,11 +1,13 @@
 import './index.css';
 import type {
   AppSettings,
-  DuplicateExperimentCheckResult,
+  DuplicateExperimentMatch,
   ExperimentDetail,
   ExperimentGroup,
   FileIntegrityReport,
-  GroupByType
+  GroupByType,
+  SaveExperimentPayload,
+  UpdateExperimentPayload
 } from './electron-api';
 import {
   buildDisplayName,
@@ -17,6 +19,7 @@ import {
   renderDeleteModal,
   renderDetailEditInput,
   renderDetailPair,
+  renderDuplicateWarningModal,
   renderDynamicFields,
   renderExportModal,
   renderGroupTabs,
@@ -70,6 +73,24 @@ type Step1FormData = {
   dynamicFields: DynamicField[];
 };
 
+type DuplicateWarningState =
+  | {
+      mode: 'create';
+      matches: DuplicateExperimentMatch[];
+      sampleCode: string;
+      testProject: string;
+      testTime: string;
+      payload: SaveExperimentPayload;
+    }
+  | {
+      mode: 'update';
+      matches: DuplicateExperimentMatch[];
+      sampleCode: string;
+      testProject: string;
+      testTime: string;
+      payload: UpdateExperimentPayload;
+    };
+
 let currentView: ViewType = 'login';
 let lastSavedExperimentId: number | null = null;
 
@@ -99,6 +120,8 @@ let fileIntegrityActionLoading = false;
 let fileIntegrityError = '';
 let fileIntegrityReport: FileIntegrityReport | null = null;
 let selectedOrphanPaths: string[] = [];
+let duplicateWarningState: DuplicateWarningState | null = null;
+let duplicateWarningSubmitting = false;
 
 let step1FormData: Step1FormData = {
   testProject: '',
@@ -205,36 +228,168 @@ function closeDeleteModal() {
   deleteTargetIds = [];
 }
 
-function buildDuplicateWarningMessage(result: DuplicateExperimentCheckResult) {
-  const lines = [
-    '发现可能重复的实验记录。',
-    '这只是提示，不会阻止保存。你仍然可以继续保存。',
-    '',
-    '最近匹配记录：',
-    ...result.matches.map(
-      (match, index) =>
-        `${index + 1}. #${match.id} ${match.displayName} | ${match.sampleCode} | ${match.testProject} | ${match.testTime}`
-    ),
-    '',
-    '是否仍然继续保存？'
-  ];
-
-  return lines.join('\n');
+function closeDuplicateWarning() {
+  duplicateWarningState = null;
+  duplicateWarningSubmitting = false;
 }
 
-async function confirmContinueWhenLikelyDuplicate(payload: {
+async function openExperimentDetail(experimentId: number) {
+  currentDetail = await window.electronAPI.getExperimentDetail(experimentId);
+  detailEditMode = false;
+  detailEditReason = '';
+  detailEditor = '';
+  detailEditStep1 = null;
+  detailEditStep2 = [];
+  currentView = 'database-detail';
+  void render();
+}
+
+async function getLikelyDuplicateMatches(payload: {
   sampleCode: string;
   testProject: string;
   testTime: string;
   excludeExperimentId?: number;
 }) {
   const result = await window.electronAPI.checkDuplicateExperiments(payload);
+  return result.matches;
+}
 
-  if (!result.matches.length) {
-    return true;
+async function performCreateSave(payload: SaveExperimentPayload) {
+  const errorBox = document.getElementById('step2-error');
+  const result = await window.electronAPI.saveExperiment(payload);
+
+  if (!result.success || !result.experimentId) {
+    if (errorBox) errorBox.textContent = result.error || '保存实验数据失败';
+    return;
   }
 
-  return window.confirm(buildDuplicateWarningMessage(result));
+  lastSavedExperimentId = result.experimentId;
+  currentView = 'save-success';
+  void render();
+}
+
+async function performUpdateSave(payload: UpdateExperimentPayload) {
+  const errorBox = document.getElementById('detail-edit-error');
+  const result = await window.electronAPI.updateExperiment(payload);
+
+  if (!result.success) {
+    if (errorBox) errorBox.textContent = result.error || '修改失败';
+    return;
+  }
+
+  currentDetail = await window.electronAPI.getExperimentDetail(payload.experimentId);
+  detailEditMode = false;
+  detailEditReason = '';
+  detailEditor = '';
+  detailEditStep1 = null;
+  detailEditStep2 = [];
+  void render();
+}
+
+async function continueDuplicateWarningSave() {
+  if (!duplicateWarningState || duplicateWarningSubmitting) {
+    return;
+  }
+
+  const pendingState = duplicateWarningState;
+  duplicateWarningSubmitting = true;
+  void render();
+
+  try {
+    closeDuplicateWarning();
+    void render();
+
+    if (pendingState.mode === 'create') {
+      await performCreateSave(pendingState.payload);
+      return;
+    }
+
+    await performUpdateSave(pendingState.payload);
+  } catch (error) {
+    const errorBox = document.getElementById(
+      pendingState.mode === 'create' ? 'step2-error' : 'detail-edit-error'
+    );
+
+    if (errorBox) {
+      errorBox.textContent =
+        pendingState.mode === 'create'
+          ? '保存实验数据失败，请稍后重试'
+          : '修改失败，请稍后重试';
+    }
+
+    console.error(error);
+  }
+}
+
+async function openDuplicateWarningForCreate(payload: SaveExperimentPayload) {
+  const matches = await getLikelyDuplicateMatches({
+    sampleCode: payload.step1.sampleCode,
+    testProject: payload.step1.testProject,
+    testTime: payload.step1.testTime
+  });
+
+  if (!matches.length) {
+    return false;
+  }
+
+  duplicateWarningState = {
+    mode: 'create',
+    matches,
+    sampleCode: payload.step1.sampleCode,
+    testProject: payload.step1.testProject,
+    testTime: payload.step1.testTime,
+    payload
+  };
+  duplicateWarningSubmitting = false;
+  void render();
+  return true;
+}
+
+async function openDuplicateWarningForUpdate(payload: UpdateExperimentPayload) {
+  const matches = await getLikelyDuplicateMatches({
+    sampleCode: payload.step1.sampleCode,
+    testProject: payload.step1.testProject,
+    testTime: payload.step1.testTime,
+    excludeExperimentId: payload.experimentId
+  });
+
+  if (!matches.length) {
+    return false;
+  }
+
+  duplicateWarningState = {
+    mode: 'update',
+    matches,
+    sampleCode: payload.step1.sampleCode,
+    testProject: payload.step1.testProject,
+    testTime: payload.step1.testTime,
+    payload
+  };
+  duplicateWarningSubmitting = false;
+  void render();
+  return true;
+}
+
+function bindDuplicateWarningModalHandlers() {
+  document.getElementById('duplicate-warning-cancel-btn')?.addEventListener('click', () => {
+    closeDuplicateWarning();
+    void render();
+  });
+
+  document.getElementById('duplicate-warning-continue-btn')?.addEventListener('click', async () => {
+    await continueDuplicateWarningSave();
+  });
+
+  document.querySelectorAll('[data-open-duplicate-match-id]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const target = button as HTMLElement;
+      const experimentId = Number(target.dataset.openDuplicateMatchId);
+      if (!experimentId || duplicateWarningSubmitting) return;
+
+      closeDuplicateWarning();
+      await openExperimentDetail(experimentId);
+    });
+  });
 }
 
 async function openExportModal() {
@@ -589,9 +744,20 @@ async function render() {
           </section>
         </main>
       </div>
+
+      ${renderDuplicateWarningModal({
+        visible: duplicateWarningState?.mode === 'create',
+        actionLabel: '保存',
+        sampleCode: duplicateWarningState?.mode === 'create' ? duplicateWarningState.sampleCode : '',
+        testProject: duplicateWarningState?.mode === 'create' ? duplicateWarningState.testProject : '',
+        testTime: duplicateWarningState?.mode === 'create' ? duplicateWarningState.testTime : '',
+        matches: duplicateWarningState?.mode === 'create' ? duplicateWarningState.matches : [],
+        submitting: duplicateWarningSubmitting
+      })}
     `;
 
     bindStep2Events();
+    bindDuplicateWarningModalHandlers();
 
     document.getElementById('menu-data-step2')?.addEventListener('click', async () => {
       await loadDatabaseList();
@@ -1126,7 +1292,7 @@ async function render() {
       }
               </div>
 
-              ${detailEditMode
+      ${detailEditMode
         ? `
                     <div class="detail-section">
                       <div class="detail-section-title">修改确认</div>
@@ -1144,6 +1310,16 @@ async function render() {
           </section>
         </main>
       </div>
+
+      ${renderDuplicateWarningModal({
+        visible: duplicateWarningState?.mode === 'update',
+        actionLabel: '修改',
+        sampleCode: duplicateWarningState?.mode === 'update' ? duplicateWarningState.sampleCode : '',
+        testProject: duplicateWarningState?.mode === 'update' ? duplicateWarningState.testProject : '',
+        testTime: duplicateWarningState?.mode === 'update' ? duplicateWarningState.testTime : '',
+        matches: duplicateWarningState?.mode === 'update' ? duplicateWarningState.matches : [],
+        submitting: duplicateWarningSubmitting
+      })}
     `;
 
     document.getElementById('detail-back-btn')?.addEventListener('click', async () => {
@@ -1167,6 +1343,8 @@ async function render() {
       currentView = 'settings';
       void render();
     });
+
+    bindDuplicateWarningModalHandlers();
 
     const openSavedFileButtons = document.querySelectorAll('[data-open-saved-file]');
     openSavedFileButtons.forEach((button) => {
@@ -1247,21 +1425,7 @@ async function render() {
       }
 
       try {
-        const shouldContinue = await confirmContinueWhenLikelyDuplicate({
-          sampleCode: collected.step1.sampleCode,
-          testProject: collected.step1.testProject,
-          testTime: collected.step1.testTime,
-          excludeExperimentId: currentDetail.id
-        });
-
-        if (!shouldContinue) {
-          if (errorBox) {
-            errorBox.textContent = '已取消修改，请确认是否为重复记录';
-          }
-          return;
-        }
-
-        const result = await window.electronAPI.updateExperiment({
+        const updatePayload: UpdateExperimentPayload = {
           experimentId: currentDetail.id,
           step1: {
             testProject: collected.step1.testProject,
@@ -1302,20 +1466,14 @@ async function render() {
             .join('-'),
           editReason: detailEditReason,
           editor: detailEditor
-        });
+        };
 
-        if (!result.success) {
-          if (errorBox) errorBox.textContent = result.error || '修改失败';
+        const openedWarning = await openDuplicateWarningForUpdate(updatePayload);
+        if (openedWarning) {
           return;
         }
 
-        currentDetail = await window.electronAPI.getExperimentDetail(currentDetail.id);
-        detailEditMode = false;
-        detailEditReason = '';
-        detailEditor = '';
-        detailEditStep1 = null;
-        detailEditStep2 = [];
-        void render();
+        await performUpdateSave(updatePayload);
       } catch (error) {
         if (errorBox) errorBox.textContent = '修改失败，请稍后重试';
         console.error(error);
@@ -1923,20 +2081,7 @@ function bindStep2Events() {
     if (errorBox) errorBox.textContent = '';
 
     try {
-      const shouldContinue = await confirmContinueWhenLikelyDuplicate({
-        sampleCode: step1FormData.sampleCode,
-        testProject: step1FormData.testProject,
-        testTime: step1FormData.testTime
-      });
-
-      if (!shouldContinue) {
-        if (errorBox) {
-          errorBox.textContent = '已取消保存，请确认是否为重复记录';
-        }
-        return;
-      }
-
-      const result = await window.electronAPI.saveExperiment({
+      const savePayload: SaveExperimentPayload = {
         step1: {
           testProject: step1FormData.testProject,
           sampleCode: step1FormData.sampleCode,
@@ -1963,16 +2108,14 @@ function bindStep2Events() {
             originalFilePath: row.originalFilePath
           })),
         displayName: buildDisplayName(step1FormData)
-      });
+      };
 
-      if (!result.success || !result.experimentId) {
-        if (errorBox) errorBox.textContent = result.error || '保存实验数据失败';
+      const openedWarning = await openDuplicateWarningForCreate(savePayload);
+      if (openedWarning) {
         return;
       }
 
-      lastSavedExperimentId = result.experimentId;
-      currentView = 'save-success';
-      void render();
+      await performCreateSave(savePayload);
     } catch (error) {
       if (errorBox) errorBox.textContent = '保存实验数据失败，请稍后重试';
       console.error(error);
