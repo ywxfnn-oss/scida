@@ -152,6 +152,17 @@ export type ExportResult = {
   error?: string;
 };
 
+export type FileIntegrityReport = {
+  storageRoot: string;
+  storageRootExists: boolean;
+  referencedManagedFileCount: number;
+  missingReferencedFileCount: number;
+  scannedManagedFileCount: number;
+  orphanManagedFileCount: number;
+  missingExamples: string[];
+  orphanExamples: string[];
+};
+
 export interface ElectronAPI {
   getAppVersion: () => Promise<string>;
   getAppName: () => Promise<string>;
@@ -188,6 +199,7 @@ export interface ElectronAPI {
     selectedItemName?: string;
     compressAfterExport: boolean;
   }) => Promise<ExportResult>;
+  scanFileIntegrity: () => Promise<FileIntegrityReport>;
   openSavedFile: (payload: { filePath: string }) => Promise<ActionResult>;
   openInFolder: (payload: { filePath: string }) => Promise<ActionResult>;
 }

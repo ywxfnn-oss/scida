@@ -28,6 +28,7 @@ import {
   exportFullExperiments,
   getDistinctItemNames
 } from './main/export-helpers';
+import { scanManagedFileIntegrity } from './main/file-integrity';
 import {
   getBundledDbPath,
   getKnownMigrationTables,
@@ -808,6 +809,24 @@ app.whenReady().then(async () => {
       } catch (error) {
         console.error('openInFolder failed:', error);
         return { success: false, error: '打开文件夹失败' };
+      }
+    }
+  );
+
+  ipcMain.handle(
+    'file:scanIntegrity',
+    async () => {
+      try {
+        const storageRoot = await getSettingValue(
+          prisma,
+          'storageRoot',
+          getDefaultStorageRoot()
+        );
+
+        return await scanManagedFileIntegrity(prisma, storageRoot);
+      } catch (error) {
+        console.error('scanFileIntegrity failed:', error);
+        throw error;
       }
     }
   );

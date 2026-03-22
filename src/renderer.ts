@@ -3,6 +3,7 @@ import type {
   AppSettings,
   ExperimentDetail,
   ExperimentGroup,
+  FileIntegrityReport,
   GroupByType
 } from './electron-api';
 import {
@@ -92,6 +93,9 @@ let exportSelectedItemName = '';
 let deleteModalVisible = false;
 let deleteLoading = false;
 let deleteTargetIds: number[] = [];
+let fileIntegrityLoading = false;
+let fileIntegrityError = '';
+let fileIntegrityReport: FileIntegrityReport | null = null;
 
 let step1FormData: Step1FormData = {
   testProject: '',
@@ -1284,6 +1288,35 @@ async function render() {
   }
 
   if (currentView === 'settings') {
+    const missingExamplesHtml = fileIntegrityReport?.missingExamples.length
+      ? `
+          <div class="detail-section">
+            <div class="detail-section-title">缺失文件示例（最多 10 条）</div>
+            <div class="detail-stack">
+              ${fileIntegrityReport.missingExamples
+          .map(
+            (filePath) => `<div class="detail-value" title="${escapeHtml(filePath)}">${escapeHtml(filePath)}</div>`
+          )
+          .join('')}
+            </div>
+          </div>
+        `
+      : '';
+    const orphanExamplesHtml = fileIntegrityReport?.orphanExamples.length
+      ? `
+          <div class="detail-section">
+            <div class="detail-section-title">孤儿文件示例（最多 10 条）</div>
+            <div class="detail-stack">
+              ${fileIntegrityReport.orphanExamples
+          .map(
+            (filePath) => `<div class="detail-value" title="${escapeHtml(filePath)}">${escapeHtml(filePath)}</div>`
+          )
+          .join('')}
+            </div>
+          </div>
+        `
+      : '';
+
     root.innerHTML = `
       <div class="home-layout">
         <aside class="sidebar">
@@ -1335,7 +1368,54 @@ async function render() {
 
               <div class="form-action-row">
                 <button id="settings-save-btn" class="primary-btn action-btn">保存设置</button>
+                <button
+                  id="settings-file-integrity-btn"
+                  class="secondary-btn action-btn"
+                  type="button"
+                  ${fileIntegrityLoading ? 'disabled' : ''}
+                >
+                  ${fileIntegrityLoading ? '检查中...' : '检查文件完整性'}
+                </button>
               </div>
+
+              ${fileIntegrityError ? `<div class="error-message large-error">${escapeHtml(fileIntegrityError)}</div>` : ''}
+
+              ${fileIntegrityReport
+        ? `
+                  <div class="detail-section">
+                    <div class="detail-section-title">文件完整性报告</div>
+                    <div class="info-row">
+                      <span>扫描根目录</span>
+                      <strong title="${escapeHtml(fileIntegrityReport.storageRoot)}">
+                        ${escapeHtml(fileIntegrityReport.storageRoot)}
+                      </strong>
+                    </div>
+                    <div class="info-row">
+                      <span>根目录状态</span>
+                      <strong>${fileIntegrityReport.storageRootExists ? '存在' : '不存在'}</strong>
+                    </div>
+                    <div class="info-row">
+                      <span>数据库引用的托管文件</span>
+                      <strong>${fileIntegrityReport.referencedManagedFileCount}</strong>
+                    </div>
+                    <div class="info-row">
+                      <span>缺失文件</span>
+                      <strong>${fileIntegrityReport.missingReferencedFileCount}</strong>
+                    </div>
+                    <div class="info-row">
+                      <span>扫描到的托管文件</span>
+                      <strong>${fileIntegrityReport.scannedManagedFileCount}</strong>
+                    </div>
+                    <div class="info-row">
+                      <span>孤儿文件</span>
+                      <strong>${fileIntegrityReport.orphanManagedFileCount}</strong>
+                    </div>
+                  </div>
+
+                  ${missingExamplesHtml}
+                  ${orphanExamplesHtml}
+                `
+        : ''}
             </div>
           </section>
         </main>
@@ -1389,6 +1469,8 @@ async function render() {
           storageRoot,
           loginUsername
         };
+        fileIntegrityReport = null;
+        fileIntegrityError = '';
 
         const passwordInput = document.getElementById('settings-login-password') as HTMLInputElement | null;
         if (passwordInput) {
@@ -1399,6 +1481,26 @@ async function render() {
       } catch (error) {
         if (errorBox) errorBox.textContent = '保存设置失败，请稍后重试';
         console.error(error);
+      }
+    });
+
+    document.getElementById('settings-file-integrity-btn')?.addEventListener('click', async () => {
+      if (fileIntegrityLoading) {
+        return;
+      }
+
+      fileIntegrityLoading = true;
+      fileIntegrityError = '';
+      void render();
+
+      try {
+        fileIntegrityReport = await window.electronAPI.scanFileIntegrity();
+      } catch (error) {
+        fileIntegrityReport = null;
+        fileIntegrityError = getErrorMessage(error) || '文件完整性检查失败';
+      } finally {
+        fileIntegrityLoading = false;
+        void render();
       }
     });
 

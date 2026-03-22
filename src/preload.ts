@@ -34,6 +34,8 @@ const electronAPI: ElectronAPI = {
 
     exportItemNameCompare: (payload) => ipcRenderer.invoke('export:itemNameCompare', payload),
 
+    scanFileIntegrity: () => ipcRenderer.invoke('file:scanIntegrity'),
+
     openSavedFile: (payload: { filePath: string }) => ipcRenderer.invoke('file:openSavedFile', payload),
 
     openInFolder: (payload: { filePath: string }) => ipcRenderer.invoke('file:openInFolder', payload)
