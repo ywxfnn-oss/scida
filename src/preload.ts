@@ -43,6 +43,8 @@ const electronAPI: ElectronAPI = {
 
     quarantineOrphanFiles: (payload) => ipcRenderer.invoke('file:quarantineOrphans', payload),
 
+    listRecentOperationLogs: (payload) => ipcRenderer.invoke('log:listRecentOperations', payload),
+
     openPathLocation: (payload) => ipcRenderer.invoke('file:openPathLocation', payload),
 
     openSavedFile: (payload: { filePath: string }) => ipcRenderer.invoke('file:openSavedFile', payload),

@@ -1,4 +1,9 @@
-import type { DuplicateExperimentMatch, GroupByType } from '../electron-api';
+import type {
+  DuplicateExperimentMatch,
+  OperationLogFilter,
+  GroupByType,
+  RecentOperationLogEntry
+} from '../electron-api';
 
 type ExportModeType = 'full' | 'single-item' | 'all-items';
 
@@ -46,6 +51,24 @@ export function getPendingOriginalName(item: DataItemLike) {
 export function formatTestTimeForDisplay(value: string) {
   if (!value) return '';
   return value.replace('T', '-').replaceAll(':', '-');
+}
+
+export function formatDateTimeForDisplay(value: string) {
+  if (!value) return '-';
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  const hours = String(date.getHours()).padStart(2, '0');
+  const minutes = String(date.getMinutes()).padStart(2, '0');
+  const seconds = String(date.getSeconds()).padStart(2, '0');
+
+  return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
 }
 
 export function escapeHtml(value: string) {
@@ -346,6 +369,58 @@ export function renderGroupTabs(current: GroupByType) {
       `
     )
     .join('');
+}
+
+export function renderOperationLogFilterButtons(
+  currentFilter: OperationLogFilter,
+  disabled: boolean
+) {
+  const filters: Array<{ key: OperationLogFilter; label: string }> = [
+    { key: 'all', label: '全部' },
+    { key: 'delete', label: '删除' },
+    { key: 'export', label: '导出' }
+  ];
+
+  return filters
+    .map(
+      (filter) => `
+        <button
+          class="${currentFilter === filter.key ? 'primary-btn' : 'secondary-btn'} action-btn"
+          type="button"
+          data-operation-log-filter="${filter.key}"
+          ${disabled ? 'disabled' : ''}
+        >
+          ${filter.label}
+        </button>
+      `
+    )
+    .join('');
+}
+
+export function renderRecentOperationLogs(entries: RecentOperationLogEntry[]) {
+  if (!entries.length) {
+    return `<div class="detail-value">暂无最近操作日志</div>`;
+  }
+
+  return `
+    <div class="detail-list">
+      ${entries
+        .map(
+          (entry) => `
+            <div class="detail-list-item">
+              <div class="detail-list-key">${escapeHtml(formatDateTimeForDisplay(entry.createdAt))}</div>
+              <div class="detail-list-value">
+                操作类型：${escapeHtml(entry.operationType)}<br />
+                实验编号：${escapeHtml(entry.experimentId !== null ? String(entry.experimentId) : '-')}<br />
+                操作人：${escapeHtml(entry.actor || '-')}<br />
+                摘要：${escapeHtml(entry.summaryText || '-')}
+              </div>
+            </div>
+          `
+        )
+        .join('')}
+    </div>
+  `;
 }
 
 export function renderDetailPair(label: string, value: string) {

@@ -6,6 +6,8 @@ import type {
   ExperimentGroup,
   FileIntegrityReport,
   GroupByType,
+  OperationLogFilter,
+  RecentOperationLogEntry,
   SaveExperimentPayload,
   UpdateExperimentPayload
 } from './electron-api';
@@ -23,6 +25,8 @@ import {
   renderDynamicFields,
   renderExportModal,
   renderGroupTabs,
+  renderOperationLogFilterButtons,
+  renderRecentOperationLogs,
   renderStep2Rows
 } from './renderer/render-helpers';
 
@@ -120,6 +124,10 @@ let fileIntegrityActionLoading = false;
 let fileIntegrityError = '';
 let fileIntegrityReport: FileIntegrityReport | null = null;
 let selectedOrphanPaths: string[] = [];
+let operationLogLoading = false;
+let operationLogError = '';
+let operationLogFilter: OperationLogFilter = 'all';
+let recentOperationLogs: RecentOperationLogEntry[] | null = null;
 let duplicateWarningState: DuplicateWarningState | null = null;
 let duplicateWarningSubmitting = false;
 
@@ -167,6 +175,13 @@ async function reloadFileIntegrityReport() {
   if (!selectedOrphanPaths.length && fileIntegrityReport.orphanFiles.length) {
     selectedOrphanPaths = fileIntegrityReport.orphanFiles.map((entry) => entry.filePath);
   }
+}
+
+async function reloadRecentOperationLogs(filter = operationLogFilter) {
+  recentOperationLogs = await window.electronAPI.listRecentOperationLogs({
+    filter,
+    limit: 30
+  });
 }
 
 async function openPathLocation(targetPath: string) {
@@ -1638,6 +1653,9 @@ async function render() {
           </div>
         `
       : '';
+    const recentOperationLogsHtml = recentOperationLogs
+      ? renderRecentOperationLogs(recentOperationLogs)
+      : `<div class="detail-value">点击“查看最近操作日志”加载最近 30 条操作日志</div>`;
 
     root.innerHTML = `
       <div class="home-layout">
@@ -1767,6 +1785,24 @@ async function render() {
                   ${orphanExamplesHtml}
                 `
         : ''}
+
+              <div class="detail-section">
+                <div class="detail-section-title">最近操作日志</div>
+                <div class="form-action-row">
+                  <button
+                    id="settings-recent-logs-btn"
+                    class="secondary-btn action-btn"
+                    type="button"
+                    ${operationLogLoading ? 'disabled' : ''}
+                  >
+                    ${operationLogLoading ? '加载中...' : '查看最近操作日志'}
+                  </button>
+                  ${renderOperationLogFilterButtons(operationLogFilter, operationLogLoading)}
+                </div>
+
+                ${operationLogError ? `<div class="error-message large-error">${escapeHtml(operationLogError)}</div>` : ''}
+                ${recentOperationLogsHtml}
+              </div>
             </div>
           </section>
         </main>
@@ -1853,6 +1889,52 @@ async function render() {
         fileIntegrityLoading = false;
         requestRender(true);
       }
+    });
+
+    document.getElementById('settings-recent-logs-btn')?.addEventListener('click', async () => {
+      if (operationLogLoading) {
+        return;
+      }
+
+      operationLogLoading = true;
+      operationLogError = '';
+      requestRender(true);
+
+      try {
+        await reloadRecentOperationLogs();
+      } catch (error) {
+        recentOperationLogs = null;
+        operationLogError = getErrorMessage(error) || '加载最近操作日志失败';
+      } finally {
+        operationLogLoading = false;
+        requestRender(true);
+      }
+    });
+
+    document.querySelectorAll('[data-operation-log-filter]').forEach((button) => {
+      button.addEventListener('click', async () => {
+        const target = button as HTMLElement;
+        const nextFilter = target.dataset.operationLogFilter as OperationLogFilter | undefined;
+
+        if (!nextFilter || operationLogLoading || nextFilter === operationLogFilter) {
+          return;
+        }
+
+        operationLogFilter = nextFilter;
+        operationLogLoading = true;
+        operationLogError = '';
+        requestRender(true);
+
+        try {
+          await reloadRecentOperationLogs(nextFilter);
+        } catch (error) {
+          recentOperationLogs = null;
+          operationLogError = getErrorMessage(error) || '加载最近操作日志失败';
+        } finally {
+          operationLogLoading = false;
+          requestRender(true);
+        }
+      });
     });
 
     document.getElementById('settings-open-storage-root-btn')?.addEventListener('click', async () => {

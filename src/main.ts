@@ -52,6 +52,7 @@ import {
   saveAppSettings,
   verifyLogin
 } from './main/auth-settings';
+import { listRecentOperationLogs } from './main/operation-log';
 
 let prisma!: PrismaClient;
 
@@ -419,6 +420,24 @@ app.whenReady().then(async () => {
       } catch (error) {
         console.error('saveAppSettings failed:', error);
         return { success: false, error: '保存设置失败，请检查目录权限' };
+      }
+    }
+  );
+
+  ipcMain.handle(
+    'log:listRecentOperations',
+    async (
+      _event,
+      payload?: {
+        filter?: 'all' | 'delete' | 'export';
+        limit?: number;
+      }
+    ) => {
+      try {
+        return await listRecentOperationLogs(prisma, payload);
+      } catch (error) {
+        console.error('listRecentOperationLogs failed:', error);
+        return [];
       }
     }
   );

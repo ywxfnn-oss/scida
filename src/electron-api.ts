@@ -224,6 +224,22 @@ export type QuarantineOrphanFilesResult = ActionResult & {
   quarantinePath?: string;
 };
 
+export type OperationLogFilter = 'all' | 'delete' | 'export';
+
+export type ListRecentOperationLogsPayload = {
+  filter?: OperationLogFilter;
+  limit?: number;
+};
+
+export type RecentOperationLogEntry = {
+  id: number;
+  createdAt: string;
+  operationType: string;
+  experimentId: number | null;
+  actor: string | null;
+  summaryText: string;
+};
+
 export interface ElectronAPI {
   getAppVersion: () => Promise<string>;
   getAppName: () => Promise<string>;
@@ -270,6 +286,9 @@ export interface ElectronAPI {
   quarantineOrphanFiles: (
     payload: QuarantineOrphanFilesPayload
   ) => Promise<QuarantineOrphanFilesResult>;
+  listRecentOperationLogs: (
+    payload?: ListRecentOperationLogsPayload
+  ) => Promise<RecentOperationLogEntry[]>;
   openPathLocation: (payload: { targetPath: string }) => Promise<ActionResult>;
   openSavedFile: (payload: { filePath: string }) => Promise<ActionResult>;
   openInFolder: (payload: { filePath: string }) => Promise<ActionResult>;
