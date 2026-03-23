@@ -19,20 +19,22 @@ function copyDirIfExists(from: string, to: string) {
   });
 }
 
-class ScidataVitePlugin extends VitePlugin {
-  private static alreadyStarted = false;
+function createScidataVitePlugin(config: ConstructorParameters<typeof VitePlugin>[0]) {
+  const plugin = new VitePlugin(config);
+  const pluginState = plugin as unknown as { baseDir: string };
+  const originalGetHooks = plugin.getHooks;
+  let alreadyStarted = false;
 
-  override getHooks = () => {
-    const hooks = super.getHooks();
+  plugin.getHooks = () => {
+    const hooks = originalGetHooks();
 
     return {
       ...hooks,
       preStart: [
         namedHookWithTaskFn<'preStart'>(async (task) => {
-          if (ScidataVitePlugin.alreadyStarted) return;
-          ScidataVitePlugin.alreadyStarted = true;
+          if (alreadyStarted) return;
+          alreadyStarted = true;
 
-          const pluginState = this as unknown as { baseDir: string };
           await fs.promises.rm(pluginState.baseDir, {
             force: true,
             recursive: true
@@ -43,7 +45,7 @@ class ScidataVitePlugin extends VitePlugin {
               {
                 title: 'Building main process and preload bundles...',
                 task: async (_ctx, subtask) => {
-                  const result = await this.build(subtask);
+                  const result = await plugin.build(subtask);
                   subtask.title = 'Built main process and preload bundles';
                   return result;
                 }
@@ -51,7 +53,7 @@ class ScidataVitePlugin extends VitePlugin {
               {
                 title: 'Building renderer bundles...',
                 task: async (_ctx, subtask) => {
-                  const result = await this.buildRenderer(subtask);
+                  const result = await plugin.buildRenderer(subtask);
                   subtask.title = 'Built renderer bundles';
                   return result;
                 }
@@ -63,6 +65,8 @@ class ScidataVitePlugin extends VitePlugin {
       ]
     };
   };
+
+  return plugin;
 }
 
 const config: ForgeConfig = {
@@ -129,7 +133,7 @@ const config: ForgeConfig = {
   ],
 
   plugins: [
-    new ScidataVitePlugin({
+    createScidataVitePlugin({
       build: [
         {
           entry: 'src/main.ts',

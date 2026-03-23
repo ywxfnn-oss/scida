@@ -3,7 +3,6 @@ import { defineConfig } from 'vite';
 export default defineConfig({
     build: {
         target: 'node18',
-        watch: false,
         sourcemap: false,
         rollupOptions: {
             external: [
