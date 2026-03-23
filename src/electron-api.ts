@@ -30,6 +30,41 @@ export type SaveAppSettingsPayload = {
   newPassword?: string;
 };
 
+export type DictionaryType = 'testProject' | 'tester' | 'instrument';
+
+export type DictionaryItem = {
+  id: string;
+  type: DictionaryType;
+  value: string;
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
+  deactivatedAt: string | null;
+};
+
+export type DictionaryItemsByType = {
+  testProject: DictionaryItem[];
+  tester: DictionaryItem[];
+  instrument: DictionaryItem[];
+};
+
+export type ListDictionaryItemsPayload = {
+  includeInactive?: boolean;
+};
+
+export type AddDictionaryItemPayload = {
+  type: DictionaryType;
+  value: string;
+};
+
+export type AddDictionaryItemResult = ActionResult & {
+  item?: DictionaryItem;
+};
+
+export type DeactivateDictionaryItemPayload = {
+  id: string;
+};
+
 export type SelectSourceFileResult = {
   originalPath: string;
   originalName: string;
@@ -39,6 +74,59 @@ export type CopyFileToStorageResult = ActionResult & {
   savedFileName?: string;
   savedPath?: string;
 };
+
+export type CopyFileToStoragePayload = {
+  sourcePath: string;
+  testProject: string;
+  sampleCode: string;
+  tester: string;
+  instrument: string;
+  testTime: string;
+  templateType?: 'xy' | 'spectrum';
+  blockTitle?: string;
+  blockToken?: string;
+};
+
+export type XYPoint = {
+  x: number;
+  y: number;
+};
+
+export type SaveExperimentXYBlockPayload = {
+  templateType: 'xy';
+  blockTitle: string;
+  blockOrder: number;
+  xLabel: string;
+  xUnit: string;
+  yLabel: string;
+  yUnit: string;
+  note: string;
+  points: XYPoint[];
+  sourceFileName: string;
+  sourceFilePath: string;
+  originalFileName: string;
+  originalFilePath: string;
+};
+
+export type SaveExperimentSpectrumBlockPayload = {
+  templateType: 'spectrum';
+  blockTitle: string;
+  blockOrder: number;
+  spectrumAxisLabel: string;
+  spectrumAxisUnit: string;
+  signalLabel: string;
+  signalUnit: string;
+  note: string;
+  points: XYPoint[];
+  sourceFileName: string;
+  sourceFilePath: string;
+  originalFileName: string;
+  originalFilePath: string;
+};
+
+export type SaveExperimentTemplateBlockPayload =
+  | SaveExperimentXYBlockPayload
+  | SaveExperimentSpectrumBlockPayload;
 
 export type SaveExperimentPayload = {
   step1: {
@@ -59,6 +147,7 @@ export type SaveExperimentPayload = {
     originalFileName: string;
     originalFilePath: string;
   }[];
+  templateBlocks: SaveExperimentTemplateBlockPayload[];
   displayName: string;
 };
 
@@ -179,6 +268,42 @@ export type ExperimentDetail = {
     rowOrder: number;
     createdAt: string;
   }[];
+  templateBlocks: Array<
+    | {
+        id: number;
+        templateType: 'xy';
+        blockTitle: string;
+        blockOrder: number;
+        xLabel: string;
+        xUnit: string;
+        yLabel: string;
+        yUnit: string;
+        note: string;
+        points: XYPoint[];
+        sourceFileName: string | null;
+        sourceFilePath: string | null;
+        originalFileName: string | null;
+        originalFilePath: string | null;
+        createdAt: string;
+      }
+    | {
+        id: number;
+        templateType: 'spectrum';
+        blockTitle: string;
+        blockOrder: number;
+        spectrumAxisLabel: string;
+        spectrumAxisUnit: string;
+        signalLabel: string;
+        signalUnit: string;
+        note: string;
+        points: XYPoint[];
+        sourceFileName: string | null;
+        sourceFilePath: string | null;
+        originalFileName: string | null;
+        originalFilePath: string | null;
+        createdAt: string;
+      }
+  >;
 } | null;
 
 export type UpdateExperimentPayload = {
@@ -193,6 +318,7 @@ export type UpdateExperimentPayload = {
     dynamicFields: { name: string; value: string }[];
   };
   step2: UpdateExperimentDataItemPayload[];
+  templateBlocks: SaveExperimentTemplateBlockPayload[];
   displayName: string;
   editReason: string;
   editor: string;
@@ -223,8 +349,12 @@ export type FileIntegrityReport = {
       sampleCode: string;
       testProject: string;
       testTime: string;
-      dataItemId: number;
-      itemName: string;
+      recordType: 'dataItem' | 'templateBlock';
+      dataItemId: number | null;
+      itemName: string | null;
+      templateBlockId: number | null;
+      blockTitle: string | null;
+      templateType: string | null;
       sourceFileName: string | null;
       originalFileName: string | null;
     }>;
@@ -279,15 +409,19 @@ export interface ElectronAPI {
   authenticate: (payload: AuthenticatePayload) => Promise<ActionResult>;
   getAppSettings: () => Promise<AppSettings>;
   saveAppSettings: (payload: SaveAppSettingsPayload) => Promise<ActionResult>;
+  listDictionaryItems: (
+    payload?: ListDictionaryItemsPayload
+  ) => Promise<DictionaryItemsByType>;
+  addDictionaryItem: (
+    payload: AddDictionaryItemPayload
+  ) => Promise<AddDictionaryItemResult>;
+  deactivateDictionaryItem: (
+    payload: DeactivateDictionaryItemPayload
+  ) => Promise<ActionResult>;
   selectSourceFile: () => Promise<SelectSourceFileResult>;
-  copyFileToStorage: (payload: {
-    sourcePath: string;
-    testProject: string;
-    sampleCode: string;
-    tester: string;
-    instrument: string;
-    testTime: string;
-  }) => Promise<CopyFileToStorageResult>;
+  copyFileToStorage: (
+    payload: CopyFileToStoragePayload
+  ) => Promise<CopyFileToStorageResult>;
   checkDuplicateExperiments: (
     payload: CheckDuplicateExperimentPayload
   ) => Promise<DuplicateExperimentCheckResult>;

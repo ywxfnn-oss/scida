@@ -142,7 +142,7 @@ export function renderExportModal(params: {
               value="single-item"
               ${exportMode === 'single-item' ? 'checked' : ''}
             />
-            <span>导出某一个二级数据项名称</span>
+            <span>导出单个二级数据项</span>
           </label>
 
           <label class="checkbox-row">
@@ -152,7 +152,7 @@ export function renderExportModal(params: {
               value="all-items"
               ${exportMode === 'all-items' ? 'checked' : ''}
             />
-            <span>导出全部二级数据项名称</span>
+            <span>导出全部二级数据项</span>
           </label>
         </div>
 

@@ -8,8 +8,12 @@ import Database from 'better-sqlite3';
 import started from 'electron-squirrel-startup';
 import type {
   ActionResult,
+  AddDictionaryItemPayload,
   AuthenticatePayload,
+  CopyFileToStoragePayload,
   CopyFileToStorageResult,
+  DeactivateDictionaryItemPayload,
+  ListDictionaryItemsPayload,
   SaveAppSettingsPayload,
   SaveExperimentPayload,
   SaveExperimentResult,
@@ -52,8 +56,25 @@ import {
   saveAppSettings,
   verifyLogin
 } from './main/auth-settings';
+import {
+  addDictionaryItem,
+  deactivateDictionaryItem,
+  listDictionaryItems
+} from './main/dictionary-settings';
 import { listExperimentEditLogs } from './main/edit-log';
 import { listRecentOperationLogs } from './main/operation-log';
+import {
+  normalizeTemplateBlocks,
+  parseTemplateBlockMeta,
+  serializeTemplateBlockMeta,
+  validateTemplateBlockPayloads,
+  SPECTRUM_TEMPLATE_TYPE,
+  XY_TEMPLATE_TYPE,
+  type SpectrumBlockMeta,
+  type TemplateBlockType,
+  type XYCurveBlockMeta,
+  type XYPoint
+} from './template-blocks';
 
 let prisma!: PrismaClient;
 
@@ -71,6 +92,31 @@ function hashPassword(password: string) {
   const salt = randomBytes(16).toString('hex');
   const derivedKey = scryptSync(password, salt, 64).toString('hex');
   return `${PASSWORD_HASH_PREFIX}:${salt}:${derivedKey}`;
+}
+
+function parseXYBlockPoints(dataJson: string): XYPoint[] {
+  try {
+    const parsed = JSON.parse(dataJson);
+
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+
+    return parsed
+      .filter(
+        (point): point is XYPoint =>
+          !!point &&
+          typeof point === 'object' &&
+          Number.isFinite((point as XYPoint).x) &&
+          Number.isFinite((point as XYPoint).y)
+      )
+      .map((point) => ({
+        x: Number(point.x),
+        y: Number(point.y)
+      }));
+  } catch {
+    return [];
+  }
 }
 
 function ensureMigrationTable(db: SqliteDatabase) {
@@ -426,6 +472,42 @@ app.whenReady().then(async () => {
   );
 
   ipcMain.handle(
+    'dictionary:list',
+    async (_event, payload?: ListDictionaryItemsPayload) => {
+      try {
+        return await listDictionaryItems(prisma, payload);
+      } catch (error) {
+        console.error('listDictionaryItems failed:', error);
+        throw error;
+      }
+    }
+  );
+
+  ipcMain.handle(
+    'dictionary:add',
+    async (_event, payload: AddDictionaryItemPayload) => {
+      try {
+        return await addDictionaryItem(prisma, payload);
+      } catch (error) {
+        console.error('addDictionaryItem failed:', error);
+        return { success: false, error: '添加词典项失败，请稍后重试' };
+      }
+    }
+  );
+
+  ipcMain.handle(
+    'dictionary:deactivate',
+    async (_event, payload: DeactivateDictionaryItemPayload): Promise<ActionResult> => {
+      try {
+        return await deactivateDictionaryItem(prisma, payload);
+      } catch (error) {
+        console.error('deactivateDictionaryItem failed:', error);
+        return { success: false, error: '删除词典项失败，请稍后重试' };
+      }
+    }
+  );
+
+  ipcMain.handle(
     'log:listRecentOperations',
     async (
       _event,
@@ -464,14 +546,7 @@ app.whenReady().then(async () => {
     'file:copyToStorage',
     async (
       _event,
-      payload: {
-        sourcePath: string;
-        testProject: string;
-        sampleCode: string;
-        tester: string;
-        instrument: string;
-        testTime: string;
-      }
+      payload: CopyFileToStoragePayload
     ): Promise<CopyFileToStorageResult> => {
       try {
         if (!payload.sourcePath || !fileExists(payload.sourcePath)) {
@@ -486,7 +561,17 @@ app.whenReady().then(async () => {
 
         const { targetDir, fileName, fullPath } = buildManagedTargetPath(
           storageRoot,
-          payload
+          {
+            ...payload,
+            nameSuffixParts:
+              payload.templateType
+                ? [
+                    payload.templateType,
+                    payload.blockTitle || 'block',
+                    payload.blockToken || ''
+                  ]
+                : []
+          }
         );
         const conflictError = await getManagedTargetConflictError(prisma, fullPath);
 
@@ -533,6 +618,16 @@ app.whenReady().then(async () => {
     'experiment:save',
     async (_event, payload: SaveExperimentPayload): Promise<SaveExperimentResult> => {
       try {
+        const normalizedTemplateBlocks = normalizeTemplateBlocks(payload.templateBlocks || []);
+        const templateBlockValidation = validateTemplateBlockPayloads(normalizedTemplateBlocks);
+
+        if ('error' in templateBlockValidation) {
+          return {
+            success: false,
+            error: templateBlockValidation.error
+          };
+        }
+
         const experiment = await prisma.experiment.create({
           data: {
             testProject: payload.step1.testProject,
@@ -559,6 +654,19 @@ app.whenReady().then(async () => {
                 originalFileName: item.originalFileName || null,
                 originalFilePath: item.originalFilePath || null,
                 rowOrder: index + 1
+              }))
+            },
+            templateBlocks: {
+              create: normalizedTemplateBlocks.map((block, index) => ({
+                templateType: block.templateType,
+                blockTitle: block.blockTitle,
+                blockOrder: index + 1,
+                metaJson: serializeTemplateBlockMeta(block),
+                dataJson: JSON.stringify(block.points),
+                sourceFileName: block.sourceFileName || null,
+                sourceFilePath: block.sourceFilePath || null,
+                originalFileName: block.originalFileName || null,
+                originalFilePath: block.originalFilePath || null
               }))
             }
           }
@@ -722,11 +830,73 @@ app.whenReady().then(async () => {
         },
         dataItems: {
           orderBy: { rowOrder: 'asc' }
+        },
+        templateBlocks: {
+          orderBy: { blockOrder: 'asc' }
         }
       }
     });
 
-    return experiment;
+    if (!experiment) {
+      return null;
+    }
+
+    const { templateBlocks, ...rest } = experiment;
+
+    return {
+      ...rest,
+      templateBlocks: templateBlocks.map((block) => {
+        const points = parseXYBlockPoints(block.dataJson);
+
+        if (block.templateType === XY_TEMPLATE_TYPE) {
+          const meta = parseTemplateBlockMeta(
+            block.templateType as TemplateBlockType,
+            block.metaJson
+          ) as XYCurveBlockMeta;
+
+          return {
+            id: block.id,
+            templateType: XY_TEMPLATE_TYPE,
+            blockTitle: block.blockTitle,
+            blockOrder: block.blockOrder,
+            xLabel: meta.xLabel,
+            xUnit: meta.xUnit,
+            yLabel: meta.yLabel,
+            yUnit: meta.yUnit,
+            note: meta.note,
+            points,
+            sourceFileName: block.sourceFileName,
+            sourceFilePath: block.sourceFilePath,
+            originalFileName: block.originalFileName,
+            originalFilePath: block.originalFilePath,
+            createdAt: block.createdAt.toISOString()
+          };
+        }
+
+        const meta = parseTemplateBlockMeta(
+          block.templateType as TemplateBlockType,
+          block.metaJson
+        ) as SpectrumBlockMeta;
+
+        return {
+          id: block.id,
+          templateType: SPECTRUM_TEMPLATE_TYPE,
+          blockTitle: block.blockTitle,
+          blockOrder: block.blockOrder,
+          spectrumAxisLabel: meta.spectrumAxisLabel,
+          spectrumAxisUnit: meta.spectrumAxisUnit,
+          signalLabel: meta.signalLabel,
+          signalUnit: meta.signalUnit,
+          note: meta.note,
+          points,
+          sourceFileName: block.sourceFileName,
+          sourceFilePath: block.sourceFilePath,
+          originalFileName: block.originalFileName,
+          originalFilePath: block.originalFilePath,
+          createdAt: block.createdAt.toISOString()
+        };
+      })
+    };
   });
 
   ipcMain.handle(

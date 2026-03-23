@@ -27,6 +27,7 @@ model Experiment {
   updatedAt     DateTime               @updatedAt
   customFields  ExperimentCustomField[]
   dataItems     ExperimentDataItem[]
+  templateBlocks ExperimentTemplateBlock[]
   editLogs      EditLog[]
 }
 
@@ -55,6 +56,25 @@ model ExperimentDataItem {
   createdAt         DateTime   @default(now())
 
   experiment        Experiment @relation(fields: [experimentId], references: [id], onDelete: Cascade)
+}
+
+model ExperimentTemplateBlock {
+  id                Int        @id @default(autoincrement())
+  experimentId      Int
+  templateType      String
+  blockTitle        String
+  blockOrder        Int
+  metaJson          String
+  dataJson          String
+  sourceFileName    String?
+  sourceFilePath    String?
+  originalFileName  String?
+  originalFilePath  String?
+  createdAt         DateTime   @default(now())
+
+  experiment        Experiment @relation(fields: [experimentId], references: [id], onDelete: Cascade)
+
+  @@unique([experimentId, templateType, blockTitle])
 }
 
 model EditLog {

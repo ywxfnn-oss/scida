@@ -2,86 +2,80 @@
 
 AI Guide for Scidata Manager
 
-## Project Overview
+## Project Baseline
 
-Scidata Manager is a desktop scientific data management application built with Electron and TypeScript.
+Scidata Manager is a local Electron + TypeScript scientific data manager with:
 
-Primary capabilities:
+- Step 1 dictionary-driven standardized entry
+- Step 2 unified secondary-item entry
+- scalar secondary data
+- XY and spectrum structured blocks
+- unified secondary-item export for scalar and XY
+- full-record export and managed raw-file packaging
 
-- manage experiment records locally
-- store structured data in SQLite through Prisma
-- keep raw files on disk under a configurable storage root
-- export experiment data to Excel and ZIP
-- package the app through Electron Forge
+## Development Rules
 
-## Workflow Rules
+1. No schema changes without explicit justification.
+2. The export system must not be broken.
+3. The `二级数据项` concept is a core abstraction.
+4. Structured blocks are part of the secondary-item system.
+5. Avoid scope expansion.
+6. Prefer the smallest necessary change.
+7. Do not refactor unrelated modules during feature work.
+8. Keep privileged logic in the main process.
 
-- Read `README.md`, `ARCHITECTURE.md`, and `CHANGELOG.md` before proposing changes when they are relevant.
-- Prefer the smallest necessary change.
-- Avoid unrelated edits, new frameworks, and major architecture changes.
-- Explain a brief plan first when the request is ambiguous, spans multiple modules, or touches a high-risk area.
-- Wait for approval before large changes.
-- Do not auto-commit unless explicitly asked.
+## Workflow
+
+Use this order by default:
+
+1. plan
+2. audit
+3. implement
+4. validate
+
+Execution rules:
+
+- work in small safe steps only
+- update docs when product semantics change
+- validate with the narrowest relevant checks
+- do not auto-commit unless explicitly asked
 
 ## Architecture Rules
 
-- Keep the Electron split intact: `src/main.ts`, `src/preload.ts`, `src/renderer.ts`.
-- Preserve the current helper split under `src/main/` and `src/renderer/`.
-- Prefer minimal changes over broad refactors.
-- Keep privileged logic in the main process.
-- Treat `storage/raw_files/` as a data directory, not a source module.
-
-Current extracted modules:
-
-- `src/main/auth-settings.ts`
-- `src/main/export-helpers.ts`
-- `src/main/file-helpers.ts`
-- `src/main/runtime-db-helpers.ts`
-- `src/main/file-integrity.ts`
-- `src/main/duplicate-check.ts`
-- `src/renderer/render-helpers.ts`
+- Keep the Electron split intact:
+  - `src/main.ts`
+  - `src/preload.ts`
+  - `src/renderer.ts`
+- Prefer focused helpers under `src/main/` and `src/renderer/`
+- Keep export logic centralized in `src/main/export-helpers.ts`
+- Keep template-block rules centralized in `src/template-blocks.ts`
+- Keep dictionary persistence centralized in `src/main/dictionary-settings.ts`
 
 ## Database Rules
 
 - Runtime DB path: `app.getPath('userData')/scidata.db`
-- Bundled seed DB: `dev.db`
 - Schema: `prisma/schema.prisma`
 - Migrations: `prisma/migrations/`
-- Prisma config: `prisma.config.ts`
-- Prisma Client generation: `npm run prisma:generate`
 
 When changing database behavior:
 
-1. preserve existing user data
-2. keep startup upgrade logic safe and idempotent
-3. back up runtime databases before destructive or schema-changing work
-4. use Prisma for app queries and writes unless startup migration work requires lower-level SQL
-
-## Security Rules
-
-- Do not expose stored password material to the renderer.
-- Keep authentication checks in the main process.
-- Store only hashed passwords in app settings.
-
-## Packaging Rules
-
-- Do not break the Vite + Electron Forge pipeline.
-- Preserve Prisma and `better-sqlite3` runtime compatibility in packaged builds.
-- Avoid unnecessary new dependencies.
+1. preserve user data
+2. keep startup upgrades safe and idempotent
+3. do not use schema changes to solve export-only naming issues
+4. justify any new migration in the task report
 
 ## High-Risk Areas
 
-Treat these as high-risk and plan first before changing them:
+Plan first before changing:
 
 - `src/main.ts`
 - `src/renderer.ts`
+- `src/main/export-helpers.ts`
+- `src/template-blocks.ts`
 - `prisma/schema.prisma`
 - `prisma/migrations/`
-- startup migration/bootstrap internals in `src/main.ts`
-- delete logic in `src/main.ts`
-- `experiment:update` file mutation and rollback logic in `src/main.ts`
-- managed file storage logic and naming
-- export workflows
+- managed-file naming/copy logic
+- delete and update rollback paths
 
 ## Validation
 
@@ -89,9 +83,7 @@ Before finishing code changes, prefer to run:
 
 ```bash
 npx tsc --noEmit
-npm run package
-npm test
 npm run lint
 ```
 
-Use the narrowest relevant checks the repo supports. In this repository, `npx tsc --noEmit`, `npm run package`, and `npm run lint` are commonly relevant; run `npm test` only if a test script exists. Startup, Prisma, packaging, delete, storage, and export changes should also get focused manual smoke testing when possible.
+If the change touches export, storage, or structured blocks, also do a focused manual smoke check when possible.

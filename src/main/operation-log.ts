@@ -54,7 +54,7 @@ function getOperationLogWhere(filter: OperationLogFilter) {
   if (filter === 'export') {
     return {
       operationType: {
-        in: ['export_full', 'export_item_compare']
+        in: ['export_full', 'export_item_compare', 'export_xy_compare']
       }
     };
   }
@@ -117,9 +117,14 @@ function formatExportSummary(
   const itemNames = Array.isArray(summary.itemNames)
     ? summary.itemNames.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
     : [];
+  const blockTitle = readStringValue(summary, 'blockTitle');
 
   const parts = [
-    operationType === 'export_item_compare' ? '按数据项导出' : '完整导出'
+    operationType === 'export_item_compare'
+      ? '按二级数据项导出'
+      : operationType === 'export_xy_compare'
+        ? 'XY 导出'
+        : '完整导出'
   ];
 
   if (experimentCount !== null) {
@@ -128,6 +133,10 @@ function formatExportSummary(
 
   if (itemNames.length) {
     parts.push(`数据项：${itemNames.slice(0, 3).join('、')}`);
+  }
+
+  if (blockTitle) {
+    parts.push(`模板块：${blockTitle}`);
   }
 
   if (exportPath) {
@@ -153,7 +162,11 @@ function formatOperationSummary(
     return formatDeleteSummary(parsed);
   }
 
-  if (operationType === 'export_full' || operationType === 'export_item_compare') {
+  if (
+    operationType === 'export_full' ||
+    operationType === 'export_item_compare' ||
+    operationType === 'export_xy_compare'
+  ) {
     return formatExportSummary(operationType, parsed);
   }
 

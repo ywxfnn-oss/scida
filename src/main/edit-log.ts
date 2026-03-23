@@ -16,7 +16,8 @@ const EDIT_FIELD_LABELS: Record<string, string> = {
   sampleOwner: '样品所属人员',
   displayName: '数据名称',
   customFields: '动态字段',
-  dataItems: '二级数据项'
+  dataItems: '二级数据项',
+  templateBlocks: '模板块'
 };
 
 function clampEditLogLimit(limit?: number) {

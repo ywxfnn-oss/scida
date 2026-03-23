@@ -11,6 +11,12 @@ const electronAPI: ElectronAPI = {
 
     saveAppSettings: (payload) => ipcRenderer.invoke('settings:saveAppSettings', payload),
 
+    listDictionaryItems: (payload) => ipcRenderer.invoke('dictionary:list', payload),
+
+    addDictionaryItem: (payload) => ipcRenderer.invoke('dictionary:add', payload),
+
+    deactivateDictionaryItem: (payload) => ipcRenderer.invoke('dictionary:deactivate', payload),
+
     selectSourceFile: () =>
         ipcRenderer.invoke('file:selectSourceFile'),
 

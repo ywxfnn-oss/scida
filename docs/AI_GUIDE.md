@@ -2,89 +2,98 @@
 
 AI Working Guide for Scidata Manager
 
-## Purpose
+## Read First
 
-This document helps AI agents safely analyze and modify this repository.
-
-Read these files first before making any code changes:
+Before changing the project, read:
 
 1. `CODEX.md`
-2. `PROJECT_STRUCTURE.md`
-3. `ARCHITECTURE.md`
-4. `docs/MODULE_GUIDE.md`
-5. `docs/DATABASE.md`
-6. `docs/EXPORT_FLOW.md`
+2. `docs/MODULE_GUIDE.md`
+3. `docs/DATABASE.md`
+4. `docs/EXPORT_FLOW.md`
+5. `PROJECT_STATUS.md`
+6. `CHANGELOG.md`
 
----
+## Current Product Baseline
 
-## Primary Goals
+The current baseline includes:
 
-When working on this project, prioritize:
+- Step 1 dictionary-driven standardized entry
+- Step 2 unified secondary-item entry
+- scalar secondary items
+- XY structured secondary items
+- spectrum structured secondary items
+- unified secondary-item export for scalar and XY
 
-- Stability
-- Minimal modifications
-- Data safety
-- Cross-platform compatibility
-- Clear separation between renderer and main process
+## Core Rules for AI Work
 
----
+1. Do not break the export system.
+2. Do not break the `二级数据项` naming layer.
+3. Do not break Step 1 dictionary semantics.
+4. Do not introduce schema changes without clear justification.
+5. Prefer the smallest safe change.
 
-## Rules for AI Agents
+## When Extending Export
 
-1. Do not introduce new dependencies unless explicitly approved
-2. Do not refactor unrelated code
-3. Do not move files unless necessary
-4. Do not change build or packaging configuration unless required
-5. Do not break Prisma schema compatibility
-6. Do not access filesystem or database from renderer directly
-7. Keep Electron security boundaries intact
+If the request touches export:
 
----
+- audit `src/main/export-helpers.ts` first
+- preserve full export behavior
+- preserve scalar workbook behavior unless the user explicitly asks otherwise
+- treat filesystem naming and grouping as export-time concerns
+- do not convert export-time collision handling into database constraints
 
-## Safe Change Workflow
+When adding a new secondary-item export type:
 
-Before modifying code:
+- keep grouping based on the full original secondary-item name
+- do not generalize names like `iv（-100，100）` into `iv`
+- keep type-specific workbook writers separate if the data shape differs
 
-1. Identify the target feature or bug
-2. Identify involved files
-3. Explain the planned change
-4. Make the smallest possible code change
-5. Explain how to verify the change
+## When Extending Structured Blocks
 
----
+If the request touches XY or spectrum blocks:
 
-## Typical File Roles
+- read `src/template-blocks.ts` first
+- preserve the current block model
+- keep block metadata explicit
+- keep point-order preservation intact
+- avoid adding plotting, fitting, or calculation engines unless explicitly requested
 
-- `src/main.ts` → Electron main process
-- `src/preload.ts` → secure API bridge
-- `src/renderer.ts` → renderer/UI logic
-- `src/storage/` → persistence/data helpers
-- `prisma/schema.prisma` → database schema
-- `prisma/migrations/` → schema migration history
-- `forge.config.ts` → Electron Forge packaging
-- `vite.*.config.ts` → build configuration
+## When Extending Dictionaries
 
----
+If the request touches Step 1 dictionaries:
 
-## Typical Dangerous Changes
+- keep dictionary persistence in `src/main/dictionary-settings.ts`
+- do not mutate historical experiment records
+- do not silently auto-add unknown values
+- keep Settings management and Step 1 quick-add semantics aligned
 
-Avoid changing these casually:
+## Safe Workflow
 
-- IPC channel names
-- preload API signatures
-- Prisma schema field names
-- packaging configuration
-- file export paths
-- database initialization logic
+Preferred execution order:
 
----
+1. plan
+2. audit current code
+3. implement one bounded change
+4. validate with `npx tsc --noEmit` and `npm run lint`
+5. note remaining manual checks
 
-## Expected Response Style for AI
+## High-Risk Areas
 
-When suggesting code changes, AI should:
+Plan first before touching:
 
-- name the files to change
-- explain why each file is involved
-- prefer minimal diffs
-- mention possible side effects
-- include a verification method
+- `src/main.ts`
+- `src/renderer.ts`
+- `src/main/export-helpers.ts`
+- `src/template-blocks.ts`
+- `prisma/schema.prisma`
+- `prisma/migrations/`
+
+## Anti-Patterns
+
+Avoid these unless explicitly requested:
+
+- export-system redesign
+- schema churn for naming problems
+- mixing scalar and structured workbooks into one generic writer
+- broad renderer refactors during small feature work
+- silent behavior changes to dictionaries or export grouping

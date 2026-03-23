@@ -2,42 +2,71 @@
 
 ## Current Status
 
-Scidata Manager is currently in a stable local-desktop state for core lab data workflows:
+Scidata Manager is now in a stable local-desktop baseline for standardized entry, structured storage, and unified export.
+
+Current baseline:
 
 - login and settings management work
-- experiment search, detail view, edit, and save work
-- full export and item-name export flows work
+- Step 1 dictionary-driven entry works
+- Step 2 scalar + XY + spectrum entry works
+- detail view, edit, and save work
+- full export and unified secondary-item export work
 - managed file integrity scanning is available from Settings
 - duplicate-record warnings run before create and update saves
 
-The project has also moved away from a fully monolithic main process. Some low-risk helpers are now extracted into focused modules under `src/main/` and `src/renderer/`.
+## Completed Milestones
 
-## Recently Completed
+- **P13: dictionary system**
+  - Settings-based dictionary management
+  - Step 1 quick-add with `+`
+  - Step 1 dictionary validation on `下一步`
+  - Step 1 searchable suggestions for `testProject`, `tester`, `instrument`
 
-- Fixed Prisma client generation and startup resolution by restoring a valid `prisma.config.ts` and adding a `postinstall` generate step.
-- Extracted low-risk main-process helpers from `src/main.ts`:
-  - auth and settings logic
-  - runtime DB discovery helpers
-  - file/path/name helpers
-  - export helpers
-- Extracted low-risk renderer formatting and HTML string helpers into `src/renderer/render-helpers.ts`.
-- Added a minimal file integrity scan and report in Settings:
-  - scans the configured `storageRoot`
-  - reports missing referenced files
-  - reports orphan managed files
-- Added a minimal non-blocking duplicate-record warning before save and update.
+- **P15: structured blocks**
+  - XY structured secondary-item blocks
+  - spectrum structured secondary-item blocks
+  - structured block storage and reload
+  - mixed scalar + structured records
+
+- **P16: unified export system**
+  - standalone strict XY compare export removed
+  - XY folded into unified secondary-item export
+  - export-time naming collision handling
+  - same-name scalar + XY export into one folder with separate workbooks
+
+## Current Capabilities
+
+### Data entry
+
+- dictionary-governed Step 1 fields
+- explicit quick-add for dictionary values
+- scalar secondary data entry
+- XY structured entry
+- spectrum structured entry
+
+### Structured storage
+
+- scalar data stored in `ExperimentDataItem`
+- XY and spectrum stored in `ExperimentTemplateBlock`
+- block order, metadata, points, and source files preserved
+
+### Flexible export
+
+- full-record export
+- single secondary-item export
+- all secondary-item export
+- collision-safe folder/file naming
+- raw/source file packaging by sample code
 
 ## Current Technical Debt / Limitations
 
-- `src/main.ts` is smaller than before, but still owns high-risk startup, migration, delete, and update rollback flows.
-- `src/renderer.ts` still owns most screen orchestration, event binding, and DOM/state collection logic.
-- Duplicate detection is exact-match only on `sampleCode`, `testProject`, and stored `testTime`.
-- File integrity scan is read-only and synchronous, so very large storage roots may feel slow.
-- Some architecture docs still need periodic updates as extraction work continues.
+- `src/renderer.ts` still owns most page orchestration, form collection, and event binding
+- `src/main.ts` still owns startup, IPC registration, and several high-risk write paths
+- unified secondary-item export currently folds in scalar and XY; spectrum export integration is still pending
+- operation-log code still keeps compatibility with historical XY-compare log entries
 
-## Immediate Next Priorities
+## Recommended Next Priorities
 
-- Continue safe, low-risk structural cleanup of `src/renderer.ts`, especially DOM/query and view-state helpers.
-- Continue reducing `src/main.ts` only in low-coupling areas, without changing startup or file-mutation behavior.
-- Improve documentation so module boundaries and current capabilities stay aligned with the code.
-- Add more targeted manual smoke coverage around startup, file integrity reporting, and duplicate warnings after future refactors.
+- keep documentation aligned with the current baseline
+- continue safe extraction of renderer/main helper logic only when justified
+- add focused manual smoke coverage around export, structured blocks, and file-integrity flows

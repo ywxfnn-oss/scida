@@ -14,6 +14,12 @@ import {
   ensureDir,
   fileExists
 } from './file-helpers';
+import {
+  normalizeTemplateBlocks,
+  serializeTemplateBlockMeta,
+  validateTemplateBlockPayloads,
+  type TemplateBlockPayload
+} from '../template-blocks';
 
 type UpdateFilePlan = {
   index: number;
@@ -60,6 +66,17 @@ type OldExperimentRecord = {
     originalFilePath: string | null;
     rowOrder: number;
   }>;
+  templateBlocks: Array<{
+    templateType: string;
+    blockTitle: string;
+    blockOrder: number;
+    metaJson: string;
+    dataJson: string;
+    sourceFileName: string | null;
+    sourceFilePath: string | null;
+    originalFileName: string | null;
+    originalFilePath: string | null;
+  }>;
 };
 
 type OldDataItemRecord = {
@@ -79,6 +96,17 @@ async function findConflictingDataItem(
   });
 }
 
+async function findConflictingTemplateBlock(
+  prisma: PrismaClient,
+  targetPath: string
+) {
+  return prisma.experimentTemplateBlock.findFirst({
+    where: {
+      sourceFilePath: targetPath
+    }
+  });
+}
+
 export async function getManagedTargetConflictError(
   prisma: PrismaClient,
   targetPath: string,
@@ -91,6 +119,12 @@ export async function getManagedTargetConflictError(
   );
 
   if (conflictingItem) {
+    return '保存文件名与其他实验记录冲突，请调整后重试';
+  }
+
+  const conflictingBlock = await findConflictingTemplateBlock(prisma, targetPath);
+
+  if (conflictingBlock && targetPath !== options?.currentSourcePath) {
     return '保存文件名与其他实验记录冲突，请调整后重试';
   }
 
@@ -138,12 +172,24 @@ function buildOldSnapshot(oldExperiment: OldExperimentRecord | null) {
       originalFileName: item.originalFileName,
       originalFilePath: item.originalFilePath,
       rowOrder: item.rowOrder
+    })),
+    templateBlocks: oldExperiment.templateBlocks.map((block) => ({
+      templateType: block.templateType,
+      blockTitle: block.blockTitle,
+      blockOrder: block.blockOrder,
+      metaJson: block.metaJson,
+      dataJson: block.dataJson,
+      sourceFileName: block.sourceFileName,
+      sourceFilePath: block.sourceFilePath,
+      originalFileName: block.originalFileName,
+      originalFilePath: block.originalFilePath
     }))
   };
 }
 
 function buildNewSnapshot(
   payload: UpdateExperimentPayload,
+  normalizedTemplateBlocks: TemplateBlockPayload[],
   resolvedStep2: Array<
     UpdateExperimentDataItemPayload & {
       sourceFileName: string;
@@ -175,6 +221,17 @@ function buildNewSnapshot(
       originalFileName: item.originalFileName || null,
       originalFilePath: item.originalFilePath || null,
       rowOrder: index + 1
+    })),
+    templateBlocks: normalizedTemplateBlocks.map((block, index) => ({
+      templateType: block.templateType,
+      blockTitle: block.blockTitle,
+      blockOrder: index + 1,
+      metaJson: serializeTemplateBlockMeta(block),
+      dataJson: JSON.stringify(block.points),
+      sourceFileName: block.sourceFileName || null,
+      sourceFilePath: block.sourceFilePath || null,
+      originalFileName: block.originalFileName || null,
+      originalFilePath: block.originalFilePath || null
     }))
   };
 }
@@ -452,7 +509,8 @@ export async function updateExperimentWithManagedFiles(
     where: { id: payload.experimentId },
     include: {
       customFields: { orderBy: { sortOrder: 'asc' } },
-      dataItems: { orderBy: { rowOrder: 'asc' } }
+      dataItems: { orderBy: { rowOrder: 'asc' } },
+      templateBlocks: { orderBy: { blockOrder: 'asc' } }
     }
   });
 
@@ -468,6 +526,15 @@ export async function updateExperimentWithManagedFiles(
   const oldDataItemMap = new Map(
     oldExperiment.dataItems.map((item) => [item.id, item])
   );
+  const normalizedTemplateBlocks = normalizeTemplateBlocks(payload.templateBlocks || []);
+  const templateBlockValidation = validateTemplateBlockPayloads(normalizedTemplateBlocks);
+
+  if ('error' in templateBlockValidation) {
+    return {
+      success: false,
+      error: templateBlockValidation.error
+    };
+  }
   const { error: filePlanError, filePlans } = await buildUpdateFilePlans(
     prisma,
     payload,
@@ -511,7 +578,7 @@ export async function updateExperimentWithManagedFiles(
   }
 
   const oldSnapshot = buildOldSnapshot(oldExperiment);
-  const newSnapshot = buildNewSnapshot(payload, resolvedStep2);
+  const newSnapshot = buildNewSnapshot(payload, normalizedTemplateBlocks, resolvedStep2);
   const fileOperations = buildFileOperationDetails(filePlans, resolvedStep2);
 
   try {
@@ -534,6 +601,10 @@ export async function updateExperimentWithManagedFiles(
       });
 
       await tx.experimentDataItem.deleteMany({
+        where: { experimentId: payload.experimentId }
+      });
+
+      await tx.experimentTemplateBlock.deleteMany({
         where: { experimentId: payload.experimentId }
       });
 
@@ -560,6 +631,23 @@ export async function updateExperimentWithManagedFiles(
             originalFileName: item.originalFileName || null,
             originalFilePath: item.originalFilePath || null,
             rowOrder: index + 1
+          }))
+        });
+      }
+
+      if (normalizedTemplateBlocks.length) {
+        await tx.experimentTemplateBlock.createMany({
+          data: normalizedTemplateBlocks.map((block, index) => ({
+            experimentId: payload.experimentId,
+            templateType: block.templateType,
+            blockTitle: block.blockTitle,
+            blockOrder: index + 1,
+            metaJson: serializeTemplateBlockMeta(block),
+            dataJson: JSON.stringify(block.points),
+            sourceFileName: block.sourceFileName || null,
+            sourceFilePath: block.sourceFilePath || null,
+            originalFileName: block.originalFileName || null,
+            originalFilePath: block.originalFilePath || null
           }))
         });
       }

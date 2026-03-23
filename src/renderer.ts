@@ -1,6 +1,8 @@
 import './index.css';
 import type {
   AppSettings,
+  DictionaryItemsByType,
+  DictionaryType,
   DuplicateExperimentMatch,
   ExperimentEditHistoryEntry,
   ExperimentDetail,
@@ -12,6 +14,7 @@ import type {
   OperationLogFilter,
   RecentOperationLogEntry,
   SaveExperimentPayload,
+  SaveExperimentTemplateBlockPayload,
   UpdateExperimentPayload
 } from './electron-api';
 import {
@@ -33,6 +36,16 @@ import {
   renderRecentOperationLogs,
   renderStep2Rows
 } from './renderer/render-helpers';
+import {
+  getTemplateBlockTypeLabel,
+  formatXYPointInput,
+  normalizeTemplateBlocks,
+  parseTemplateBlockPointInput,
+  SPECTRUM_TEMPLATE_TYPE,
+  trimBlockTitle,
+  type TemplateBlockType,
+  XY_TEMPLATE_TYPE
+} from './template-blocks';
 
 let appSettings: AppSettings = {
   storageRoot: '',
@@ -81,6 +94,24 @@ type Step1FormData = {
   dynamicFields: DynamicField[];
 };
 
+type TemplateBlockFormData = {
+  id: string;
+  blockId?: number;
+  templateType: TemplateBlockType;
+  blockTitle: string;
+  primaryLabel: string;
+  primaryUnit: string;
+  secondaryLabel: string;
+  secondaryUnit: string;
+  dataText: string;
+  note: string;
+  sourceFileName: string;
+  sourceFilePath: string;
+  originalFileName: string;
+  originalFilePath: string;
+  createdAt?: string;
+};
+
 type DuplicateWarningState =
   | {
       mode: 'create';
@@ -99,8 +130,44 @@ type DuplicateWarningState =
       payload: UpdateExperimentPayload;
     };
 
+type SettingsSubView = 'general' | 'dictionary';
+
+const DICTIONARY_TYPES: DictionaryType[] = ['testProject', 'tester', 'instrument'];
+const STEP1_SUGGESTION_LIMIT = 8;
+
+const DICTIONARY_SECTION_META: Array<{ type: DictionaryType; label: string }> = [
+  { type: 'testProject', label: '测试项目' },
+  { type: 'tester', label: '测试人' },
+  { type: 'instrument', label: '测试仪器' }
+];
+
+function buildEmptyDictionaryItems(): DictionaryItemsByType {
+  return {
+    testProject: [],
+    tester: [],
+    instrument: []
+  };
+}
+
+function buildEmptyDictionaryInputState(): Record<DictionaryType, string> {
+  return {
+    testProject: '',
+    tester: '',
+    instrument: ''
+  };
+}
+
+function buildEmptyDictionaryErrorState(): Record<DictionaryType, string> {
+  return {
+    testProject: '',
+    tester: '',
+    instrument: ''
+  };
+}
+
 let currentView: ViewType = 'login';
 let lastSavedExperimentId: number | null = null;
+let settingsSubView: SettingsSubView = 'general';
 
 let databaseSearchKeyword = '';
 let databaseGroupBy: GroupByType = 'sampleCode';
@@ -120,6 +187,7 @@ let detailEditReason = '';
 let detailEditor = '';
 let detailEditStep1: Step1FormData | null = null;
 let detailEditStep2: DataItem[] = [];
+let detailEditTemplateBlocks: TemplateBlockFormData[] = [];
 
 let selectedExperimentIds: number[] = [];
 let exportModalVisible = false;
@@ -135,6 +203,14 @@ let fileIntegrityLoading = false;
 let fileIntegrityActionLoading = false;
 let fileIntegrityError = '';
 let fileIntegrityReport: FileIntegrityReport | null = null;
+let dictionaryLoading = false;
+let dictionaryLoadError = '';
+let dictionaryLoaded = false;
+let dictionaryItems = buildEmptyDictionaryItems();
+const dictionaryInputValues = buildEmptyDictionaryInputState();
+const dictionarySectionErrors = buildEmptyDictionaryErrorState();
+let dictionarySubmittingType: DictionaryType | null = null;
+let dictionaryDeletingId: string | null = null;
 let selectedOrphanPaths: string[] = [];
 let operationLogLoading = false;
 let operationLogError = '';
@@ -165,6 +241,7 @@ let step2DataItems: DataItem[] = [
     originalFilePath: ''
   }
 ];
+let step2TemplateBlocks: TemplateBlockFormData[] = [];
 
 const root = document.getElementById('app');
 
@@ -194,6 +271,57 @@ async function reloadRecentOperationLogs(filter = operationLogFilter) {
     filter,
     limit: 30
   });
+}
+
+async function reloadDictionaryItems() {
+  dictionaryItems = await window.electronAPI.listDictionaryItems();
+  dictionaryLoaded = true;
+  dictionaryLoadError = '';
+}
+
+function saveDictionaryInputsToState() {
+  DICTIONARY_TYPES.forEach((dictionaryType) => {
+    const input = document.getElementById(
+      `dictionary-input-${dictionaryType}`
+    ) as HTMLInputElement | null;
+
+    if (input) {
+      dictionaryInputValues[dictionaryType] = input.value;
+    }
+  });
+}
+
+async function openSettingsView(subView: SettingsSubView = 'general') {
+  currentView = 'settings';
+  settingsSubView = subView;
+  await render();
+}
+
+async function switchSettingsSubView(nextSubView: SettingsSubView) {
+  if (settingsSubView === nextSubView) {
+    return;
+  }
+
+  saveDictionaryInputsToState();
+  settingsSubView = nextSubView;
+
+  if (nextSubView !== 'dictionary' || dictionaryLoaded) {
+    requestRender(true);
+    return;
+  }
+
+  dictionaryLoading = true;
+  dictionaryLoadError = '';
+  requestRender(true);
+
+  try {
+    await reloadDictionaryItems();
+  } catch (error) {
+    dictionaryLoadError = getErrorMessage(error) || '加载词典列表失败';
+  } finally {
+    dictionaryLoading = false;
+    requestRender(true);
+  }
 }
 
 async function openPathLocation(targetPath: string) {
@@ -276,6 +404,7 @@ async function openExperimentDetail(experimentId: number) {
   detailEditor = '';
   detailEditStep1 = null;
   detailEditStep2 = [];
+  detailEditTemplateBlocks = [];
   currentView = 'database-detail';
   void render();
 }
@@ -328,6 +457,7 @@ async function performUpdateSave(payload: UpdateExperimentPayload) {
   detailEditor = '';
   detailEditStep1 = null;
   detailEditStep2 = [];
+  detailEditTemplateBlocks = [];
   void render();
 
   if (result.warning) {
@@ -478,6 +608,614 @@ function requestRender(preserveContentScroll = false) {
   }
 
   void render();
+}
+
+function setFieldFeedback(
+  feedbackElementId: string,
+  message: string,
+  tone: 'success' | 'error'
+) {
+  const feedbackElement = document.getElementById(feedbackElementId);
+  if (!feedbackElement) {
+    return;
+  }
+
+  feedbackElement.textContent = message;
+  feedbackElement.className = `field-feedback-message ${tone === 'success' ? 'field-feedback-success' : 'field-feedback-error'}`;
+}
+
+function clearFieldFeedback(feedbackElementId: string) {
+  const feedbackElement = document.getElementById(feedbackElementId);
+  if (!feedbackElement) {
+    return;
+  }
+
+  feedbackElement.textContent = '';
+  feedbackElement.className = 'field-feedback-message';
+}
+
+async function ensureDictionaryItemsLoaded() {
+  if (dictionaryLoaded) {
+    return dictionaryItems;
+  }
+
+  await reloadDictionaryItems();
+  return dictionaryItems;
+}
+
+function getStep1SuggestionMatches(dictionaryType: DictionaryType, rawValue: string) {
+  const query = rawValue.trim();
+  if (!query) {
+    return [];
+  }
+
+  return dictionaryItems[dictionaryType]
+    .filter((item) => item.isActive && item.value.includes(query))
+    .slice(0, STEP1_SUGGESTION_LIMIT);
+}
+
+function hideStep1Suggestions(containerId: string) {
+  const container = document.getElementById(containerId);
+  if (!container) {
+    return;
+  }
+
+  container.innerHTML = '';
+  container.classList.remove('visible-step1-suggestions');
+}
+
+function renderStep1Suggestions(params: {
+  containerId: string;
+  dictionaryType: DictionaryType;
+  query: string;
+}) {
+  const container = document.getElementById(params.containerId);
+  if (!container) {
+    return;
+  }
+
+  const matches = getStep1SuggestionMatches(params.dictionaryType, params.query);
+  if (!matches.length) {
+    hideStep1Suggestions(params.containerId);
+    return;
+  }
+
+  container.innerHTML = matches
+    .map(
+      (item) => `
+        <button
+          type="button"
+          class="step1-suggestion-item"
+          data-step1-suggestion-value="${escapeHtml(item.value)}"
+        >
+          ${escapeHtml(item.value)}
+        </button>
+      `
+    )
+    .join('');
+  container.classList.add('visible-step1-suggestions');
+}
+
+function buildEmptyTemplateBlock(templateType: TemplateBlockType): TemplateBlockFormData {
+  return {
+    id: generateId(),
+    templateType,
+    blockTitle: '',
+    primaryLabel: '',
+    primaryUnit: '',
+    secondaryLabel: '',
+    secondaryUnit: '',
+    dataText: '',
+    note: '',
+    sourceFileName: '',
+    sourceFilePath: '',
+    originalFileName: '',
+    originalFilePath: ''
+  };
+}
+
+function countTemplateBlockPointLines(dataText: string) {
+  return dataText
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean).length;
+}
+
+function getTemplateBlockFieldConfig(templateType: TemplateBlockType) {
+  if (templateType === XY_TEMPLATE_TYPE) {
+    return {
+      typeLabel: 'XY 曲线块',
+      subtitle: '支持格式：x,y 或 x<TAB>y；每行一组数据',
+      dataLabel: 'XY 数据',
+      dataPlaceholder: '每行一组 XY 数据，例如：&#10;0,1.23&#10;0.1,1.28',
+      titlePlaceholder: '如：IV 曲线',
+      primaryLabelText: 'X 轴名称',
+      primaryLabelPlaceholder: '如：Voltage',
+      primaryUnitText: 'X 轴单位',
+      primaryUnitPlaceholder: '如：V',
+      secondaryLabelText: 'Y 轴名称',
+      secondaryLabelPlaceholder: '如：Current',
+      secondaryUnitText: 'Y 轴单位',
+      secondaryUnitPlaceholder: '如：A'
+    };
+  }
+
+  return {
+    typeLabel: '光谱块',
+    subtitle: '支持格式：x,y 或 x<TAB>y；每行一组数据',
+    dataLabel: '光谱数据',
+    dataPlaceholder: '每行一组光谱数据，例如：&#10;450,12.5&#10;460,13.1',
+    titlePlaceholder: '如：PL 光谱',
+    primaryLabelText: '光谱轴名称',
+    primaryLabelPlaceholder: '如：Wavelength',
+    primaryUnitText: '光谱轴单位',
+    primaryUnitPlaceholder: '如：nm',
+    secondaryLabelText: '信号名称',
+    secondaryLabelPlaceholder: '如：Intensity',
+    secondaryUnitText: '信号单位',
+    secondaryUnitPlaceholder: '如：a.u.'
+  };
+}
+
+function renderTemplateBlockCards(blocks: TemplateBlockFormData[]) {
+  if (!blocks.length) {
+    return `<div class="empty-tip">当前还没有添加模板块</div>`;
+  }
+
+  return blocks
+    .map(
+      (block, index) => `
+        ${(() => {
+          const fieldConfig = getTemplateBlockFieldConfig(block.templateType);
+          return `
+        <div class="template-block-card">
+          <div class="template-block-header">
+            <div>
+              <div class="template-block-type">${fieldConfig.typeLabel} ${index + 1}</div>
+              <div class="template-block-subtitle">${fieldConfig.subtitle}</div>
+            </div>
+            <button
+              class="danger-btn small-danger-btn"
+              type="button"
+              data-remove-template-block-id="${block.id}"
+            >
+              删除
+            </button>
+          </div>
+
+          <div class="template-block-grid">
+            <div class="form-group">
+              <label class="form-label">二级数据项名称 <span class="required-star">*</span></label>
+              <input
+                id="template-block-title-${block.id}"
+                class="form-input"
+                placeholder="${fieldConfig.titlePlaceholder}"
+                value="${escapeHtml(block.blockTitle)}"
+              />
+            </div>
+
+            <div class="form-group">
+              <label class="form-label">${fieldConfig.primaryLabelText}</label>
+              <input
+                id="template-block-primary-label-${block.id}"
+                class="form-input"
+                placeholder="${fieldConfig.primaryLabelPlaceholder}"
+                value="${escapeHtml(block.primaryLabel)}"
+              />
+            </div>
+
+            <div class="form-group">
+              <label class="form-label">${fieldConfig.primaryUnitText}</label>
+              <input
+                id="template-block-primary-unit-${block.id}"
+                class="form-input"
+                placeholder="${fieldConfig.primaryUnitPlaceholder}"
+                value="${escapeHtml(block.primaryUnit)}"
+              />
+            </div>
+
+            <div class="form-group">
+              <label class="form-label">${fieldConfig.secondaryLabelText}</label>
+              <input
+                id="template-block-secondary-label-${block.id}"
+                class="form-input"
+                placeholder="${fieldConfig.secondaryLabelPlaceholder}"
+                value="${escapeHtml(block.secondaryLabel)}"
+              />
+            </div>
+
+            <div class="form-group">
+              <label class="form-label">${fieldConfig.secondaryUnitText}</label>
+              <input
+                id="template-block-secondary-unit-${block.id}"
+                class="form-input"
+                placeholder="${fieldConfig.secondaryUnitPlaceholder}"
+                value="${escapeHtml(block.secondaryUnit)}"
+              />
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">${fieldConfig.dataLabel} <span class="required-star">*</span></label>
+            <textarea id="template-block-data-${block.id}" class="template-block-textarea" placeholder="${fieldConfig.dataPlaceholder}">${escapeHtml(block.dataText)}</textarea>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">备注</label>
+            <input
+              id="template-block-note-${block.id}"
+              class="form-input"
+              placeholder="可选备注"
+              value="${escapeHtml(block.note)}"
+            />
+          </div>
+
+          <div class="template-block-file-row">
+            <button
+              class="file-btn"
+              type="button"
+              data-template-file-block-id="${block.id}"
+              title="${escapeHtml(block.sourceFilePath || '')}"
+            >
+              ${block.sourceFileName ? escapeHtml(block.sourceFileName) : '选择原始文件'}
+            </button>
+            <div class="template-block-file-meta">
+              原始文件：${escapeHtml(block.originalFileName || '-')}
+            </div>
+          </div>
+        </div>
+      `;
+        })()}
+      `
+    )
+    .join('');
+}
+
+function renderReadonlyTemplateBlocks(blocks: TemplateBlockFormData[], showReadonlyHint = false) {
+  if (!blocks.length) {
+    return `<div class="empty-tip">无模板块</div>`;
+  }
+
+  return blocks
+    .map(
+      (block, index) => `
+        ${(() => {
+          const fieldConfig = getTemplateBlockFieldConfig(block.templateType);
+          return `
+        <div class="template-block-card detail-template-block-card">
+          <div class="template-block-header">
+            <div>
+              <div class="template-block-type">${fieldConfig.typeLabel} ${index + 1}</div>
+              <div class="template-block-title">${escapeHtml(block.blockTitle)}</div>
+            </div>
+            ${showReadonlyHint ? '<div class="template-block-readonly-hint">当前仅支持查看，保存修改时会原样保留</div>' : ''}
+          </div>
+
+          <div class="detail-grid template-block-detail-grid">
+            ${renderDetailPair(fieldConfig.primaryLabelText, block.primaryLabel || '-')}
+            ${renderDetailPair(fieldConfig.primaryUnitText, block.primaryUnit || '-')}
+            ${renderDetailPair(fieldConfig.secondaryLabelText, block.secondaryLabel || '-')}
+            ${renderDetailPair(fieldConfig.secondaryUnitText, block.secondaryUnit || '-')}
+            ${renderDetailPair('数据点数', String(countTemplateBlockPointLines(block.dataText)))}
+            ${renderDetailPair('备注', block.note || '-')}
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">${fieldConfig.dataLabel}</label>
+            <textarea class="template-block-textarea template-block-readonly-textarea" readonly>${escapeHtml(block.dataText)}</textarea>
+          </div>
+
+          <div class="template-block-file-row">
+            ${block.sourceFileName && block.sourceFilePath
+              ? `
+                  <div class="saved-file-cell">
+                    <button
+                      class="file-link-btn"
+                      type="button"
+                      data-open-saved-file="${escapeHtml(block.sourceFilePath)}"
+                    >
+                      ${escapeHtml(block.sourceFileName)}
+                    </button>
+                    <button
+                      class="file-folder-btn"
+                      type="button"
+                      data-open-saved-folder="${escapeHtml(block.sourceFilePath)}"
+                      title="打开所在文件夹"
+                    >
+                      打开文件夹
+                    </button>
+                  </div>
+                `
+              : '<div class="detail-value">保存文件：-</div>'}
+            <div class="template-block-file-meta">
+              原始文件：${escapeHtml(block.originalFileName || '-')}
+            </div>
+          </div>
+        </div>
+      `;
+        })()}
+      `
+    )
+    .join('');
+}
+
+function buildValidatedTemplateBlocks(
+  blocks: TemplateBlockFormData[]
+): { error: string; blocks: SaveExperimentTemplateBlockPayload[] } {
+  const normalizedBlocks: SaveExperimentTemplateBlockPayload[] = [];
+
+  for (const [index, block] of blocks.entries()) {
+    const blockTitle = trimBlockTitle(block.blockTitle);
+    const blockLabel = getTemplateBlockTypeLabel(block.templateType);
+    const existingSameTypeTitle = blocks.find(
+      (candidate, candidateIndex) =>
+        candidateIndex !== index &&
+        candidate.templateType === block.templateType &&
+        trimBlockTitle(candidate.blockTitle) === blockTitle
+    );
+
+    if (!blockTitle) {
+      return {
+        error: `请填写第 ${index + 1} 个${blockLabel}的标题`,
+        blocks: []
+      };
+    }
+
+    if (existingSameTypeTitle) {
+      return {
+        error: `${blockLabel}标题“${blockTitle}”重复，请修改后重试`,
+        blocks: []
+      };
+    }
+
+    const parsed = parseTemplateBlockPointInput(block.dataText, block.templateType);
+    if (!parsed.success) {
+      return {
+        error: `${blockLabel}“${blockTitle}”：${parsed.error}`,
+        blocks: []
+      };
+    }
+
+    if (block.templateType === XY_TEMPLATE_TYPE) {
+      normalizedBlocks.push({
+        templateType: XY_TEMPLATE_TYPE,
+        blockTitle,
+        blockOrder: index + 1,
+        xLabel: block.primaryLabel.trim(),
+        xUnit: block.primaryUnit.trim(),
+        yLabel: block.secondaryLabel.trim(),
+        yUnit: block.secondaryUnit.trim(),
+        note: block.note.trim(),
+        points: parsed.points,
+        sourceFileName: block.sourceFileName,
+        sourceFilePath: block.sourceFilePath,
+        originalFileName: block.originalFileName,
+        originalFilePath: block.originalFilePath
+      });
+      continue;
+    }
+
+    normalizedBlocks.push({
+      templateType: SPECTRUM_TEMPLATE_TYPE,
+      blockTitle,
+      blockOrder: index + 1,
+      spectrumAxisLabel: block.primaryLabel.trim(),
+      spectrumAxisUnit: block.primaryUnit.trim(),
+      signalLabel: block.secondaryLabel.trim(),
+      signalUnit: block.secondaryUnit.trim(),
+      note: block.note.trim(),
+      points: parsed.points,
+      sourceFileName: block.sourceFileName,
+      sourceFilePath: block.sourceFilePath,
+      originalFileName: block.originalFileName,
+      originalFilePath: block.originalFilePath
+    });
+  }
+
+  return {
+    error: '',
+    blocks: normalizeTemplateBlocks(normalizedBlocks)
+  };
+}
+
+function bindStep1DictionaryAddAction(params: {
+  inputId: string;
+  buttonId: string;
+  dictionaryType: DictionaryType;
+  feedbackId: string;
+  successMessage: string;
+  suggestionContainerId?: string;
+}) {
+  const input = document.getElementById(params.inputId) as HTMLInputElement | null;
+  const button = document.getElementById(params.buttonId) as HTMLButtonElement | null;
+
+  input?.addEventListener('input', () => {
+    clearFieldFeedback(params.feedbackId);
+  });
+
+  button?.addEventListener('click', async () => {
+    if (!input || !button || button.disabled) {
+      return;
+    }
+
+    clearFieldFeedback(params.feedbackId);
+
+    const originalButtonText = button.textContent || '＋';
+    button.disabled = true;
+    button.textContent = '...';
+
+    try {
+      const result = await window.electronAPI.addDictionaryItem({
+        type: params.dictionaryType,
+        value: input.value
+      });
+
+      if (!result.success) {
+        setFieldFeedback(params.feedbackId, result.error || '添加词典项失败', 'error');
+        return;
+      }
+
+      await reloadDictionaryItems();
+      if (params.suggestionContainerId) {
+        renderStep1Suggestions({
+          containerId: params.suggestionContainerId,
+          dictionaryType: params.dictionaryType,
+          query: input.value
+        });
+      }
+      setFieldFeedback(params.feedbackId, params.successMessage, 'success');
+    } catch (error) {
+      setFieldFeedback(
+        params.feedbackId,
+        getErrorMessage(error) || '添加词典项失败，请稍后重试',
+        'error'
+      );
+    } finally {
+      button.disabled = false;
+      button.textContent = originalButtonText;
+    }
+  });
+}
+
+function bindStep1SuggestionInput(params: {
+  inputId: string;
+  dictionaryType: DictionaryType;
+  containerId: string;
+  feedbackId: string;
+}) {
+  const input = document.getElementById(params.inputId) as HTMLInputElement | null;
+  const container = document.getElementById(params.containerId);
+
+  if (!input || !container) {
+    return;
+  }
+
+  input.addEventListener('input', async () => {
+    clearFieldFeedback(params.feedbackId);
+
+    const query = input.value;
+    if (!query.trim()) {
+      hideStep1Suggestions(params.containerId);
+      return;
+    }
+
+    try {
+      await ensureDictionaryItemsLoaded();
+      renderStep1Suggestions({
+        containerId: params.containerId,
+        dictionaryType: params.dictionaryType,
+        query
+      });
+    } catch (error) {
+      hideStep1Suggestions(params.containerId);
+      console.error('load step1 suggestions failed:', error);
+    }
+  });
+
+  input.addEventListener('focus', () => {
+    hideStep1Suggestions(params.containerId);
+  });
+
+  input.addEventListener('blur', () => {
+    window.setTimeout(() => {
+      hideStep1Suggestions(params.containerId);
+    }, 120);
+  });
+
+  container.addEventListener('mousedown', (event) => {
+    const target = event.target as HTMLElement;
+    const suggestionButton = target.closest('[data-step1-suggestion-value]') as HTMLElement | null;
+    if (!suggestionButton) {
+      return;
+    }
+
+    event.preventDefault();
+    const nextValue = suggestionButton.dataset.step1SuggestionValue || '';
+    input.value = nextValue;
+    clearFieldFeedback(params.feedbackId);
+    hideStep1Suggestions(params.containerId);
+  });
+}
+
+function renderSettingsSubViewTabs() {
+  const subViews: Array<{ key: SettingsSubView; label: string }> = [
+    { key: 'general', label: '常规设置' },
+    { key: 'dictionary', label: '词典管理' }
+  ];
+
+  return `
+    <div class="settings-subview-tabs">
+      ${subViews
+        .map(
+          (subView) => `
+            <button
+              class="group-tab-btn ${settingsSubView === subView.key ? 'active-group-tab' : ''}"
+              type="button"
+              data-settings-subview="${subView.key}"
+            >
+              ${subView.label}
+            </button>
+          `
+        )
+        .join('')}
+    </div>
+  `;
+}
+
+function renderDictionaryManagementSection(dictionaryType: DictionaryType, label: string) {
+  const items = dictionaryItems[dictionaryType];
+  const inputValue = dictionaryInputValues[dictionaryType];
+  const errorMessage = dictionarySectionErrors[dictionaryType];
+  const isAdding = dictionarySubmittingType === dictionaryType;
+
+  return `
+    <div class="detail-section">
+      <div class="detail-section-title">${label}</div>
+      <div class="dictionary-add-row">
+        <input
+          id="dictionary-input-${dictionaryType}"
+          class="form-input"
+          value="${escapeHtml(inputValue)}"
+          placeholder="请输入${label}"
+        />
+        <button
+          class="secondary-btn dictionary-add-btn"
+          type="button"
+          data-dictionary-add-type="${dictionaryType}"
+          ${isAdding || !!dictionaryDeletingId ? 'disabled' : ''}
+        >
+          ${isAdding ? '添加中...' : '添加'}
+        </button>
+      </div>
+      <div class="error-message">${escapeHtml(errorMessage)}</div>
+      ${
+        items.length
+          ? `
+            <div class="detail-list">
+              ${items
+                .map(
+                  (item) => `
+                    <div class="detail-list-item dictionary-list-item">
+                      <div class="dictionary-list-value">${escapeHtml(item.value)}</div>
+                      <button
+                        class="danger-btn small-danger-btn"
+                        type="button"
+                        data-dictionary-delete-id="${escapeHtml(item.id)}"
+                        data-dictionary-delete-label="${escapeHtml(item.value)}"
+                        ${dictionaryDeletingId ? 'disabled' : ''}
+                      >
+                        ${dictionaryDeletingId === item.id ? '删除中...' : '删除'}
+                      </button>
+                    </div>
+                  `
+                )
+                .join('')}
+            </div>
+          `
+          : `<div class="empty-tip">当前暂无可用词典项</div>`
+      }
+    </div>
+  `;
 }
 
 async function render() {
@@ -632,8 +1370,7 @@ async function render() {
     });
 
     document.getElementById('menu-settings-home')?.addEventListener('click', () => {
-      currentView = 'settings';
-      void render();
+      void openSettingsView();
     });
 
     return;
@@ -664,10 +1401,14 @@ async function render() {
               <div class="step-form-grid">
                 <div class="form-group">
                   <label class="form-label">测试项目 <span class="required-star">*</span></label>
-                  <div class="input-plus-row">
-                    <input id="testProject" class="form-input" placeholder="请输入测试项目，如 XRD、能谱、夹杂分析" value="${escapeHtml(step1FormData.testProject)}" />
-                    <button id="project-plus-btn" class="icon-btn" type="button">＋</button>
+                  <div class="step1-suggestion-shell">
+                    <div class="input-plus-row">
+                      <input id="testProject" class="form-input" placeholder="请输入测试项目，如 XRD、能谱、夹杂分析" value="${escapeHtml(step1FormData.testProject)}" autocomplete="off" />
+                      <button id="project-plus-btn" class="icon-btn" type="button">＋</button>
+                    </div>
+                    <div id="testProject-suggestion-list" class="step1-suggestion-list"></div>
                   </div>
+                  <div id="testProject-dictionary-feedback" class="field-feedback-message"></div>
                 </div>
 
                 <div class="form-group">
@@ -677,18 +1418,26 @@ async function render() {
 
                 <div class="form-group">
                   <label class="form-label">测试人 <span class="required-star">*</span></label>
-                  <div class="input-plus-row">
-                    <input id="tester" class="form-input" placeholder="请输入测试人" value="${escapeHtml(step1FormData.tester)}" />
-                    <button id="tester-plus-btn" class="icon-btn" type="button">＋</button>
+                  <div class="step1-suggestion-shell">
+                    <div class="input-plus-row">
+                      <input id="tester" class="form-input" placeholder="请输入测试人" value="${escapeHtml(step1FormData.tester)}" autocomplete="off" />
+                      <button id="tester-plus-btn" class="icon-btn" type="button">＋</button>
+                    </div>
+                    <div id="tester-suggestion-list" class="step1-suggestion-list"></div>
                   </div>
+                  <div id="tester-dictionary-feedback" class="field-feedback-message"></div>
                 </div>
 
                 <div class="form-group">
                   <label class="form-label">测试仪器 <span class="required-star">*</span></label>
-                  <div class="input-plus-row">
-                    <input id="instrument" class="form-input" placeholder="请输入测试仪器" value="${escapeHtml(step1FormData.instrument)}" />
-                    <button id="instrument-plus-btn" class="icon-btn" type="button">＋</button>
+                  <div class="step1-suggestion-shell">
+                    <div class="input-plus-row">
+                      <input id="instrument" class="form-input" placeholder="请输入测试仪器" value="${escapeHtml(step1FormData.instrument)}" autocomplete="off" />
+                      <button id="instrument-plus-btn" class="icon-btn" type="button">＋</button>
+                    </div>
+                    <div id="instrument-suggestion-list" class="step1-suggestion-list"></div>
                   </div>
+                  <div id="instrument-dictionary-feedback" class="field-feedback-message"></div>
                 </div>
 
                 <div class="form-group">
@@ -737,8 +1486,7 @@ async function render() {
     });
 
     document.getElementById('menu-settings-step1')?.addEventListener('click', () => {
-      currentView = 'settings';
-      void render();
+      void openSettingsView();
     });
 
     return;
@@ -792,6 +1540,27 @@ async function render() {
                 <button id="add-row-btn" class="secondary-btn" type="button">新增一行</button>
               </div>
 
+              <div class="template-block-section">
+                <div class="dynamic-header">
+                  <div>
+                    <div class="dynamic-title">模板块</div>
+                    <div class="dynamic-subtitle">用于录入结构化二级数据，当前版本支持 XY 曲线块和光谱块</div>
+                  </div>
+
+                  <div class="template-block-toolbar">
+                    <select id="template-block-type-select" class="form-input template-block-select">
+                      <option value="xy">XY 曲线块</option>
+                      <option value="spectrum">光谱块</option>
+                    </select>
+                    <button id="add-template-block-btn" class="secondary-btn" type="button">添加模板块</button>
+                  </div>
+                </div>
+
+                <div id="template-blocks-container" class="template-block-list">
+                  ${renderTemplateBlockCards(step2TemplateBlocks)}
+                </div>
+              </div>
+
               <div id="step2-error" class="error-message large-error"></div>
 
               <div class="form-action-row">
@@ -824,8 +1593,7 @@ async function render() {
     });
 
     document.getElementById('menu-settings-step2')?.addEventListener('click', () => {
-      currentView = 'settings';
-      void render();
+      void openSettingsView();
     });
 
     return;
@@ -982,8 +1750,7 @@ async function render() {
     });
 
     document.getElementById('db-menu-settings')?.addEventListener('click', () => {
-      currentView = 'settings';
-      void render();
+      void openSettingsView();
     });
 
     document.getElementById('db-refresh-btn')?.addEventListener('click', async () => {
@@ -1453,6 +2220,47 @@ async function render() {
               </div>
 
               <div class="detail-section">
+                <div class="detail-section-title">模板块</div>
+                ${currentDetail.templateBlocks.length || (detailEditMode && detailEditTemplateBlocks.length)
+        ? renderReadonlyTemplateBlocks(
+          detailEditMode
+            ? detailEditTemplateBlocks
+            : currentDetail.templateBlocks.map((block) => ({
+              id: `detail_template_${block.id}`,
+              blockId: block.id,
+              templateType: block.templateType,
+              blockTitle: block.blockTitle,
+              primaryLabel:
+                block.templateType === XY_TEMPLATE_TYPE
+                  ? block.xLabel
+                  : block.spectrumAxisLabel,
+              primaryUnit:
+                block.templateType === XY_TEMPLATE_TYPE
+                  ? block.xUnit
+                  : block.spectrumAxisUnit,
+              secondaryLabel:
+                block.templateType === XY_TEMPLATE_TYPE
+                  ? block.yLabel
+                  : block.signalLabel,
+              secondaryUnit:
+                block.templateType === XY_TEMPLATE_TYPE
+                  ? block.yUnit
+                  : block.signalUnit,
+              dataText: formatXYPointInput(block.points),
+              note: block.note,
+              sourceFileName: block.sourceFileName || '',
+              sourceFilePath: block.sourceFilePath || '',
+              originalFileName: block.originalFileName || '',
+              originalFilePath: block.originalFilePath || '',
+              createdAt: block.createdAt
+            })),
+          detailEditMode
+        )
+        : `<div class="empty-tip">无模板块</div>`
+      }
+              </div>
+
+              <div class="detail-section">
                 <div class="detail-section-title">最近修改历史</div>
                 ${editHistoryHtml}
               </div>
@@ -1505,8 +2313,7 @@ async function render() {
     });
 
     document.getElementById('detail-menu-settings')?.addEventListener('click', () => {
-      currentView = 'settings';
-      void render();
+      void openSettingsView();
     });
 
     bindDuplicateWarningModalHandlers();
@@ -1557,6 +2364,7 @@ async function render() {
       detailEditor = '';
       detailEditStep1 = null;
       detailEditStep2 = [];
+      detailEditTemplateBlocks = [];
       requestRender(true);
     });
 
@@ -1590,6 +2398,12 @@ async function render() {
       }
 
       try {
+        const templateBlocksResult = buildValidatedTemplateBlocks(collected.templateBlocks);
+        if (templateBlocksResult.error) {
+          if (errorBox) errorBox.textContent = templateBlocksResult.error;
+          return;
+        }
+
         const updatePayload: UpdateExperimentPayload = {
           experimentId: currentDetail.id,
           step1: {
@@ -1620,6 +2434,7 @@ async function render() {
               replacementSourcePath: item.replacementSourcePath,
               replacementOriginalName: item.replacementOriginalName
             })),
+          templateBlocks: templateBlocksResult.blocks,
           displayName: [
             collected.step1.testProject,
             collected.step1.sampleCode,
@@ -1695,7 +2510,13 @@ async function render() {
                       ${entry.affectedRecords
               .map(
                 (record) =>
-                  `#${record.experimentId} ${escapeHtml(record.displayName)} / ${escapeHtml(record.itemName)}`
+                  `#${record.experimentId} ${escapeHtml(record.displayName)} / ${escapeHtml(
+                    record.recordType === 'templateBlock'
+                      ? `${getTemplateBlockTypeLabel(
+                          (record.templateType as TemplateBlockType) || XY_TEMPLATE_TYPE
+                        )}：${record.blockTitle || '-'}`
+                      : record.itemName || '-'
+                  )}`
               )
               .join('；')}
                     </div>
@@ -1797,6 +2618,142 @@ async function render() {
     const recentOperationLogsHtml = recentOperationLogs
       ? renderRecentOperationLogs(recentOperationLogs)
       : `<div class="detail-value">点击“查看最近操作日志”加载最近 30 条操作日志</div>`;
+    const generalSettingsHtml = `
+      <div class="detail-section">
+        <div class="detail-section-title">原始文件根目录</div>
+        <div class="form-group">
+          <label class="form-label">保存根目录</label>
+          <input id="settings-storage-root" class="form-input" value="${escapeHtml(appSettings.storageRoot)}" />
+        </div>
+      </div>
+
+      <div class="detail-section">
+        <div class="detail-section-title">登录设置</div>
+        <div class="step-form-grid">
+          <div class="form-group">
+            <label class="form-label">登录账号</label>
+            <input id="settings-login-username" class="form-input" value="${escapeHtml(appSettings.loginUsername)}" />
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">新登录密码</label>
+            <input
+              id="settings-login-password"
+              class="form-input"
+              type="password"
+              placeholder="留空则保持当前密码不变"
+            />
+          </div>
+        </div>
+      </div>
+
+      <div id="settings-error" class="error-message large-error"></div>
+
+      <div class="form-action-row">
+        <button id="settings-save-btn" class="primary-btn action-btn">保存设置</button>
+        <button
+          id="settings-file-integrity-btn"
+          class="secondary-btn action-btn"
+          type="button"
+          ${fileIntegrityLoading ? 'disabled' : ''}
+        >
+          ${fileIntegrityLoading ? '检查中...' : '检查文件完整性'}
+        </button>
+        <button
+          id="settings-open-storage-root-btn"
+          class="secondary-btn action-btn"
+          type="button"
+          ${fileIntegrityActionLoading ? 'disabled' : ''}
+        >
+          打开保存根目录
+        </button>
+      </div>
+
+      ${fileIntegrityError ? `<div class="error-message large-error">${escapeHtml(fileIntegrityError)}</div>` : ''}
+
+      ${fileIntegrityReport
+        ? `
+            <div class="detail-section">
+              <div class="detail-section-title">文件完整性报告</div>
+              <div class="info-row">
+                <span>扫描根目录</span>
+                <strong title="${escapeHtml(fileIntegrityReport.storageRoot)}">
+                  ${escapeHtml(fileIntegrityReport.storageRoot)}
+                </strong>
+              </div>
+              <div class="info-row">
+                <span>根目录状态</span>
+                <strong>${fileIntegrityReport.storageRootExists ? '存在' : '不存在'}</strong>
+              </div>
+              <div class="info-row">
+                <span>数据库引用的托管文件</span>
+                <strong>${fileIntegrityReport.referencedManagedFileCount}</strong>
+              </div>
+              <div class="info-row">
+                <span>缺失文件</span>
+                <strong>${fileIntegrityReport.missingReferencedFileCount}</strong>
+              </div>
+              <div class="info-row">
+                <span>扫描到的托管文件</span>
+                <strong>${fileIntegrityReport.scannedManagedFileCount}</strong>
+              </div>
+              <div class="info-row">
+                <span>孤儿文件</span>
+                <strong>${fileIntegrityReport.orphanManagedFileCount}</strong>
+              </div>
+            </div>
+
+            <div class="form-action-row">
+              <button
+                id="settings-export-orphan-list-btn"
+                class="secondary-btn action-btn"
+                type="button"
+                ${fileIntegrityActionLoading || !selectedOrphanCount ? 'disabled' : ''}
+              >
+                导出所选孤儿文件清单
+              </button>
+              <button
+                id="settings-quarantine-orphans-btn"
+                class="secondary-btn action-btn"
+                type="button"
+                ${fileIntegrityActionLoading || !selectedOrphanCount ? 'disabled' : ''}
+              >
+                ${fileIntegrityActionLoading ? '处理中...' : '隔离所选孤儿文件'}
+              </button>
+            </div>
+
+            ${missingDetailsHtml}
+            ${orphanEntriesHtml}
+            ${missingExamplesHtml}
+            ${orphanExamplesHtml}
+          `
+        : ''}
+
+      <div class="detail-section">
+        <div class="detail-section-title">最近操作日志</div>
+        <div class="form-action-row">
+          <button
+            id="settings-recent-logs-btn"
+            class="secondary-btn action-btn"
+            type="button"
+            ${operationLogLoading ? 'disabled' : ''}
+          >
+            ${operationLogLoading ? '加载中...' : '查看最近操作日志'}
+          </button>
+          ${renderOperationLogFilterButtons(operationLogFilter, operationLogLoading)}
+        </div>
+
+        ${operationLogError ? `<div class="error-message large-error">${escapeHtml(operationLogError)}</div>` : ''}
+        ${recentOperationLogsHtml}
+      </div>
+    `;
+    const dictionaryManagementHtml = `
+      ${dictionaryLoadError ? `<div class="error-message large-error">${escapeHtml(dictionaryLoadError)}</div>` : ''}
+      ${dictionaryLoading && !dictionaryLoaded ? `<div class="empty-tip">词典加载中...</div>` : ''}
+      ${DICTIONARY_SECTION_META.map(({ type, label }) =>
+        renderDictionaryManagementSection(type, label)
+      ).join('')}
+    `;
 
     root.innerHTML = `
       <div class="home-layout">
@@ -1814,136 +2771,17 @@ async function render() {
 
           <section class="content-area">
             <div class="welcome-card">
-              <h2>系统设置</h2>
-              <p class="subtitle">当前阶段支持原始文件根目录和登录账号密码设置</p>
+              <h2>${settingsSubView === 'general' ? '系统设置' : '词典管理'}</h2>
+              <p class="subtitle">
+                ${
+                  settingsSubView === 'general'
+                    ? '当前阶段支持原始文件根目录和登录账号密码设置'
+                    : '维护一级字段建议词典。删除仅影响后续建议，不会修改历史记录。'
+                }
+              </p>
 
-              <div class="detail-section">
-                <div class="detail-section-title">原始文件根目录</div>
-                <div class="form-group">
-                  <label class="form-label">保存根目录</label>
-                  <input id="settings-storage-root" class="form-input" value="${escapeHtml(appSettings.storageRoot)}" />
-                </div>
-              </div>
-
-              <div class="detail-section">
-                <div class="detail-section-title">登录设置</div>
-                <div class="step-form-grid">
-                  <div class="form-group">
-                    <label class="form-label">登录账号</label>
-                    <input id="settings-login-username" class="form-input" value="${escapeHtml(appSettings.loginUsername)}" />
-                  </div>
-
-                  <div class="form-group">
-                    <label class="form-label">新登录密码</label>
-                    <input
-                      id="settings-login-password"
-                      class="form-input"
-                      type="password"
-                      placeholder="留空则保持当前密码不变"
-                    />
-                  </div>
-                </div>
-              </div>
-
-              <div id="settings-error" class="error-message large-error"></div>
-
-              <div class="form-action-row">
-                <button id="settings-save-btn" class="primary-btn action-btn">保存设置</button>
-                <button
-                  id="settings-file-integrity-btn"
-                  class="secondary-btn action-btn"
-                  type="button"
-                  ${fileIntegrityLoading ? 'disabled' : ''}
-                >
-                  ${fileIntegrityLoading ? '检查中...' : '检查文件完整性'}
-                </button>
-                <button
-                  id="settings-open-storage-root-btn"
-                  class="secondary-btn action-btn"
-                  type="button"
-                  ${fileIntegrityActionLoading ? 'disabled' : ''}
-                >
-                  打开保存根目录
-                </button>
-              </div>
-
-              ${fileIntegrityError ? `<div class="error-message large-error">${escapeHtml(fileIntegrityError)}</div>` : ''}
-
-              ${fileIntegrityReport
-        ? `
-                  <div class="detail-section">
-                    <div class="detail-section-title">文件完整性报告</div>
-                    <div class="info-row">
-                      <span>扫描根目录</span>
-                      <strong title="${escapeHtml(fileIntegrityReport.storageRoot)}">
-                        ${escapeHtml(fileIntegrityReport.storageRoot)}
-                      </strong>
-                    </div>
-                    <div class="info-row">
-                      <span>根目录状态</span>
-                      <strong>${fileIntegrityReport.storageRootExists ? '存在' : '不存在'}</strong>
-                    </div>
-                    <div class="info-row">
-                      <span>数据库引用的托管文件</span>
-                      <strong>${fileIntegrityReport.referencedManagedFileCount}</strong>
-                    </div>
-                    <div class="info-row">
-                      <span>缺失文件</span>
-                      <strong>${fileIntegrityReport.missingReferencedFileCount}</strong>
-                    </div>
-                    <div class="info-row">
-                      <span>扫描到的托管文件</span>
-                      <strong>${fileIntegrityReport.scannedManagedFileCount}</strong>
-                    </div>
-                    <div class="info-row">
-                      <span>孤儿文件</span>
-                      <strong>${fileIntegrityReport.orphanManagedFileCount}</strong>
-                    </div>
-                  </div>
-
-                  <div class="form-action-row">
-                    <button
-                      id="settings-export-orphan-list-btn"
-                      class="secondary-btn action-btn"
-                      type="button"
-                      ${fileIntegrityActionLoading || !selectedOrphanCount ? 'disabled' : ''}
-                    >
-                      导出所选孤儿文件清单
-                    </button>
-                    <button
-                      id="settings-quarantine-orphans-btn"
-                      class="secondary-btn action-btn"
-                      type="button"
-                      ${fileIntegrityActionLoading || !selectedOrphanCount ? 'disabled' : ''}
-                    >
-                      ${fileIntegrityActionLoading ? '处理中...' : '隔离所选孤儿文件'}
-                    </button>
-                  </div>
-
-                  ${missingDetailsHtml}
-                  ${orphanEntriesHtml}
-                  ${missingExamplesHtml}
-                  ${orphanExamplesHtml}
-                `
-        : ''}
-
-              <div class="detail-section">
-                <div class="detail-section-title">最近操作日志</div>
-                <div class="form-action-row">
-                  <button
-                    id="settings-recent-logs-btn"
-                    class="secondary-btn action-btn"
-                    type="button"
-                    ${operationLogLoading ? 'disabled' : ''}
-                  >
-                    ${operationLogLoading ? '加载中...' : '查看最近操作日志'}
-                  </button>
-                  ${renderOperationLogFilterButtons(operationLogFilter, operationLogLoading)}
-                </div>
-
-                ${operationLogError ? `<div class="error-message large-error">${escapeHtml(operationLogError)}</div>` : ''}
-                ${recentOperationLogsHtml}
-              </div>
+              ${renderSettingsSubViewTabs()}
+              ${settingsSubView === 'general' ? generalSettingsHtml : dictionaryManagementHtml}
             </div>
           </section>
         </main>
@@ -1959,6 +2797,115 @@ async function render() {
       currentView = 'home';
       void render();
     });
+
+    document.querySelectorAll('[data-settings-subview]').forEach((button) => {
+      button.addEventListener('click', async () => {
+        const target = button as HTMLElement;
+        const nextSubView = target.dataset.settingsSubview as SettingsSubView | undefined;
+
+        if (!nextSubView) {
+          return;
+        }
+
+        await switchSettingsSubView(nextSubView);
+      });
+    });
+
+    if (settingsSubView === 'dictionary') {
+      DICTIONARY_TYPES.forEach((dictionaryType) => {
+        document
+          .getElementById(`dictionary-input-${dictionaryType}`)
+          ?.addEventListener('input', (event) => {
+            const target = event.target as HTMLInputElement;
+            dictionaryInputValues[dictionaryType] = target.value;
+
+            if (dictionarySectionErrors[dictionaryType]) {
+              dictionarySectionErrors[dictionaryType] = '';
+            }
+          });
+      });
+
+      document.querySelectorAll('[data-dictionary-add-type]').forEach((button) => {
+        button.addEventListener('click', async () => {
+          if (dictionarySubmittingType || dictionaryDeletingId) {
+            return;
+          }
+
+          const target = button as HTMLElement;
+          const dictionaryType = target.dataset.dictionaryAddType as DictionaryType | undefined;
+          if (!dictionaryType) {
+            return;
+          }
+
+          saveDictionaryInputsToState();
+          dictionarySectionErrors[dictionaryType] = '';
+          dictionarySubmittingType = dictionaryType;
+          requestRender(true);
+
+          try {
+            const result = await window.electronAPI.addDictionaryItem({
+              type: dictionaryType,
+              value: dictionaryInputValues[dictionaryType]
+            });
+
+            if (!result.success) {
+              dictionarySectionErrors[dictionaryType] = result.error || '添加词典项失败';
+              return;
+            }
+
+            dictionaryInputValues[dictionaryType] = '';
+            await reloadDictionaryItems();
+          } catch (error) {
+            dictionarySectionErrors[dictionaryType] = getErrorMessage(error) || '添加词典项失败';
+          } finally {
+            dictionarySubmittingType = null;
+            requestRender(true);
+          }
+        });
+      });
+
+      document.querySelectorAll('[data-dictionary-delete-id]').forEach((button) => {
+        button.addEventListener('click', async () => {
+          if (dictionaryDeletingId || dictionarySubmittingType) {
+            return;
+          }
+
+          const target = button as HTMLElement;
+          const id = target.dataset.dictionaryDeleteId;
+          const label = target.dataset.dictionaryDeleteLabel || '该词典项';
+          if (!id) {
+            return;
+          }
+
+          const shouldContinue = window.confirm(
+            `删除“${label}”后，它将不会再出现在后续建议中，但不会修改已有记录。是否继续？`
+          );
+          if (!shouldContinue) {
+            return;
+          }
+
+          dictionaryDeletingId = id;
+          requestRender(true);
+
+          try {
+            const result = await window.electronAPI.deactivateDictionaryItem({ id });
+            if (!result.success) {
+              alert(result.error || '删除词典项失败');
+              return;
+            }
+
+            await reloadDictionaryItems();
+          } catch (error) {
+            alert(getErrorMessage(error) || '删除词典项失败');
+          } finally {
+            dictionaryDeletingId = null;
+            requestRender(true);
+          }
+        });
+      });
+
+      return;
+    }
 
     document.getElementById('settings-save-btn')?.addEventListener('click', async () => {
       const storageRoot =
@@ -2210,16 +3157,52 @@ function bindStep1Events() {
   document.getElementById('menu-home')?.addEventListener('click', goHome);
   document.getElementById('step1-cancel-btn')?.addEventListener('click', goHome);
 
-  document.getElementById('project-plus-btn')?.addEventListener('click', () => {
-    alert('后续阶段会扩展：将当前测试项目加入建议库');
+  bindStep1DictionaryAddAction({
+    inputId: 'testProject',
+    buttonId: 'project-plus-btn',
+    dictionaryType: 'testProject',
+    feedbackId: 'testProject-dictionary-feedback',
+    successMessage: '已加入测试项目词典',
+    suggestionContainerId: 'testProject-suggestion-list'
   });
 
-  document.getElementById('tester-plus-btn')?.addEventListener('click', () => {
-    alert('后续阶段会扩展：将当前测试人加入建议库');
+  bindStep1DictionaryAddAction({
+    inputId: 'tester',
+    buttonId: 'tester-plus-btn',
+    dictionaryType: 'tester',
+    feedbackId: 'tester-dictionary-feedback',
+    successMessage: '已加入测试人词典',
+    suggestionContainerId: 'tester-suggestion-list'
   });
 
-  document.getElementById('instrument-plus-btn')?.addEventListener('click', () => {
-    alert('后续阶段会扩展：将当前测试仪器加入建议库');
+  bindStep1DictionaryAddAction({
+    inputId: 'instrument',
+    buttonId: 'instrument-plus-btn',
+    dictionaryType: 'instrument',
+    feedbackId: 'instrument-dictionary-feedback',
+    successMessage: '已加入测试仪器词典',
+    suggestionContainerId: 'instrument-suggestion-list'
+  });
+
+  bindStep1SuggestionInput({
+    inputId: 'testProject',
+    dictionaryType: 'testProject',
+    containerId: 'testProject-suggestion-list',
+    feedbackId: 'testProject-dictionary-feedback'
+  });
+
+  bindStep1SuggestionInput({
+    inputId: 'tester',
+    dictionaryType: 'tester',
+    containerId: 'tester-suggestion-list',
+    feedbackId: 'tester-dictionary-feedback'
+  });
+
+  bindStep1SuggestionInput({
+    inputId: 'instrument',
+    dictionaryType: 'instrument',
+    containerId: 'instrument-suggestion-list',
+    feedbackId: 'instrument-dictionary-feedback'
   });
 
   document.getElementById('add-dynamic-field-btn')?.addEventListener('click', () => {
@@ -2232,7 +3215,7 @@ function bindStep1Events() {
     requestRender(true);
   });
 
-  document.getElementById('step1-next-btn')?.addEventListener('click', () => {
+  document.getElementById('step1-next-btn')?.addEventListener('click', async () => {
     saveStep1InputsToState();
 
     const errorMessage = validateStep1();
@@ -2244,6 +3227,18 @@ function bindStep1Events() {
     }
 
     if (errorBox) errorBox.textContent = '';
+
+    try {
+      const dictionaryValidationMessage = await validateStep1DictionaryMembership();
+      if (dictionaryValidationMessage) {
+        window.alert(dictionaryValidationMessage);
+        return;
+      }
+    } catch (error) {
+      window.alert(`词典校验失败，请稍后重试。\n${getErrorMessage(error)}`);
+      return;
+    }
+
     currentView = 'add-step2';
     void render();
   });
@@ -2282,6 +3277,17 @@ function bindStep2Events() {
     requestRender(true);
   });
 
+  document.getElementById('add-template-block-btn')?.addEventListener('click', () => {
+    saveStep2InputsToState();
+
+    const templateType = ((document.getElementById(
+      'template-block-type-select'
+    ) as HTMLSelectElement | null)?.value || XY_TEMPLATE_TYPE) as TemplateBlockType;
+
+    step2TemplateBlocks.push(buildEmptyTemplateBlock(templateType));
+    requestRender(true);
+  });
+
   document.getElementById('back-step1-btn-top')?.addEventListener('click', () => {
     saveStep2InputsToState();
     currentView = 'add-step1';
@@ -2303,7 +3309,8 @@ function bindStep2Events() {
     saveStep2InputsToState();
 
     const errorBox = document.getElementById('step2-error');
-    const errorMessage = validateStep2();
+    const validationResult = validateStep2();
+    const errorMessage = validationResult.error;
 
     if (errorMessage) {
       if (errorBox) errorBox.textContent = errorMessage;
@@ -2339,6 +3346,7 @@ function bindStep2Events() {
             originalFileName: row.originalFileName,
             originalFilePath: row.originalFilePath
           })),
+        templateBlocks: validationResult.templateBlocks,
         displayName: buildDisplayName(step1FormData)
       };
 
@@ -2369,6 +3377,18 @@ function bindStep2Events() {
       }
 
       step2DataItems = step2DataItems.filter((row) => row.id !== id);
+      requestRender(true);
+    });
+  });
+
+  document.querySelectorAll('[data-remove-template-block-id]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const target = button as HTMLElement;
+      const blockId = target.dataset.removeTemplateBlockId;
+      if (!blockId) return;
+
+      saveStep2InputsToState();
+      step2TemplateBlocks = step2TemplateBlocks.filter((block) => block.id !== blockId);
       requestRender(true);
     });
   });
@@ -2415,6 +3435,59 @@ function bindStep2Events() {
         requestRender(true);
       } catch (error) {
         handleAsyncError(error, '处理原始文件失败');
+      }
+    });
+  });
+
+  document.querySelectorAll('[data-template-file-block-id]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const target = button as HTMLElement;
+      const blockId = target.dataset.templateFileBlockId;
+      if (!blockId) return;
+
+      saveStep2InputsToState();
+      const currentBlock = step2TemplateBlocks.find((block) => block.id === blockId);
+      if (!currentBlock) return;
+
+      try {
+        const selected = await window.electronAPI.selectSourceFile();
+        if (!selected) return;
+
+        const copied = await window.electronAPI.copyFileToStorage({
+          sourcePath: selected.originalPath,
+          testProject: step1FormData.testProject,
+          sampleCode: step1FormData.sampleCode,
+          tester: step1FormData.tester,
+          instrument: step1FormData.instrument,
+          testTime: step1FormData.testTime,
+          templateType: currentBlock.templateType,
+          blockTitle: currentBlock.blockTitle,
+          blockToken: currentBlock.id
+        });
+
+        if (!copied.success || !copied.savedFileName || !copied.savedPath) {
+          alert(copied.error || '复制原始文件失败');
+          return;
+        }
+
+        step2TemplateBlocks = step2TemplateBlocks.map((block) => {
+          if (block.id !== blockId) return block;
+
+          return {
+            ...block,
+            sourceFileName: copied.savedFileName,
+            sourceFilePath: copied.savedPath,
+            originalFileName: selected.originalName,
+            originalFilePath: selected.originalPath
+          };
+        });
+
+        requestRender(true);
+      } catch (error) {
+        handleAsyncError(
+          error,
+          `处理${getTemplateBlockTypeLabel(currentBlock.templateType)}原始文件失败`
+        );
       }
     });
   });
@@ -2555,6 +3628,28 @@ function prepareDetailEditState() {
     replacementSourcePath: '',
     replacementOriginalName: ''
   }));
+
+  detailEditTemplateBlocks = currentDetail.templateBlocks.map((block) => ({
+    id: `detail_template_${block.id}`,
+    blockId: block.id,
+    templateType: block.templateType,
+    blockTitle: block.blockTitle,
+    primaryLabel:
+      block.templateType === XY_TEMPLATE_TYPE ? block.xLabel : block.spectrumAxisLabel,
+    primaryUnit:
+      block.templateType === XY_TEMPLATE_TYPE ? block.xUnit : block.spectrumAxisUnit,
+    secondaryLabel:
+      block.templateType === XY_TEMPLATE_TYPE ? block.yLabel : block.signalLabel,
+    secondaryUnit:
+      block.templateType === XY_TEMPLATE_TYPE ? block.yUnit : block.signalUnit,
+    dataText: formatXYPointInput(block.points),
+    note: block.note,
+    sourceFileName: block.sourceFileName || '',
+    sourceFilePath: block.sourceFilePath || '',
+    originalFileName: block.originalFileName || '',
+    originalFilePath: block.originalFilePath || '',
+    createdAt: block.createdAt
+  }));
 }
 
 function collectDetailEditState() {
@@ -2601,7 +3696,8 @@ function collectDetailEditState() {
 
   return {
     step1: detailEditStep1,
-    step2: detailEditStep2
+    step2: detailEditStep2,
+    templateBlocks: detailEditTemplateBlocks
   };
 }
 
@@ -2645,6 +3741,41 @@ function saveStep2InputsToState() {
       itemUnit: itemUnit?.value.trim() || ''
     };
   });
+
+  step2TemplateBlocks = step2TemplateBlocks.map((block) => {
+    const blockTitle = document.getElementById(
+      `template-block-title-${block.id}`
+    ) as HTMLInputElement | null;
+    const primaryLabel = document.getElementById(
+      `template-block-primary-label-${block.id}`
+    ) as HTMLInputElement | null;
+    const primaryUnit = document.getElementById(
+      `template-block-primary-unit-${block.id}`
+    ) as HTMLInputElement | null;
+    const secondaryLabel = document.getElementById(
+      `template-block-secondary-label-${block.id}`
+    ) as HTMLInputElement | null;
+    const secondaryUnit = document.getElementById(
+      `template-block-secondary-unit-${block.id}`
+    ) as HTMLInputElement | null;
+    const dataText = document.getElementById(
+      `template-block-data-${block.id}`
+    ) as HTMLTextAreaElement | null;
+    const note = document.getElementById(
+      `template-block-note-${block.id}`
+    ) as HTMLInputElement | null;
+
+    return {
+      ...block,
+      blockTitle: blockTitle?.value || '',
+      primaryLabel: primaryLabel?.value || '',
+      primaryUnit: primaryUnit?.value || '',
+      secondaryLabel: secondaryLabel?.value || '',
+      secondaryUnit: secondaryUnit?.value || '',
+      dataText: dataText?.value || '',
+      note: note?.value || ''
+    };
+  });
 }
 
 function validateStep1() {
@@ -2663,13 +3794,61 @@ function validateStep1() {
   return '';
 }
 
+async function validateStep1DictionaryMembership() {
+  const activeDictionaryItems = await window.electronAPI.listDictionaryItems();
+  dictionaryItems = activeDictionaryItems;
+  dictionaryLoaded = true;
+  dictionaryLoadError = '';
+
+  const dictionaryChecks: Array<{
+    dictionaryType: DictionaryType;
+    value: string;
+    message: string;
+  }> = [
+    {
+      dictionaryType: 'testProject',
+      value: step1FormData.testProject,
+      message: `当前测试项目“${step1FormData.testProject}”不在词典中。\n如需继续使用，请先点击该字段右侧的 + 按钮加入词典。`
+    },
+    {
+      dictionaryType: 'tester',
+      value: step1FormData.tester,
+      message: `当前测试人“${step1FormData.tester}”不在词典中。\n如需继续使用，请先点击该字段右侧的 + 按钮加入词典。`
+    },
+    {
+      dictionaryType: 'instrument',
+      value: step1FormData.instrument,
+      message: `当前测试仪器“${step1FormData.instrument}”不在词典中。\n如需继续使用，请先点击该字段右侧的 + 按钮加入词典。`
+    }
+  ];
+
+  for (const check of dictionaryChecks) {
+    if (!check.value) {
+      continue;
+    }
+
+    const hasMatch = activeDictionaryItems[check.dictionaryType].some(
+      (item) => item.isActive && item.value === check.value
+    );
+
+    if (!hasMatch) {
+      return check.message;
+    }
+  }
+
+  return '';
+}
+
 function validateStep2() {
   const hasAnyContent = step2DataItems.some((row) => {
     return row.itemName || row.itemValue || row.itemUnit || row.sourceFileName;
-  });
+  }) || step2TemplateBlocks.length > 0;
 
   if (!hasAnyContent) {
-    return '请至少填写一行二级数据';
+    return {
+      error: '请至少填写一行二级数据或一个模板块',
+      templateBlocks: []
+    };
   }
 
   for (const row of step2DataItems) {
@@ -2679,15 +3858,25 @@ function validateStep2() {
     const hasFile = !!row.sourceFileName;
 
     if ((hasName || hasValue || hasUnit || hasFile) && !hasName) {
-      return '请为已填写的数据行补充名称';
+      return {
+        error: '请为已填写的数据行补充名称',
+        templateBlocks: []
+      };
     }
 
     if ((hasName || hasValue || hasUnit || hasFile) && !hasValue) {
-      return '请为已填写的数据行补充数值';
+      return {
+        error: '请为已填写的数据行补充数值',
+        templateBlocks: []
+      };
     }
   }
 
-  return '';
+  const templateBlocksResult = buildValidatedTemplateBlocks(step2TemplateBlocks);
+  return {
+    error: templateBlocksResult.error,
+    templateBlocks: templateBlocksResult.blocks
+  };
 }
 
 function goHome() {
@@ -2718,6 +3907,7 @@ function resetFormState() {
       originalFilePath: ''
     }
   ];
+  step2TemplateBlocks = [];
 }
 
 function renderFatalError(error: unknown) {

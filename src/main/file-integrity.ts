@@ -92,29 +92,55 @@ export async function scanManagedFileIntegrity(
   storageRoot: string
 ): Promise<FileIntegrityReport> {
   const resolvedStorageRoot = path.resolve(storageRoot);
-  const referencedItems = await prisma.experimentDataItem.findMany({
-    where: {
-      sourceFilePath: {
-        not: null
-      }
-    },
-    select: {
-      id: true,
-      itemName: true,
-      sourceFileName: true,
-      originalFileName: true,
-      sourceFilePath: true,
-      experiment: {
-        select: {
-          id: true,
-          displayName: true,
-          sampleCode: true,
-          testProject: true,
-          testTime: true
+  const [referencedItems, referencedBlocks] = await Promise.all([
+    prisma.experimentDataItem.findMany({
+      where: {
+        sourceFilePath: {
+          not: null
+        }
+      },
+      select: {
+        id: true,
+        itemName: true,
+        sourceFileName: true,
+        originalFileName: true,
+        sourceFilePath: true,
+        experiment: {
+          select: {
+            id: true,
+            displayName: true,
+            sampleCode: true,
+            testProject: true,
+            testTime: true
+          }
         }
       }
-    }
-  });
+    }),
+    prisma.experimentTemplateBlock.findMany({
+      where: {
+        sourceFilePath: {
+          not: null
+        }
+      },
+      select: {
+        id: true,
+        blockTitle: true,
+        templateType: true,
+        sourceFileName: true,
+        originalFileName: true,
+        sourceFilePath: true,
+        experiment: {
+          select: {
+            id: true,
+            displayName: true,
+            sampleCode: true,
+            testProject: true,
+            testTime: true
+          }
+        }
+      }
+    })
+  ]);
 
   const referencedItemsByPath = new Map<
     string,
@@ -139,10 +165,44 @@ export async function scanManagedFileIntegrity(
       sampleCode: item.experiment.sampleCode,
       testProject: item.experiment.testProject,
       testTime: item.experiment.testTime,
+      recordType: 'dataItem',
       dataItemId: item.id,
       itemName: item.itemName,
+      templateBlockId: null,
+      blockTitle: null,
+      templateType: null,
       sourceFileName: item.sourceFileName,
       originalFileName: item.originalFileName
+    });
+    referencedItemsByPath.set(resolvedPath, existingRecords);
+  }
+
+  for (const block of referencedBlocks) {
+    const filePath = block.sourceFilePath?.trim() || '';
+    if (!filePath) {
+      continue;
+    }
+
+    const resolvedPath = path.resolve(filePath);
+    if (!isPathInsideRoot(resolvedPath, resolvedStorageRoot)) {
+      continue;
+    }
+
+    const existingRecords = referencedItemsByPath.get(resolvedPath) || [];
+    existingRecords.push({
+      experimentId: block.experiment.id,
+      displayName: block.experiment.displayName,
+      sampleCode: block.experiment.sampleCode,
+      testProject: block.experiment.testProject,
+      testTime: block.experiment.testTime,
+      recordType: 'templateBlock',
+      dataItemId: null,
+      itemName: null,
+      templateBlockId: block.id,
+      blockTitle: block.blockTitle,
+      templateType: block.templateType,
+      sourceFileName: block.sourceFileName,
+      originalFileName: block.originalFileName
     });
     referencedItemsByPath.set(resolvedPath, existingRecords);
   }
