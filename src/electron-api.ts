@@ -6,9 +6,12 @@ export type GroupByType =
   | 'tester'
   | 'sampleOwner';
 
+export type ExperimentListSortOrder = 'newest' | 'oldest';
+
 export type ActionResult = {
   success: boolean;
   error?: string;
+  warning?: string;
 };
 
 export type AppSettings = {
@@ -114,6 +117,36 @@ export type ExperimentGroup = {
   groupKey: string;
   groupLabel: string;
   items: ExperimentListItem[];
+};
+
+export type ExperimentListFilters = {
+  testProject?: string;
+  tester?: string;
+};
+
+export type ListExperimentsPayload = {
+  query?: string;
+  groupBy?: GroupByType;
+  filters?: ExperimentListFilters;
+  sortOrder?: ExperimentListSortOrder;
+};
+
+export type ExperimentFilterOptions = {
+  testProjects: string[];
+  testers: string[];
+};
+
+export type ListExperimentEditLogsPayload = {
+  experimentId: number;
+  limit?: number;
+};
+
+export type ExperimentEditHistoryEntry = {
+  id: number;
+  editedAt: string;
+  editor: string;
+  editReason: string;
+  summaryText: string;
 };
 
 export type ExperimentDetail = {
@@ -259,11 +292,12 @@ export interface ElectronAPI {
     payload: CheckDuplicateExperimentPayload
   ) => Promise<DuplicateExperimentCheckResult>;
   saveExperiment: (payload: SaveExperimentPayload) => Promise<SaveExperimentResult>;
-  listExperiments: (payload?: {
-    query?: string;
-    groupBy?: GroupByType;
-  }) => Promise<ExperimentGroup[]>;
+  listExperiments: (payload?: ListExperimentsPayload) => Promise<ExperimentGroup[]>;
+  listExperimentFilterOptions: () => Promise<ExperimentFilterOptions>;
   getExperimentDetail: (experimentId: number) => Promise<ExperimentDetail>;
+  listExperimentEditLogs: (
+    payload: ListExperimentEditLogsPayload
+  ) => Promise<ExperimentEditHistoryEntry[]>;
   deleteExperiment: (payload: { experimentId: number }) => Promise<ActionResult>;
   updateExperiment: (payload: UpdateExperimentPayload) => Promise<ActionResult>;
   exportFullExperiments: (payload: {

@@ -2,8 +2,61 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { PrismaClient } from '@prisma/client';
 import type { ActionResult } from '../electron-api';
-import { fileExists } from './file-helpers';
+import { createManagedDeleteStagingPath, ensureDir, fileExists } from './file-helpers';
 import { getOperationActor, writeOperationLog } from './operation-log';
+
+type StagedDeleteEntry = {
+  originalPath: string;
+  stagedPath: string;
+};
+
+function restoreStagedFiles(entries: StagedDeleteEntry[], experimentId: number) {
+  let restoreFailed = false;
+
+  for (const entry of [...entries].reverse()) {
+    if (!fileExists(entry.stagedPath) || fileExists(entry.originalPath)) {
+      continue;
+    }
+
+    try {
+      ensureDir(path.dirname(entry.originalPath));
+      fs.renameSync(entry.stagedPath, entry.originalPath);
+    } catch (error) {
+      restoreFailed = true;
+      console.error('restoreDeletedManagedFile failed:', {
+        experimentId,
+        originalPath: entry.originalPath,
+        stagedPath: entry.stagedPath,
+        error
+      });
+    }
+  }
+
+  return restoreFailed;
+}
+
+function purgeStagedFiles(entries: StagedDeleteEntry[], experimentId: number) {
+  let cleanupFailed = false;
+
+  for (const entry of entries) {
+    if (!fileExists(entry.stagedPath)) {
+      continue;
+    }
+
+    try {
+      fs.rmSync(entry.stagedPath, { force: true });
+    } catch (error) {
+      cleanupFailed = true;
+      console.error('purgeDeletedManagedFile failed:', {
+        experimentId,
+        stagedPath: entry.stagedPath,
+        error
+      });
+    }
+  }
+
+  return cleanupFailed;
+}
 
 export async function deleteExperimentPermanently(
   prisma: PrismaClient,
@@ -46,7 +99,7 @@ export async function deleteExperimentPermanently(
     }
   }
 
-  const deletedFilePaths: string[] = [];
+  const stagedEntries: StagedDeleteEntry[] = [];
 
   for (const filePath of savedFilePaths) {
     if (!fileExists(filePath)) {
@@ -54,18 +107,28 @@ export async function deleteExperimentPermanently(
     }
 
     try {
-      fs.rmSync(filePath);
-      deletedFilePaths.push(filePath);
+      const stagedPath = createManagedDeleteStagingPath(filePath);
+      ensureDir(path.dirname(stagedPath));
+      fs.renameSync(filePath, stagedPath);
+      stagedEntries.push({
+        originalPath: filePath,
+        stagedPath
+      });
     } catch (error) {
-      console.error('deleteExperiment file removal failed:', {
+      const restoreFailed = restoreStagedFiles(stagedEntries, experimentId);
+
+      console.error('deleteExperiment file staging failed:', {
         experimentId,
         filePath,
+        stagedEntries,
         error
       });
 
       return {
         success: false,
-        error: `删除保存文件失败：${path.basename(filePath)}。实验记录未删除`
+        error: restoreFailed
+          ? `删除保存文件失败：${path.basename(filePath)}。实验记录未删除，已转移的保存文件可能需要手动恢复`
+          : `删除保存文件失败：${path.basename(filePath)}。实验记录未删除`
       };
     }
   }
@@ -86,8 +149,8 @@ export async function deleteExperimentPermanently(
           sampleCode: experiment.sampleCode,
           testProject: experiment.testProject,
           testTime: experiment.testTime,
-          deletedManagedFileCount: deletedFilePaths.length,
-          deletedManagedFilePaths: deletedFilePaths
+          deletedManagedFileCount: stagedEntries.length,
+          deletedManagedFilePaths: stagedEntries.map((entry) => entry.originalPath)
         })
       });
     } catch (error) {
@@ -97,17 +160,28 @@ export async function deleteExperimentPermanently(
       });
     }
 
-    return { success: true };
+    const cleanupFailed = purgeStagedFiles(stagedEntries, experimentId);
+
+    return cleanupFailed
+      ? {
+          success: true,
+          warning: '实验记录已删除，但待删除的保存文件清理失败，可能需要手动处理'
+        }
+      : { success: true };
   } catch (error) {
-    console.error('deleteExperiment database removal failed after file deletion:', {
+    const restoreFailed = restoreStagedFiles(stagedEntries, experimentId);
+
+    console.error('deleteExperiment database removal failed after file staging:', {
       experimentId,
-      deletedFilePaths,
+      stagedEntries,
       error
     });
 
     return {
       success: false,
-      error: '保存文件已删除，但数据库记录删除失败，可能需要手动恢复数据'
+      error: restoreFailed
+        ? '数据库记录删除失败，已转移的保存文件可能需要手动恢复'
+        : '数据库记录删除失败，保存文件已恢复'
     };
   }
 }

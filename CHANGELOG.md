@@ -2,17 +2,23 @@
 
 ## Unreleased
 
+### Added
+- Added a Settings-based file integrity tool that reports missing referenced files, orphan files, exportable orphan lists, and quarantine actions.
+- Added in-app duplicate warnings before save with clearer matched-record context and recent-record viewing.
+- Added a recent operation log view in Settings for delete and export activity.
+- Added recent edit-history visibility in the experiment detail page, including time, editor, reason, and compact change summaries.
+
+### Improved
+- Improved experiment list workflow with stable search state, minimal filters for test project and tester, newest/oldest sorting, Enter-to-search, reset controls, and clearer empty-result messaging.
+- Improved database list selection workflow with clear-selection control and visible selected-count feedback.
+- Improved export completion flow by allowing users to open the export output location immediately after success.
+- Improved write-path safety for delete and update flows so recoverable failures are handled more explicitly.
+
 ### Fixed
 - Fixed Prisma client generation and startup resolution by restoring a valid `prisma.config.ts`.
 - Added `prisma generate` support to install/setup flow so Prisma Client is regenerated automatically after install.
-
-### Changed
-- Extracted low-risk main-process helpers from `src/main.ts` into focused modules for auth/settings, runtime DB discovery, file/path helpers, and export helpers.
-- Extracted low-risk renderer formatting and HTML string helpers into `src/renderer/render-helpers.ts`.
-
-### Added
-- Added a minimal Settings-based file integrity scan that reports the scanned `storageRoot`, missing referenced files, orphan managed files, and example paths.
-- Added a minimal non-blocking duplicate-record warning before create and update save flows.
+- Fixed renderer same-page update jumps by preserving scroll position during in-place rerenders.
+- Fixed delete and update cleanup semantics so committed state and cleanup warnings are distinguished more safely.
 
 ## v1.0.1
 

@@ -1,5 +1,6 @@
 import type {
   DuplicateExperimentMatch,
+  ExperimentEditHistoryEntry,
   OperationLogFilter,
   GroupByType,
   RecentOperationLogEntry
@@ -414,6 +415,31 @@ export function renderRecentOperationLogs(entries: RecentOperationLogEntry[]) {
                 实验编号：${escapeHtml(entry.experimentId !== null ? String(entry.experimentId) : '-')}<br />
                 操作人：${escapeHtml(entry.actor || '-')}<br />
                 摘要：${escapeHtml(entry.summaryText || '-')}
+              </div>
+            </div>
+          `
+        )
+        .join('')}
+    </div>
+  `;
+}
+
+export function renderExperimentEditHistory(entries: ExperimentEditHistoryEntry[]) {
+  if (!entries.length) {
+    return `<div class="detail-value">暂无修改历史</div>`;
+  }
+
+  return `
+    <div class="detail-list">
+      ${entries
+        .map(
+          (entry) => `
+            <div class="detail-list-item">
+              <div class="detail-list-key">${escapeHtml(formatDateTimeForDisplay(entry.editedAt))}</div>
+              <div class="detail-list-value">
+                修改人：${escapeHtml(entry.editor || '-')}<br />
+                修改理由：${escapeHtml(entry.editReason || '-')}<br />
+                摘要：${escapeHtml(entry.summaryText || '修改记录')}
               </div>
             </div>
           `

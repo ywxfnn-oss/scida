@@ -52,6 +52,7 @@ import {
   saveAppSettings,
   verifyLogin
 } from './main/auth-settings';
+import { listExperimentEditLogs } from './main/edit-log';
 import { listRecentOperationLogs } from './main/operation-log';
 
 let prisma!: PrismaClient;
@@ -581,26 +582,49 @@ app.whenReady().then(async () => {
       payload?: {
         query?: string;
         groupBy?: 'sampleCode' | 'testProject' | 'testTime' | 'instrument' | 'tester' | 'sampleOwner';
+        filters?: {
+          testProject?: string;
+          tester?: string;
+        };
+        sortOrder?: 'newest' | 'oldest';
       }
     ) => {
       const keyword = (payload?.query || '').trim();
       const groupBy = payload?.groupBy || 'sampleCode';
+      const sortOrder = payload?.sortOrder || 'newest';
+      const testProjectFilter = (payload?.filters?.testProject || '').trim();
+      const testerFilter = (payload?.filters?.tester || '').trim();
+      const whereClauses = [];
+
+      if (keyword) {
+        whereClauses.push({
+          OR: [
+            { displayName: { contains: keyword } },
+            { sampleCode: { contains: keyword } },
+            { testProject: { contains: keyword } },
+            { tester: { contains: keyword } },
+            { instrument: { contains: keyword } },
+            { sampleOwner: { contains: keyword } }
+          ]
+        });
+      }
+
+      if (testProjectFilter) {
+        whereClauses.push({
+          testProject: testProjectFilter
+        });
+      }
+
+      if (testerFilter) {
+        whereClauses.push({
+          tester: testerFilter
+        });
+      }
 
       const experiments = await prisma.experiment.findMany({
-        where: keyword
-          ? {
-            OR: [
-              { displayName: { contains: keyword } },
-              { sampleCode: { contains: keyword } },
-              { testProject: { contains: keyword } },
-              { tester: { contains: keyword } },
-              { instrument: { contains: keyword } },
-              { sampleOwner: { contains: keyword } }
-            ]
-          }
-          : undefined,
+        where: whereClauses.length ? { AND: whereClauses } : undefined,
         orderBy: {
-          id: 'desc'
+          id: sortOrder === 'oldest' ? 'asc' : 'desc'
         }
       });
 
@@ -657,6 +681,38 @@ app.whenReady().then(async () => {
     }
   );
 
+  ipcMain.handle('experiment:listFilterOptions', async () => {
+    const [testProjects, testers] = await Promise.all([
+      prisma.experiment.findMany({
+        where: {
+          testProject: {
+            not: ''
+          }
+        },
+        select: {
+          testProject: true
+        },
+        distinct: ['testProject']
+      }),
+      prisma.experiment.findMany({
+        where: {
+          tester: {
+            not: ''
+          }
+        },
+        select: {
+          tester: true
+        },
+        distinct: ['tester']
+      })
+    ]);
+
+    return {
+      testProjects: testProjects.map((item) => item.testProject).sort((a, b) => a.localeCompare(b, 'zh-CN')),
+      testers: testers.map((item) => item.tester).sort((a, b) => a.localeCompare(b, 'zh-CN'))
+    };
+  });
+
   ipcMain.handle('experiment:getDetail', async (_event, experimentId: number) => {
     const experiment = await prisma.experiment.findUnique({
       where: { id: experimentId },
@@ -672,6 +728,24 @@ app.whenReady().then(async () => {
 
     return experiment;
   });
+
+  ipcMain.handle(
+    'experiment:listEditLogs',
+    async (
+      _event,
+      payload: {
+        experimentId: number;
+        limit?: number;
+      }
+    ) => {
+      try {
+        return await listExperimentEditLogs(prisma, payload);
+      } catch (error) {
+        console.error('listExperimentEditLogs failed:', error);
+        return [];
+      }
+    }
+  );
 
   ipcMain.handle(
     'experiment:delete',

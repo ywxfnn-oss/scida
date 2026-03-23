@@ -590,8 +590,8 @@ export async function updateExperimentWithManagedFiles(
     });
 
     return {
-      success: false,
-      error: '实验记录已更新，但旧的保存文件清理失败，可能需要手动处理'
+      success: true,
+      warning: '实验记录已更新，但旧的保存文件清理失败，可能需要手动处理'
     };
   }
 

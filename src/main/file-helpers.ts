@@ -95,6 +95,11 @@ export function createManagedBackupPath(filePath: string) {
   return path.join(parsed.dir, `${parsed.name}.bak-${randomUUID()}${parsed.ext}`);
 }
 
+export function createManagedDeleteStagingPath(filePath: string) {
+  const parsed = path.parse(filePath);
+  return path.join(parsed.dir, `${parsed.name}.delete-${randomUUID()}${parsed.ext}`);
+}
+
 export function formatExportTimestamp() {
   const now = new Date();
   const yyyy = now.getFullYear();

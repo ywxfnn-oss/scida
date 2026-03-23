@@ -23,9 +23,11 @@ const electronAPI: ElectronAPI = {
     saveExperiment: (payload) => ipcRenderer.invoke('experiment:save', payload),
 
     listExperiments: (payload) => ipcRenderer.invoke('experiment:list', payload),
+    listExperimentFilterOptions: () => ipcRenderer.invoke('experiment:listFilterOptions'),
 
     getExperimentDetail: (experimentId: number) =>
         ipcRenderer.invoke('experiment:getDetail', experimentId),
+    listExperimentEditLogs: (payload) => ipcRenderer.invoke('experiment:listEditLogs', payload),
 
     deleteExperiment: (payload) => ipcRenderer.invoke('experiment:delete', payload),
 

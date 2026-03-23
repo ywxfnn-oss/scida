@@ -2,8 +2,11 @@ import './index.css';
 import type {
   AppSettings,
   DuplicateExperimentMatch,
+  ExperimentEditHistoryEntry,
   ExperimentDetail,
+  ExperimentFilterOptions,
   ExperimentGroup,
+  ExperimentListSortOrder,
   FileIntegrityReport,
   GroupByType,
   OperationLogFilter,
@@ -22,6 +25,7 @@ import {
   renderDetailEditInput,
   renderDetailPair,
   renderDuplicateWarningModal,
+  renderExperimentEditHistory,
   renderDynamicFields,
   renderExportModal,
   renderGroupTabs,
@@ -100,8 +104,16 @@ let lastSavedExperimentId: number | null = null;
 
 let databaseSearchKeyword = '';
 let databaseGroupBy: GroupByType = 'sampleCode';
+let databaseSortOrder: ExperimentListSortOrder = 'newest';
+let databaseFilterTestProject = '';
+let databaseFilterTester = '';
+let databaseFilterOptions: ExperimentFilterOptions = {
+  testProjects: [],
+  testers: []
+};
 let databaseGroups: ExperimentGroup[] = [];
 let currentDetail: ExperimentDetail | null = null;
+let currentEditHistory: ExperimentEditHistoryEntry[] = [];
 
 let detailEditMode = false;
 let detailEditReason = '';
@@ -249,7 +261,16 @@ function closeDuplicateWarning() {
 }
 
 async function openExperimentDetail(experimentId: number) {
-  currentDetail = await window.electronAPI.getExperimentDetail(experimentId);
+  const [detail, editHistory] = await Promise.all([
+    window.electronAPI.getExperimentDetail(experimentId),
+    window.electronAPI.listExperimentEditLogs({
+      experimentId,
+      limit: 5
+    })
+  ]);
+
+  currentDetail = detail;
+  currentEditHistory = editHistory;
   detailEditMode = false;
   detailEditReason = '';
   detailEditor = '';
@@ -292,13 +313,26 @@ async function performUpdateSave(payload: UpdateExperimentPayload) {
     return;
   }
 
-  currentDetail = await window.electronAPI.getExperimentDetail(payload.experimentId);
+  const [detail, editHistory] = await Promise.all([
+    window.electronAPI.getExperimentDetail(payload.experimentId),
+    window.electronAPI.listExperimentEditLogs({
+      experimentId: payload.experimentId,
+      limit: 5
+    })
+  ]);
+
+  currentDetail = detail;
+  currentEditHistory = editHistory;
   detailEditMode = false;
   detailEditReason = '';
   detailEditor = '';
   detailEditStep1 = null;
   detailEditStep2 = [];
   void render();
+
+  if (result.warning) {
+    alert(result.warning);
+  }
 }
 
 async function continueDuplicateWarningSave() {
@@ -586,13 +620,13 @@ async function render() {
     });
 
     document.getElementById('database-btn')?.addEventListener('click', async () => {
-      await loadDatabaseList();
+      await loadDatabaseListView();
       currentView = 'database-list';
       void render();
     });
 
     document.getElementById('menu-data-home')?.addEventListener('click', async () => {
-      await loadDatabaseList();
+      await loadDatabaseListView();
       currentView = 'database-list';
       void render();
     });
@@ -697,7 +731,7 @@ async function render() {
     bindStep1Events();
 
     document.getElementById('menu-data-step1')?.addEventListener('click', async () => {
-      await loadDatabaseList();
+      await loadDatabaseListView();
       currentView = 'database-list';
       void render();
     });
@@ -784,7 +818,7 @@ async function render() {
     bindDuplicateWarningModalHandlers();
 
     document.getElementById('menu-data-step2')?.addEventListener('click', async () => {
-      await loadDatabaseList();
+      await loadDatabaseListView();
       currentView = 'database-list';
       void render();
     });
@@ -842,8 +876,17 @@ async function render() {
           <header class="topbar">
             <div class="topbar-title">数据库入口</div>
             <div class="detail-top-actions">
+              <span>已选择 ${selectedExperimentIds.length} 条</span>
               <button id="db-select-all-btn" class="secondary-btn">
                 ${areAllVisibleSelected() ? '取消全选' : '全选'}
+              </button>
+              <button
+                id="db-clear-selection-btn"
+                class="secondary-btn"
+                type="button"
+                ${selectedExperimentIds.length ? '' : 'disabled'}
+              >
+                清空选择
               </button>
               <button
                 id="db-delete-btn"
@@ -871,6 +914,38 @@ async function render() {
                   value="${escapeHtml(databaseSearchKeyword)}"
                 />
                 <button id="db-search-btn" class="primary-btn search-btn">搜索</button>
+                <select id="db-sort-order" class="form-input">
+                  <option value="newest" ${databaseSortOrder === 'newest' ? 'selected' : ''}>最新优先</option>
+                  <option value="oldest" ${databaseSortOrder === 'oldest' ? 'selected' : ''}>最早优先</option>
+                </select>
+              </div>
+
+              <div class="search-row">
+                <select id="db-filter-test-project" class="form-input">
+                  <option value="">全部测试项目</option>
+                  ${databaseFilterOptions.testProjects
+        .map(
+          (value) => `
+                        <option value="${escapeHtml(value)}" ${databaseFilterTestProject === value ? 'selected' : ''}>
+                          ${escapeHtml(value)}
+                        </option>
+                      `
+        )
+        .join('')}
+                </select>
+                <select id="db-filter-tester" class="form-input">
+                  <option value="">全部测试人</option>
+                  ${databaseFilterOptions.testers
+        .map(
+          (value) => `
+                        <option value="${escapeHtml(value)}" ${databaseFilterTester === value ? 'selected' : ''}>
+                          ${escapeHtml(value)}
+                        </option>
+                      `
+        )
+        .join('')}
+                </select>
+                <button id="db-reset-btn" class="secondary-btn" type="button">重置</button>
               </div>
 
               <div class="group-tabs">
@@ -912,19 +987,60 @@ async function render() {
     });
 
     document.getElementById('db-refresh-btn')?.addEventListener('click', async () => {
-      await loadDatabaseList(databaseSearchKeyword, databaseGroupBy);
+      await loadDatabaseListView();
       void render();
     });
 
-    document.getElementById('db-search-btn')?.addEventListener('click', async () => {
+    const applyDatabaseSearch = async () => {
       const input = document.getElementById('db-search-input') as HTMLInputElement | null;
       databaseSearchKeyword = input?.value.trim() || '';
-      await loadDatabaseList(databaseSearchKeyword, databaseGroupBy);
+      await loadDatabaseList();
+      void render();
+    };
+
+    document.getElementById('db-search-btn')?.addEventListener('click', () => {
+      void applyDatabaseSearch();
+    });
+
+    document.getElementById('db-search-input')?.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter') return;
+      event.preventDefault();
+      void applyDatabaseSearch();
+    });
+
+    document.getElementById('db-sort-order')?.addEventListener('change', async () => {
+      const select = document.getElementById('db-sort-order') as HTMLSelectElement | null;
+      databaseSortOrder = (select?.value as ExperimentListSortOrder) || 'newest';
+      await loadDatabaseList();
+      void render();
+    });
+
+    document.getElementById('db-filter-test-project')?.addEventListener('change', async () => {
+      const select = document.getElementById('db-filter-test-project') as HTMLSelectElement | null;
+      databaseFilterTestProject = select?.value || '';
+      await loadDatabaseList();
+      void render();
+    });
+
+    document.getElementById('db-filter-tester')?.addEventListener('change', async () => {
+      const select = document.getElementById('db-filter-tester') as HTMLSelectElement | null;
+      databaseFilterTester = select?.value || '';
+      await loadDatabaseList();
+      void render();
+    });
+
+    document.getElementById('db-reset-btn')?.addEventListener('click', async () => {
+      await resetDatabaseListControls();
       void render();
     });
 
     document.getElementById('db-select-all-btn')?.addEventListener('click', () => {
       toggleSelectAllVisible();
+      void renderPreservingContentScroll();
+    });
+
+    document.getElementById('db-clear-selection-btn')?.addEventListener('click', () => {
+      selectedExperimentIds = [];
       void renderPreservingContentScroll();
     });
 
@@ -948,7 +1064,7 @@ async function render() {
         const target = button as HTMLElement;
         const groupBy = target.dataset.groupby as GroupByType;
         databaseGroupBy = groupBy;
-        await loadDatabaseList(databaseSearchKeyword, databaseGroupBy);
+        await loadDatabaseList();
         void render();
       });
     });
@@ -972,14 +1088,7 @@ async function render() {
         const id = Number(target.dataset.openDetailId);
         if (!id) return;
 
-        currentDetail = await window.electronAPI.getExperimentDetail(id);
-        detailEditMode = false;
-        detailEditReason = '';
-        detailEditor = '';
-        detailEditStep1 = null;
-        detailEditStep2 = [];
-        currentView = 'database-detail';
-        void render();
+        await openExperimentDetail(id);
       });
     });
 
@@ -1002,7 +1111,9 @@ async function render() {
       try {
         let successCount = 0;
         let failureCount = 0;
+        let warningCount = 0;
         let firstFailureReason = '';
+        let firstWarningReason = '';
 
         for (const experimentId of deleteTargetIds) {
           const result = await window.electronAPI.deleteExperiment({
@@ -1011,6 +1122,12 @@ async function render() {
 
           if (result.success) {
             successCount += 1;
+            if (result.warning) {
+              warningCount += 1;
+              if (!firstWarningReason) {
+                firstWarningReason = result.warning;
+              }
+            }
           } else {
             failureCount += 1;
             if (!firstFailureReason) {
@@ -1023,15 +1140,23 @@ async function render() {
 
         selectedExperimentIds = selectedExperimentIds.filter((id) => !deleteTargetIds.includes(id));
         closeDeleteModal();
-        await loadDatabaseList(databaseSearchKeyword, databaseGroupBy);
+        await loadDatabaseListView();
 
         const summaryLines = [
           `成功删除：${successCount} 条`,
           `删除失败：${failureCount} 条`
         ];
 
+        if (warningCount) {
+          summaryLines.push(`需要手动跟进：${warningCount} 条`);
+        }
+
         if (firstFailureReason) {
           summaryLines.push(`首个失败原因：${firstFailureReason}`);
+        }
+
+        if (firstWarningReason) {
+          summaryLines.push(`首个提醒：${firstWarningReason}`);
         }
 
         alert(summaryLines.join('\n'));
@@ -1117,6 +1242,14 @@ async function render() {
 
       if (result?.success) {
         alert(`导出成功：\n${result.exportPath || ''}`);
+
+        if (result.exportPath) {
+          const shouldOpenExportPath = confirm(`是否打开导出位置？\n${result.exportPath}`);
+          if (shouldOpenExportPath) {
+            await openPathLocation(result.exportPath);
+          }
+        }
+
         selectedExperimentIds = [];
         closeExportModal();
         void render();
@@ -1132,11 +1265,14 @@ async function render() {
 
   if (currentView === 'database-detail') {
     if (!currentDetail) {
+      currentEditHistory = [];
       currentView = 'database-list';
-      await loadDatabaseList(databaseSearchKeyword, databaseGroupBy);
+      await loadDatabaseListView();
       void render();
       return;
     }
+
+    const editHistoryHtml = renderExperimentEditHistory(currentEditHistory);
 
     root.innerHTML = `
       <div class="home-layout">
@@ -1316,6 +1452,11 @@ async function render() {
       }
               </div>
 
+              <div class="detail-section">
+                <div class="detail-section-title">最近修改历史</div>
+                ${editHistoryHtml}
+              </div>
+
       ${detailEditMode
         ? `
                     <div class="detail-section">
@@ -1347,13 +1488,13 @@ async function render() {
     `;
 
     document.getElementById('detail-back-btn')?.addEventListener('click', async () => {
-      await loadDatabaseList(databaseSearchKeyword, databaseGroupBy);
+      await loadDatabaseListView();
       currentView = 'database-list';
       void render();
     });
 
     document.getElementById('detail-menu-list')?.addEventListener('click', async () => {
-      await loadDatabaseList(databaseSearchKeyword, databaseGroupBy);
+      await loadDatabaseListView();
       currentView = 'database-list';
       void render();
     });
@@ -2279,19 +2420,69 @@ function bindStep2Events() {
   });
 }
 
-async function loadDatabaseList(query = '', groupBy: GroupByType = databaseGroupBy) {
+async function loadDatabaseFilterOptions() {
+  databaseFilterOptions = await window.electronAPI.listExperimentFilterOptions();
+
+  if (
+    databaseFilterTestProject &&
+    !databaseFilterOptions.testProjects.includes(databaseFilterTestProject)
+  ) {
+    databaseFilterTestProject = '';
+  }
+
+  if (
+    databaseFilterTester &&
+    !databaseFilterOptions.testers.includes(databaseFilterTester)
+  ) {
+    databaseFilterTester = '';
+  }
+}
+
+async function loadDatabaseList(
+  query = databaseSearchKeyword,
+  groupBy: GroupByType = databaseGroupBy
+) {
   databaseGroups = await window.electronAPI.listExperiments({
     query,
-    groupBy
+    groupBy,
+    filters: {
+      testProject: databaseFilterTestProject || undefined,
+      tester: databaseFilterTester || undefined
+    },
+    sortOrder: databaseSortOrder
   });
 
   const validIds = databaseGroups.flatMap((group) => group.items.map((item) => item.id));
   selectedExperimentIds = selectedExperimentIds.filter((id) => validIds.includes(id));
 }
 
+async function loadDatabaseListView() {
+  await loadDatabaseFilterOptions();
+  await loadDatabaseList();
+}
+
+function hasActiveDatabaseSearchOrFilters() {
+  return Boolean(
+    databaseSearchKeyword ||
+    databaseFilterTestProject ||
+    databaseFilterTester
+  );
+}
+
+async function resetDatabaseListControls() {
+  databaseSearchKeyword = '';
+  databaseFilterTestProject = '';
+  databaseFilterTester = '';
+  databaseSortOrder = 'newest';
+  databaseGroupBy = 'sampleCode';
+  await loadDatabaseListView();
+}
+
 function renderDatabaseGroups(groups: ExperimentGroup[]) {
   if (!groups.length) {
-    return `<div class="empty-tip">当前没有符合条件的实验数据</div>`;
+    return hasActiveDatabaseSearchOrFilters()
+      ? `<div class="empty-tip">当前搜索或筛选条件下没有符合条件的实验数据，可点击“重置”恢复默认列表</div>`
+      : `<div class="empty-tip">当前没有符合条件的实验数据</div>`;
   }
 
   return groups
