@@ -6,7 +6,7 @@
 
 - Added Step 1 dictionary management, quick-add, dictionary validation, and searchable suggestions for standardized fields.
 - Added structured secondary-item blocks for XY and spectrum data.
-- Added unified secondary-item export support for scalar and XY data.
+- Added unified secondary-item export support for scalar, XY, and spectrum data.
 
 ### Changed
 
@@ -16,7 +16,7 @@
   - `完整资料导出`
   - `导出单个二级数据项`
   - `导出全部二级数据项`
-- Folded XY export into the unified secondary-item export flow.
+- Folded XY and spectrum export into the unified secondary-item export flow.
 
 ### Removed
 
@@ -28,6 +28,6 @@
 - Added export-time collision handling for:
   - secondary-item folders
   - workbook filenames
-  - XY column headers
+  - structured workbook column headers
   - raw/source file copies
-- Preserved same-name scalar + XY export by writing separate workbooks in the same top-level folder.
+- Preserved same-name scalar + XY + spectrum export by writing separate workbooks in the same top-level folder.

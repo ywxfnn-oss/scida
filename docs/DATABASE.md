@@ -42,10 +42,10 @@ This unified concept maps to two storage forms:
 
 - scalar secondary item
   - stored in `ExperimentDataItem`
-  - user-facing name comes from `itemName`
+  - `secondaryItemName = itemName`
 - structured secondary item
   - stored in `ExperimentTemplateBlock`
-  - user-facing name comes from `blockTitle`
+  - `secondaryItemName = blockTitle`
   - UI label is `二级数据项名称`
 
 Important rule:
@@ -86,7 +86,7 @@ Current semantics:
 
 ## Uniqueness Rules
 
-There is no schema-level uniqueness layer for the unified `二级数据项` concept across scalar and structured items.
+There is no schema-level uniqueness enforcement for the unified `二级数据项` concept across scalar and structured items.
 
 That means:
 
@@ -95,12 +95,11 @@ That means:
 - the same name may exist in both scalar and structured forms
 - export-time naming collisions are resolved during export, not in the database
 
-Implementation note:
+Current export rule:
 
-- structured blocks currently also keep a storage-level uniqueness constraint on
-  `experimentId + templateType + blockTitle`
-  to prevent duplicate same-type block titles inside one experiment
-- this is narrower than the user-facing unified secondary-item concept and should not be treated as a global naming rule
+- naming conflicts are handled at export time
+- folder, workbook, and copied raw-file collisions are resolved with suffixes such as `__2`
+- export-time collision handling must not be confused with database-level naming rules
 
 ## Step 1 Dictionary Data
 

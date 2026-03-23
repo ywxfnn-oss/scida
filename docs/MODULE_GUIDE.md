@@ -124,6 +124,7 @@ Focused helpers:
 - `src/main/export-helpers.ts`
   - full export
   - unified secondary-item export
+  - scalar, XY, and spectrum secondary-item packaging
 - `src/template-blocks.ts`
   - template-block parsing, normalization, and validation rules
 
@@ -133,7 +134,7 @@ The current export system is intentionally split into:
 
 - unified name discovery
 - scalar writer
-- XY writer
+- structured series writer
 - raw/source file packaging
 - collision-safe path generation
 

@@ -22,7 +22,7 @@ The current baseline includes:
 - scalar secondary items
 - XY structured secondary items
 - spectrum structured secondary items
-- unified secondary-item export for scalar and XY
+- unified secondary-item export for scalar, XY, and spectrum
 
 ## Core Rules for AI Work
 
@@ -47,6 +47,7 @@ When adding a new secondary-item export type:
 - keep grouping based on the full original secondary-item name
 - do not generalize names like `iv（-100，100）` into `iv`
 - keep type-specific workbook writers separate if the data shape differs
+- do not introduce a new standalone export mode unless the user explicitly asks for a product-level split
 
 ## When Extending Structured Blocks
 
@@ -54,6 +55,7 @@ If the request touches XY or spectrum blocks:
 
 - read `src/template-blocks.ts` first
 - preserve the current block model
+- keep structured blocks inside the unified secondary-item layer rather than creating parallel systems
 - keep block metadata explicit
 - keep point-order preservation intact
 - avoid adding plotting, fitting, or calculation engines unless explicitly requested

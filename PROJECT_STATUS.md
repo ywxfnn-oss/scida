@@ -31,8 +31,9 @@ Current baseline:
 - **P16: unified export system**
   - standalone strict XY compare export removed
   - XY folded into unified secondary-item export
+  - spectrum folded into unified secondary-item export
   - export-time naming collision handling
-  - same-name scalar + XY export into one folder with separate workbooks
+  - same-name scalar + XY + spectrum export into one folder with separate workbooks
 
 ## Current Capabilities
 
@@ -55,6 +56,7 @@ Current baseline:
 - full-record export
 - single secondary-item export
 - all secondary-item export
+- no strict comparison or strict alignment requirement for structured export
 - collision-safe folder/file naming
 - raw/source file packaging by sample code
 
@@ -62,8 +64,8 @@ Current baseline:
 
 - `src/renderer.ts` still owns most page orchestration, form collection, and event binding
 - `src/main.ts` still owns startup, IPC registration, and several high-risk write paths
-- unified secondary-item export currently folds in scalar and XY; spectrum export integration is still pending
 - operation-log code still keeps compatibility with historical XY-compare log entries
+- full export remains intentionally separate from unified secondary-item export and still should not be treated as the same packaging path
 
 ## Recommended Next Priorities
 

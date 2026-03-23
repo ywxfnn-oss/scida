@@ -22,8 +22,7 @@ That unified naming layer includes:
 
 - scalar item names from `ExperimentDataItem.itemName`
 - XY item names from `ExperimentTemplateBlock.blockTitle` where `templateType = "xy"`
-
-Current unified export does not yet fold spectrum blocks into secondary-item export.
+- spectrum item names from `ExperimentTemplateBlock.blockTitle` where `templateType = "spectrum"`
 
 ## Export Entry
 
@@ -81,6 +80,7 @@ Folder layout:
   二级数据项B/
     二级数据项B_标量数据.xlsx
     二级数据项B_XY数据.xlsx
+    二级数据项B_光谱数据.xlsx
     样品C/
       raw-file-3.ext
 ```
@@ -116,9 +116,25 @@ Behavior:
 
 This is not point-by-point comparison export.
 
-## Same-Name Scalar and XY Handling
+### Spectrum Workbook Structure
 
-If scalar and XY data share the same `二级数据项名称`:
+Spectrum export follows the same grouped structured-data model as XY.
+
+Workbook columns:
+
+- per experiment, one `X / Y` column pair
+
+Behavior:
+
+- `X` represents the stored spectrum axis
+- `Y` represents the stored signal
+- each experiment keeps its own original spectrum shape
+- unequal lengths are padded with blank cells
+- there is no strict alignment requirement
+
+## Same-Name Cross-Type Handling
+
+If scalar, XY, and spectrum data share the same `二级数据项名称`:
 
 - they export into the same top-level folder
 - they do not merge into one workbook
@@ -127,6 +143,7 @@ File naming rule:
 
 - scalar workbook: `<name>_标量数据.xlsx`
 - XY workbook: `<name>_XY数据.xlsx`
+- spectrum workbook: `<name>_光谱数据.xlsx`
 
 If only scalar data exists for that name, the scalar workbook keeps the plain item workbook shape.
 
@@ -142,6 +159,7 @@ Applies to:
 
 - scalar item source files
 - XY block source files
+- spectrum block source files
 
 ## Naming Collision Handling
 
@@ -165,7 +183,7 @@ Export-time naming safety is handled only during export. It does not change grou
 
 ### Column naming
 
-XY workbook column labels keep the existing experiment-based naming logic first.
+Structured workbook column labels keep the existing experiment-based naming logic first.
 
 If labels still collide after that, a final pass appends:
 

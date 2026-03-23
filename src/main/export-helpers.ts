@@ -13,7 +13,10 @@ import {
 import { getOperationActor, writeOperationLog } from './operation-log';
 import {
   parseTemplateBlockMeta,
+  SPECTRUM_TEMPLATE_TYPE,
   XY_TEMPLATE_TYPE,
+  type SpectrumBlockMeta,
+  type TemplateBlockType,
   type XYCurveBlockMeta,
   type XYPoint
 } from '../template-blocks';
@@ -41,12 +44,13 @@ type ExportExperiment = {
   }>;
 };
 
-type XYExportExperiment = {
+type StructuredExportExperiment = {
   id: number;
   displayName: string;
   sampleCode: string;
   templateBlocks: Array<{
     id: number;
+    templateType: TemplateBlockType;
     blockTitle: string;
     metaJson: string;
     dataJson: string;
@@ -168,8 +172,8 @@ async function createCompareWorkbook(
   await workbook.xlsx.writeFile(outputPath);
 }
 
-async function createXYGroupedWorkbook(
-  blockTitle: string,
+async function createStructuredSeriesWorkbook(
+  secondaryItemName: string,
   entries: Array<{
     seriesLabel: string;
     xLabel: string;
@@ -181,7 +185,7 @@ async function createXYGroupedWorkbook(
   outputPath: string
 ) {
   const workbook = new ExcelJS.Workbook();
-  const sheetName = blockTitle.slice(0, 31) || 'XY数据';
+  const sheetName = secondaryItemName.slice(0, 31) || '结构化数据';
   const sheet = workbook.addWorksheet(sheetName);
   const maxPointCount = entries.reduce((max, entry) => Math.max(max, entry.points.length), 0);
 
@@ -210,7 +214,7 @@ async function createXYGroupedWorkbook(
   await workbook.xlsx.writeFile(outputPath);
 }
 
-function parseXYPoints(dataJson: string): XYPoint[] {
+function parseStructuredPoints(dataJson: string): XYPoint[] {
   try {
     const parsed = JSON.parse(dataJson);
     if (!Array.isArray(parsed)) {
@@ -510,7 +514,9 @@ export async function getDistinctItemNames(
       dataItems: true,
       templateBlocks: {
         where: {
-          templateType: XY_TEMPLATE_TYPE
+          templateType: {
+            in: [XY_TEMPLATE_TYPE, SPECTRUM_TEMPLATE_TYPE]
+          }
         },
         select: {
           blockTitle: true
@@ -569,7 +575,9 @@ export async function exportByItemNames(
       },
       templateBlocks: {
         where: {
-          templateType: XY_TEMPLATE_TYPE
+          templateType: {
+            in: [XY_TEMPLATE_TYPE, SPECTRUM_TEMPLATE_TYPE]
+          }
         },
         orderBy: { blockOrder: 'asc' }
       }
@@ -592,10 +600,16 @@ export async function exportByItemNames(
       itemUnit: string | null;
     }> = [];
     const xyEntries: Array<{
-      experiment: XYExportExperiment;
-      block: XYExportExperiment['templateBlocks'][number];
+      experiment: StructuredExportExperiment;
+      block: StructuredExportExperiment['templateBlocks'][number];
       points: XYPoint[];
       meta: XYCurveBlockMeta;
+    }> = [];
+    const spectrumEntries: Array<{
+      experiment: StructuredExportExperiment;
+      block: StructuredExportExperiment['templateBlocks'][number];
+      points: XYPoint[];
+      meta: SpectrumBlockMeta;
     }> = [];
 
     for (const experiment of experiments) {
@@ -625,20 +639,34 @@ export async function exportByItemNames(
       );
 
       for (const matchedBlock of matchedBlocks) {
-        const points = parseXYPoints(matchedBlock.dataJson);
+        const points = parseStructuredPoints(matchedBlock.dataJson);
         if (!points.length) {
           continue;
         }
 
-        xyEntries.push({
-          experiment: experiment as XYExportExperiment,
-          block: matchedBlock as XYExportExperiment['templateBlocks'][number],
-          points,
-          meta: parseTemplateBlockMeta(
-            XY_TEMPLATE_TYPE,
-            matchedBlock.metaJson
-          ) as XYCurveBlockMeta
-        });
+        if (matchedBlock.templateType === XY_TEMPLATE_TYPE) {
+          xyEntries.push({
+            experiment: experiment as StructuredExportExperiment,
+            block: matchedBlock as StructuredExportExperiment['templateBlocks'][number],
+            points,
+            meta: parseTemplateBlockMeta(
+              XY_TEMPLATE_TYPE,
+              matchedBlock.metaJson
+            ) as XYCurveBlockMeta
+          });
+        }
+
+        if (matchedBlock.templateType === SPECTRUM_TEMPLATE_TYPE) {
+          spectrumEntries.push({
+            experiment: experiment as StructuredExportExperiment,
+            block: matchedBlock as StructuredExportExperiment['templateBlocks'][number],
+            points,
+            meta: parseTemplateBlockMeta(
+              SPECTRUM_TEMPLATE_TYPE,
+              matchedBlock.metaJson
+            ) as SpectrumBlockMeta
+          });
+        }
 
         if (matchedBlock.sourceFilePath && fileExists(matchedBlock.sourceFilePath)) {
           const sampleDir = path.join(
@@ -653,10 +681,12 @@ export async function exportByItemNames(
 
     const hasScalarData = scalarRows.length > 0;
     const hasXYData = xyEntries.length > 0;
+    const hasSpectrumData = spectrumEntries.length > 0;
+    const hasStructuredData = hasXYData || hasSpectrumData;
 
     if (hasScalarData) {
       const scalarWorkbookBaseName =
-        hasXYData ? `${safeItemFolderName}_标量数据` : safeItemFolderName;
+        hasStructuredData ? `${safeItemFolderName}_标量数据` : safeItemFolderName;
       const scalarWorkbookPath = buildUniqueFilePath(
         itemFolderPath,
         scalarWorkbookBaseName,
@@ -682,7 +712,7 @@ export async function exportByItemNames(
         }))
       );
 
-      await createXYGroupedWorkbook(
+      await createStructuredSeriesWorkbook(
         itemName,
         xyEntries.map((entry, index) => ({
           seriesLabel: seriesHeaders[index],
@@ -693,6 +723,34 @@ export async function exportByItemNames(
           points: entry.points
         })),
         xyWorkbookPath
+      );
+    }
+
+    if (hasSpectrumData) {
+      const spectrumWorkbookPath = buildUniqueFilePath(
+        itemFolderPath,
+        `${safeItemFolderName}_光谱数据`,
+        '.xlsx'
+      );
+      const seriesHeaders = buildUniqueSeriesHeaders(
+        spectrumEntries.map((entry) => ({
+          id: entry.experiment.id,
+          displayName: entry.experiment.displayName,
+          sampleCode: entry.experiment.sampleCode
+        }))
+      );
+
+      await createStructuredSeriesWorkbook(
+        itemName,
+        spectrumEntries.map((entry, index) => ({
+          seriesLabel: seriesHeaders[index],
+          xLabel: entry.meta.spectrumAxisLabel,
+          xUnit: entry.meta.spectrumAxisUnit,
+          yLabel: entry.meta.signalLabel,
+          yUnit: entry.meta.signalUnit,
+          points: entry.points
+        })),
+        spectrumWorkbookPath
       );
     }
   }

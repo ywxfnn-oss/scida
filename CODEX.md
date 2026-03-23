@@ -10,7 +10,7 @@ Scidata Manager is a local Electron + TypeScript scientific data manager with:
 - Step 2 unified secondary-item entry
 - scalar secondary data
 - XY and spectrum structured blocks
-- unified secondary-item export for scalar and XY
+- unified secondary-item export for scalar, XY, and spectrum
 - full-record export and managed raw-file packaging
 
 ## Development Rules
@@ -18,11 +18,14 @@ Scidata Manager is a local Electron + TypeScript scientific data manager with:
 1. No schema changes without explicit justification.
 2. The export system must not be broken.
 3. The `二级数据项` concept is a core abstraction.
-4. Structured blocks are part of the secondary-item system.
-5. Avoid scope expansion.
-6. Prefer the smallest necessary change.
-7. Do not refactor unrelated modules during feature work.
-8. Keep privileged logic in the main process.
+4. Structured blocks are not separate systems; they are part of the secondary-item system.
+5. The export system is unified and must not be split again casually.
+6. Structured-data export has no strict alignment requirement by default.
+7. Avoid adding new export modes unless explicitly justified.
+8. Avoid scope expansion.
+9. Prefer the smallest necessary change.
+10. Do not refactor unrelated modules during feature work.
+11. Keep privileged logic in the main process.
 
 ## Workflow
 
@@ -36,6 +39,7 @@ Use this order by default:
 Execution rules:
 
 - work in small safe steps only
+- avoid scope creep
 - update docs when product semantics change
 - validate with the narrowest relevant checks
 - do not auto-commit unless explicitly asked
