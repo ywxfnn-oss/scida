@@ -1,150 +1,175 @@
 # MODULE_GUIDE.md
 
-Module Guide for Scidata Manager
+Module guide for the current Scidata Manager main branch.
 
-## Main User Flows
+## Main Process Composition
 
-The product now has two core data-entry layers:
+**Primary file:** `src/main.ts`
 
-- Step 1: dictionary-driven first-level metadata
-- Step 2: unified secondary-item entry
+Current responsibilities:
 
-## Step 1: Dictionary-Driven Entry
-
-Primary files:
-
-- `src/renderer.ts`
-- `src/preload.ts`
-- `src/main.ts`
-- `src/main/dictionary-settings.ts`
-
-Step 1 currently standardizes three fields:
-
-- `testProject`
-- `tester`
-- `instrument`
-
-Behavior:
-
-- fields support typing
-- active dictionary suggestions appear while typing
-- `+` explicitly adds the current input into the matching dictionary
-- `下一步` validates that non-empty values exist in the dictionary
-- values are never auto-added silently
-
-Dictionary management lives inside Settings and is intentionally separate from experiment records.
-
-## Step 2: Secondary-Item Entry
-
-Primary files:
-
-- `src/renderer.ts`
-- `src/template-blocks.ts`
-- `src/main.ts`
-
-Step 2 now supports one unified product concept:
-
-- `二级数据项`
-
-Users define the secondary-item name in two ways:
-
-- scalar row: `itemName`
-- structured block: `blockTitle`, shown in the UI as `二级数据项名称`
-
-### Scalar Secondary Items
-
-Storage:
-
-- `ExperimentDataItem`
-
-Use when the result is a single scalar value plus optional unit and optional source file.
-
-### XY Secondary Items
-
-Storage:
-
-- `ExperimentTemplateBlock` with `templateType = "xy"`
-
-Use when the result is an ordered XY dataset.
-
-Current behavior:
-
-- one card per XY block
-- user provides `二级数据项名称`
-- user enters axis labels/units
-- user pastes XY pairs into a textarea
-- optional note and optional source file are supported
-
-### Spectrum Secondary Items
-
-Storage:
-
-- `ExperimentTemplateBlock` with `templateType = "spectrum"`
-
-Use when the result is a single-trace spectrum dataset.
-
-Current behavior mirrors XY:
-
-- one card per spectrum block
-- user provides `二级数据项名称`
-- user enters spectrum-axis and signal labels/units
-- user pastes XY-format point pairs
-- optional note and optional source file are supported
-
-## Renderer/Main Split
-
-### Renderer
-
-`src/renderer.ts` currently owns:
-
-- view-state orchestration
-- Step 1 and Step 2 form state
-- export modal interaction
-- template block card rendering
-- DOM binding and validation feedback
-
-`src/renderer/render-helpers.ts` owns:
-
-- pure render fragments
-- modal HTML
-- reusable formatted list/detail fragments
-
-### Main process
-
-`src/main.ts` owns:
-
+- app lifecycle
+- `BrowserWindow` creation
+- runtime database preparation and Prisma initialization
 - IPC registration
-- save/detail/update orchestration
-- privileged file operations
+- remaining high-risk startup, delete, and update-file-mutation flows
 
-Focused helpers:
+`src/main.ts` is smaller than earlier revisions, but it still owns the highest-risk runtime and mutation paths.
 
-- `src/main/dictionary-settings.ts`
-  - dictionary persistence and validation
-- `src/main/export-helpers.ts`
+## Main Process Helpers
+
+**Primary folder:** `src/main/`
+
+Current helper modules:
+
+- `auth-settings.ts`
+  - login verification
+  - app settings reads and writes
+  - password hashing and verification helpers
+- `export-helpers.ts`
   - full export
-  - unified secondary-item export
-  - scalar, XY, and spectrum secondary-item packaging
-- `src/template-blocks.ts`
-  - template-block parsing, normalization, and validation rules
+  - item-name export
+  - workbook and ZIP helpers
+- `file-helpers.ts`
+  - managed file naming
+  - path building
+  - filesystem helper utilities
+- `runtime-db-helpers.ts`
+  - runtime DB path resolution
+  - migration discovery helpers
+- `file-integrity.ts`
+  - read-only managed-file scan and report generation
+- `duplicate-check.ts`
+  - read-only exact-match duplicate lookup used before save/update warnings
 
-## Export-Oriented Module Boundaries
+These helpers reduce low-risk clutter in `src/main.ts`, but they do not remove the need to review main-process mutation flows carefully.
 
-The current export system is intentionally split into:
+## Preload Bridge
 
-- unified name discovery
-- scalar writer
-- structured series writer
-- raw/source file packaging
-- collision-safe path generation
+**Primary file:** `src/preload.ts`
 
-This matters because scalar and structured items share one user-facing naming layer, but their workbook shapes are different.
+Current responsibilities:
 
-## Development Guidance
+- expose a typed `window.electronAPI`
+- bridge renderer requests to main-process IPC handlers
+- keep direct Node/Electron access out of the renderer
 
-When extending Step 2:
+Current additive safety-related APIs include:
 
-1. preserve the `二级数据项` abstraction
-2. do not merge scalar and structured storage casually
-3. keep renderer validation aligned with main-process validation
-4. avoid redesigning Step 2 unless the user explicitly asks for it
+- duplicate check before save/update warning
+- file integrity scan report
+
+## Shared IPC Contract
+
+**Primary file:** `src/electron-api.ts`
+
+Current responsibilities:
+
+- define the preload contract
+- keep `preload.ts`, renderer usage, and global typings aligned
+
+When changing renderer/main communication, update the shared types first and keep the preload bridge additive and explicit.
+
+## Renderer Composition
+
+**Primary files:**
+
+- `src/renderer.ts`
+- `src/renderer/render-helpers.ts`
+
+Current renderer responsibilities:
+
+- render the UI
+- manage view state and form state
+- call preload APIs
+- surface user-visible success and error states
+
+Current renderer helper responsibilities:
+
+- pure formatting helpers
+- parameterized HTML string builders
+- reusable render fragments with no preload access
+
+Current user-facing safety features:
+
+- Settings includes a file integrity scan report
+- create and update flows include duplicate warning prompts
+
+Current concentration risk:
+
+- `src/renderer.ts` still owns most orchestration, event binding, and DOM/state collection
+
+## Database and Runtime DB Layer
+
+**Primary locations:**
+
+- `prisma/schema.prisma`
+- `prisma/migrations/`
+- `prisma.config.ts`
+- `dev.db`
+- `src/main.ts`
+- `src/main/runtime-db-helpers.ts`
+- `src/main/auth-settings.ts`
+
+Current runtime behavior:
+
+1. resolve `app.getPath('userData')/scidata.db`
+2. copy `dev.db` on first launch if needed
+3. inspect and apply pending SQL migrations from `prisma/migrations/`
+4. migrate legacy auth settings to hashed-password storage
+5. connect Prisma
+
+Database access stays in the main process. Startup and migration safety remain high-risk areas.
+
+## Runtime Storage and File Operations
+
+Current runtime storage concerns:
+
+- managed source-file storage under the configured storage root
+- exported workbooks and ZIPs
+- runtime SQLite database under the user-data directory
+
+Key current behavior:
+
+- `storage/raw_files/` in the repository is data, not a reusable code module
+- managed file naming and path generation are centralized in `src/main/file-helpers.ts`
+- delete and update flows still coordinate database state with filesystem mutations in high-risk code paths
+
+## Build and Packaging
+
+**Primary files:**
+
+- `vite.*.config.ts`
+- `forge.config.ts`
+
+Current responsibilities:
+
+- build each Electron target
+- preserve Prisma and native SQLite runtime compatibility in packaged builds
+
+Packaging changes should be treated as high-risk because they can break startup, Prisma resolution, or native module loading.
+
+## Current High-Risk Areas
+
+Plan carefully before touching:
+
+- `src/main.ts`
+- `src/renderer.ts`
+- `src/main/export-helpers.ts`
+- `prisma/schema.prisma`
+- `prisma/migrations/`
+- startup migration/bootstrap logic
+- delete logic and update-file rollback paths
+- managed-file naming and copy behavior
+- packaging configuration
+
+## Safe Extension Guidance
+
+When extending the current main branch:
+
+1. preserve the Electron main/preload/renderer boundary
+2. prefer focused helper extraction over broad rewrites
+3. keep privileged filesystem and database access in the main process
+4. preserve current export behavior unless explicitly changing it
+5. treat schema, startup, delete, update-file mutation, and packaging changes as high-risk
+6. keep documentation aligned with current code, not planned architecture
