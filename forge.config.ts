@@ -4,6 +4,7 @@ import { MakerZIP } from '@electron-forge/maker-zip';
 import { MakerDeb } from '@electron-forge/maker-deb';
 import { MakerRpm } from '@electron-forge/maker-rpm';
 import { VitePlugin } from '@electron-forge/plugin-vite';
+import { namedHookWithTaskFn } from '@electron-forge/plugin-base';
 import { FusesPlugin } from '@electron-forge/plugin-fuses';
 import { FuseV1Options, FuseVersion } from '@electron/fuses';
 import fs from 'node:fs';
@@ -16,6 +17,56 @@ function copyDirIfExists(from: string, to: string) {
     recursive: true,
     force: true
   });
+}
+
+function createScidataVitePlugin(config: ConstructorParameters<typeof VitePlugin>[0]) {
+  const plugin = new VitePlugin(config);
+  const pluginState = plugin as unknown as { baseDir: string };
+  const originalGetHooks = plugin.getHooks;
+  let alreadyStarted = false;
+
+  plugin.getHooks = () => {
+    const hooks = originalGetHooks();
+
+    return {
+      ...hooks,
+      preStart: [
+        namedHookWithTaskFn<'preStart'>(async (task) => {
+          if (alreadyStarted) return;
+          alreadyStarted = true;
+
+          await fs.promises.rm(pluginState.baseDir, {
+            force: true,
+            recursive: true
+          });
+
+          return task?.newListr(
+            [
+              {
+                title: 'Building main process and preload bundles...',
+                task: async (_ctx, subtask) => {
+                  const result = await plugin.build(subtask);
+                  subtask.title = 'Built main process and preload bundles';
+                  return result;
+                }
+              },
+              {
+                title: 'Building renderer bundles...',
+                task: async (_ctx, subtask) => {
+                  const result = await plugin.buildRenderer(subtask);
+                  subtask.title = 'Built renderer bundles';
+                  return result;
+                }
+              }
+            ],
+            { concurrent: false }
+          );
+        }, 'Preparing Vite bundles')
+      ]
+    };
+  };
+
+  return plugin;
 }
 
 const config: ForgeConfig = {
@@ -82,7 +133,7 @@ const config: ForgeConfig = {
   ],
 
   plugins: [
-    new VitePlugin({
+    createScidataVitePlugin({
       build: [
         {
           entry: 'src/main.ts',

@@ -9,6 +9,7 @@ export type ManagedFileTargetPayload = {
   tester: string;
   instrument: string;
   testTime: string;
+  nameSuffixParts?: string[];
 };
 
 export function fileExists(filePath: string) {
@@ -71,7 +72,11 @@ export function buildManagedTargetPath(
   const sampleDir = sanitizeFileNamePart(payload.sampleCode || '未分类样品');
   const targetDir = path.join(storageRoot, projectDir, sampleDir);
   const sourceExt = path.extname(payload.sourcePath);
-  const baseName = buildBaseName(payload);
+  const suffix = (payload.nameSuffixParts || [])
+    .filter(Boolean)
+    .map(sanitizeFileNamePart)
+    .join('-');
+  const baseName = [buildBaseName(payload), suffix].filter(Boolean).join('-');
   const fileName = `${baseName}${sourceExt}`;
   const fullPath = path.join(targetDir, fileName);
 
@@ -93,6 +98,11 @@ export function createManagedTempPath(filePath: string) {
 export function createManagedBackupPath(filePath: string) {
   const parsed = path.parse(filePath);
   return path.join(parsed.dir, `${parsed.name}.bak-${randomUUID()}${parsed.ext}`);
+}
+
+export function createManagedDeleteStagingPath(filePath: string) {
+  const parsed = path.parse(filePath);
+  return path.join(parsed.dir, `${parsed.name}.delete-${randomUUID()}${parsed.ext}`);
 }
 
 export function formatExportTimestamp() {

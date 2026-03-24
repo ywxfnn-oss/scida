@@ -11,6 +11,12 @@ const electronAPI: ElectronAPI = {
 
     saveAppSettings: (payload) => ipcRenderer.invoke('settings:saveAppSettings', payload),
 
+    listDictionaryItems: (payload) => ipcRenderer.invoke('dictionary:list', payload),
+
+    addDictionaryItem: (payload) => ipcRenderer.invoke('dictionary:add', payload),
+
+    deactivateDictionaryItem: (payload) => ipcRenderer.invoke('dictionary:deactivate', payload),
+
     selectSourceFile: () =>
         ipcRenderer.invoke('file:selectSourceFile'),
 
@@ -23,9 +29,11 @@ const electronAPI: ElectronAPI = {
     saveExperiment: (payload) => ipcRenderer.invoke('experiment:save', payload),
 
     listExperiments: (payload) => ipcRenderer.invoke('experiment:list', payload),
+    listExperimentFilterOptions: () => ipcRenderer.invoke('experiment:listFilterOptions'),
 
     getExperimentDetail: (experimentId: number) =>
         ipcRenderer.invoke('experiment:getDetail', experimentId),
+    listExperimentEditLogs: (payload) => ipcRenderer.invoke('experiment:listEditLogs', payload),
 
     deleteExperiment: (payload) => ipcRenderer.invoke('experiment:delete', payload),
 
@@ -38,6 +46,14 @@ const electronAPI: ElectronAPI = {
     exportItemNameCompare: (payload) => ipcRenderer.invoke('export:itemNameCompare', payload),
 
     scanFileIntegrity: () => ipcRenderer.invoke('file:scanIntegrity'),
+
+    exportOrphanFileList: (payload) => ipcRenderer.invoke('file:exportOrphanList', payload),
+
+    quarantineOrphanFiles: (payload) => ipcRenderer.invoke('file:quarantineOrphans', payload),
+
+    listRecentOperationLogs: (payload) => ipcRenderer.invoke('log:listRecentOperations', payload),
+
+    openPathLocation: (payload) => ipcRenderer.invoke('file:openPathLocation', payload),
 
     openSavedFile: (payload: { filePath: string }) => ipcRenderer.invoke('file:openSavedFile', payload),
 

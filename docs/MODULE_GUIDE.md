@@ -1,118 +1,175 @@
 # MODULE_GUIDE.md
 
-Module Guide for Scidata Manager
+Module guide for the current Scidata Manager main branch.
 
-## Core Modules
+## Main Process Composition
 
-### 1. Main Process Composition
-**Location:** `src/main.ts`
+**Primary file:** `src/main.ts`
 
-Responsibilities:
+Current responsibilities:
 
 - app lifecycle
 - `BrowserWindow` creation
-- runtime DB preparation and Prisma setup
+- runtime database preparation and Prisma initialization
 - IPC registration
-- remaining high-risk delete and update-file-mutation flows
+- remaining high-risk startup, delete, and update-file-mutation flows
 
-### 2. Main Process Helpers
-**Location:** `src/main/`
+`src/main.ts` is smaller than earlier revisions, but it still owns the highest-risk runtime and mutation paths.
 
-Current modules:
+## Main Process Helpers
+
+**Primary folder:** `src/main/`
+
+Current helper modules:
 
 - `auth-settings.ts`
   - login verification
   - app settings reads and writes
-  - password hashing helpers
+  - password hashing and verification helpers
 - `export-helpers.ts`
   - full export
   - item-name export
   - workbook and ZIP helpers
 - `file-helpers.ts`
-  - managed file/path naming helpers
-  - directory creation and temp/backup path helpers
+  - managed file naming
+  - path building
+  - filesystem helper utilities
 - `runtime-db-helpers.ts`
-  - runtime DB path helpers
+  - runtime DB path resolution
   - migration discovery helpers
 - `file-integrity.ts`
-  - read-only scan of referenced and orphan managed files
+  - read-only managed-file scan and report generation
 - `duplicate-check.ts`
-  - read-only exact-match duplicate lookup for warning prompts
+  - read-only exact-match duplicate lookup used before save/update warnings
 
-### 3. Preload Bridge
-**Location:** `src/preload.ts`
+These helpers reduce low-risk clutter in `src/main.ts`, but they do not remove the need to review main-process mutation flows carefully.
 
-Responsibilities:
+## Preload Bridge
 
-- expose the typed `window.electronAPI`
-- bridge renderer requests to IPC
-- keep privileged APIs out of the renderer
+**Primary file:** `src/preload.ts`
+
+Current responsibilities:
+
+- expose a typed `window.electronAPI`
+- bridge renderer requests to main-process IPC handlers
+- keep direct Node/Electron access out of the renderer
 
 Current additive safety-related APIs include:
 
 - duplicate check before save/update warning
 - file integrity scan report
 
-The preload contract remains defined by shared types in `src/electron-api.ts`.
+## Shared IPC Contract
 
-### 4. Shared IPC Types
-**Location:** `src/electron-api.ts`
+**Primary file:** `src/electron-api.ts`
 
-Responsibilities:
+Current responsibilities:
 
 - define the preload contract
 - keep `preload.ts`, renderer usage, and global typings aligned
 
-### 5. Renderer Composition
-**Location:** `src/renderer.ts`
+When changing renderer/main communication, update the shared types first and keep the preload bridge additive and explicit.
 
-Responsibilities:
+## Renderer Composition
+
+**Primary files:**
+
+- `src/renderer.ts`
+- `src/renderer/render-helpers.ts`
+
+Current renderer responsibilities:
 
 - render the UI
 - manage view state and form state
 - call preload APIs
 - surface user-visible success and error states
 
-Current user-facing safety features:
-
-- Settings includes file integrity scan v1
-- create and update flows include duplicate warning v1
-
-### 6. Renderer Helpers
-**Location:** `src/renderer/render-helpers.ts`
-
-Responsibilities:
+Current renderer helper responsibilities:
 
 - pure formatting helpers
 - parameterized HTML string builders
 - reusable render fragments with no preload access
 
-`src/renderer.ts` still owns orchestration, event binding, and DOM/state collection.
+Current user-facing safety features:
 
-### 7. Database Layer
-**Location:** `prisma/`
+- Settings includes a file integrity scan report
+- create and update flows include duplicate warning prompts
 
-Responsibilities:
+Current concentration risk:
 
-- schema definition
-- migration history
-- database evolution for packaged and existing users
+- `src/renderer.ts` still owns most orchestration, event binding, and DOM/state collection
 
-### 8. Runtime Storage
-**Locations:** runtime user-data directory and optional configured storage root
+## Database and Runtime DB Layer
 
-Responsibilities:
+**Primary locations:**
 
-- raw source-file storage
-- exported files
-- runtime SQLite database
+- `prisma/schema.prisma`
+- `prisma/migrations/`
+- `prisma.config.ts`
+- `dev.db`
+- `src/main.ts`
+- `src/main/runtime-db-helpers.ts`
+- `src/main/auth-settings.ts`
 
-Note: `storage/raw_files/` in the repository is data, not a reusable code module.
+Current runtime behavior:
 
-### 9. Build and Packaging
-**Locations:** `vite.*.config.ts`, `forge.config.ts`
+1. resolve `app.getPath('userData')/scidata.db`
+2. copy `dev.db` on first launch if needed
+3. inspect and apply pending SQL migrations from `prisma/migrations/`
+4. migrate legacy auth settings to hashed-password storage
+5. connect Prisma
 
-Responsibilities:
+Database access stays in the main process. Startup and migration safety remain high-risk areas.
 
-- compile each Electron target
-- keep Prisma and native SQLite runtime assets available in packaged builds
+## Runtime Storage and File Operations
+
+Current runtime storage concerns:
+
+- managed source-file storage under the configured storage root
+- exported workbooks and ZIPs
+- runtime SQLite database under the user-data directory
+
+Key current behavior:
+
+- `storage/raw_files/` in the repository is data, not a reusable code module
+- managed file naming and path generation are centralized in `src/main/file-helpers.ts`
+- delete and update flows still coordinate database state with filesystem mutations in high-risk code paths
+
+## Build and Packaging
+
+**Primary files:**
+
+- `vite.*.config.ts`
+- `forge.config.ts`
+
+Current responsibilities:
+
+- build each Electron target
+- preserve Prisma and native SQLite runtime compatibility in packaged builds
+
+Packaging changes should be treated as high-risk because they can break startup, Prisma resolution, or native module loading.
+
+## Current High-Risk Areas
+
+Plan carefully before touching:
+
+- `src/main.ts`
+- `src/renderer.ts`
+- `src/main/export-helpers.ts`
+- `prisma/schema.prisma`
+- `prisma/migrations/`
+- startup migration/bootstrap logic
+- delete logic and update-file rollback paths
+- managed-file naming and copy behavior
+- packaging configuration
+
+## Safe Extension Guidance
+
+When extending the current main branch:
+
+1. preserve the Electron main/preload/renderer boundary
+2. prefer focused helper extraction over broad rewrites
+3. keep privileged filesystem and database access in the main process
+4. preserve current export behavior unless explicitly changing it
+5. treat schema, startup, delete, update-file mutation, and packaging changes as high-risk
+6. keep documentation aligned with current code, not planned architecture

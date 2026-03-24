@@ -2,36 +2,32 @@
 
 ## Unreleased
 
-### Fixed
-- Fixed Prisma client generation and startup resolution by restoring a valid `prisma.config.ts`.
-- Added `prisma generate` support to install/setup flow so Prisma Client is regenerated automatically after install.
+### Added
+
+- Added Step 1 dictionary management, quick-add, dictionary validation, and searchable suggestions for standardized fields.
+- Added structured secondary-item blocks for XY and spectrum data.
+- Added unified secondary-item export support for scalar, XY, and spectrum data.
 
 ### Changed
-- Extracted low-risk main-process helpers from `src/main.ts` into focused modules for auth/settings, runtime DB discovery, file/path helpers, and export helpers.
-- Extracted low-risk renderer formatting and HTML string helpers into `src/renderer/render-helpers.ts`.
 
-### Added
-- Added a minimal Settings-based file integrity scan that reports the scanned `storageRoot`, missing referenced files, orphan managed files, and example paths.
-- Added a minimal non-blocking duplicate-record warning before create and update save flows.
+- Renamed the structured block title field in the UI to `二级数据项名称`.
+- Unified scalar item names and XY block titles under one user-facing `二级数据项` concept.
+- Restructured export modes to:
+  - `完整资料导出`
+  - `导出单个二级数据项`
+  - `导出全部二级数据项`
+- Folded XY and spectrum export into the unified secondary-item export flow.
 
-## v1.0.1
+### Removed
+
+- Removed the standalone strict XY compare export mode from the UI and IPC flow.
 
 ### Fixed
-- Replaced plain-text password storage with hashed password storage
-- Migrated legacy `loginPassword` settings to `loginPasswordHash`
-- Moved authentication verification into the Electron main process
-- Prevented sensitive auth data from being exposed to the renderer
-- Added runtime DB backup before auth migration
-- Improved startup/runtime error handling
-- Fixed TypeScript module resolution for Vite and Forge config types
 
-### Verified
-- `npx tsc --noEmit`
-- `npm run lint`
-- `npm run package`
-- `npm run make`
-- local auth migration and login flow
-
-## v1.0.0
-
-Initial working version of Scidata Manager.
+- Fixed unified secondary-item export so XY items generate workbooks instead of copying only raw/source files.
+- Added export-time collision handling for:
+  - secondary-item folders
+  - workbook filenames
+  - structured workbook column headers
+  - raw/source file copies
+- Preserved same-name scalar + XY + spectrum export by writing separate workbooks in the same top-level folder.

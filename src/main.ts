@@ -8,8 +8,12 @@ import Database from 'better-sqlite3';
 import started from 'electron-squirrel-startup';
 import type {
   ActionResult,
+  AddDictionaryItemPayload,
   AuthenticatePayload,
+  CopyFileToStoragePayload,
   CopyFileToStorageResult,
+  DeactivateDictionaryItemPayload,
+  ListDictionaryItemsPayload,
   SaveAppSettingsPayload,
   SaveExperimentPayload,
   SaveExperimentResult,
@@ -17,8 +21,6 @@ import type {
 } from './electron-api';
 import {
   buildManagedTargetPath,
-  createManagedBackupPath,
-  createManagedTempPath,
   ensureDir,
   fileExists,
   formatExportTimestamp
@@ -28,8 +30,18 @@ import {
   exportFullExperiments,
   getDistinctItemNames
 } from './main/export-helpers';
+import { deleteExperimentPermanently } from './main/delete-helpers';
 import { findLikelyDuplicateExperiments } from './main/duplicate-check';
-import { scanManagedFileIntegrity } from './main/file-integrity';
+import {
+  exportOrphanFileList,
+  openPathLocation,
+  quarantineOrphanFiles,
+  scanManagedFileIntegrity
+} from './main/file-integrity';
+import {
+  getManagedTargetConflictError,
+  updateExperimentWithManagedFiles
+} from './main/record-file-update-helpers';
 import {
   getBundledDbPath,
   getKnownMigrationTables,
@@ -44,6 +56,25 @@ import {
   saveAppSettings,
   verifyLogin
 } from './main/auth-settings';
+import {
+  addDictionaryItem,
+  deactivateDictionaryItem,
+  listDictionaryItems
+} from './main/dictionary-settings';
+import { listExperimentEditLogs } from './main/edit-log';
+import { listRecentOperationLogs } from './main/operation-log';
+import {
+  normalizeTemplateBlocks,
+  parseTemplateBlockMeta,
+  serializeTemplateBlockMeta,
+  validateTemplateBlockPayloads,
+  SPECTRUM_TEMPLATE_TYPE,
+  XY_TEMPLATE_TYPE,
+  type SpectrumBlockMeta,
+  type TemplateBlockType,
+  type XYCurveBlockMeta,
+  type XYPoint
+} from './template-blocks';
 
 let prisma!: PrismaClient;
 
@@ -53,17 +84,6 @@ const PASSWORD_HASH_PREFIX = 'scrypt';
 
 type SqliteDatabase = InstanceType<typeof Database>;
 
-type UpdateFilePlan = {
-  index: number;
-  dataItemId?: number;
-  currentSourcePath: string;
-  targetPath: string;
-  targetFileName: string;
-  replacementSourcePath: string;
-  replacementOriginalName: string;
-  action: 'rename' | 'replace' | 'create';
-};
-
 function getDefaultStorageRoot() {
   return path.join(app.getPath('userData'), 'storage', 'raw_files');
 }
@@ -72,6 +92,31 @@ function hashPassword(password: string) {
   const salt = randomBytes(16).toString('hex');
   const derivedKey = scryptSync(password, salt, 64).toString('hex');
   return `${PASSWORD_HASH_PREFIX}:${salt}:${derivedKey}`;
+}
+
+function parseXYBlockPoints(dataJson: string): XYPoint[] {
+  try {
+    const parsed = JSON.parse(dataJson);
+
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+
+    return parsed
+      .filter(
+        (point): point is XYPoint =>
+          !!point &&
+          typeof point === 'object' &&
+          Number.isFinite((point as XYPoint).x) &&
+          Number.isFinite((point as XYPoint).y)
+      )
+      .map((point) => ({
+        x: Number(point.x),
+        y: Number(point.y)
+      }));
+  } catch {
+    return [];
+  }
 }
 
 function ensureMigrationTable(db: SqliteDatabase) {
@@ -353,130 +398,17 @@ const createWindow = (): void => {
   });
 
   if (MAIN_WINDOW_VITE_DEV_SERVER_URL) {
-    void mainWindow.loadURL(MAIN_WINDOW_VITE_DEV_SERVER_URL);
+    void mainWindow.loadURL(MAIN_WINDOW_VITE_DEV_SERVER_URL).catch((error) => {
+      console.error('[main] loadURL failed:', error);
+    });
   } else {
     void mainWindow.loadFile(
       path.join(__dirname, `../renderer/${MAIN_WINDOW_VITE_NAME}/index.html`)
-    );
+    ).catch((error) => {
+      console.error('[main] loadFile failed:', error);
+    });
   }
 };
-
-async function findConflictingDataItem(
-  targetPath: string,
-  excludeDataItemId?: number
-) {
-  return prisma.experimentDataItem.findFirst({
-    where: {
-      sourceFilePath: targetPath,
-      ...(excludeDataItemId ? { NOT: { id: excludeDataItemId } } : {})
-    }
-  });
-}
-
-async function getManagedTargetConflictError(
-  targetPath: string,
-  options?: {
-    excludeDataItemId?: number;
-    currentSourcePath?: string;
-  }
-) {
-  const conflictingItem = await findConflictingDataItem(
-    targetPath,
-    options?.excludeDataItemId
-  );
-
-  if (conflictingItem) {
-    return '保存文件名与其他实验记录冲突，请调整后重试';
-  }
-
-  if (fileExists(targetPath) && targetPath !== options?.currentSourcePath) {
-    return '目标保存文件已存在，无法覆盖，请调整后重试';
-  }
-
-  return '';
-}
-
-async function deleteExperimentPermanently(experimentId: number): Promise<ActionResult> {
-  const experiment = await prisma.experiment.findUnique({
-    where: { id: experimentId },
-    include: {
-      dataItems: true
-    }
-  });
-
-  if (!experiment) {
-    return { success: false, error: '未找到对应实验记录' };
-  }
-
-  const savedFilePaths = Array.from(
-    new Set(
-      experiment.dataItems
-        .map((item) => item.sourceFilePath?.trim() || '')
-        .filter(Boolean)
-    )
-  );
-
-  for (const filePath of savedFilePaths) {
-    const sharedReferenceCount = await prisma.experimentDataItem.count({
-      where: {
-        sourceFilePath: filePath,
-        experimentId: {
-          not: experimentId
-        }
-      }
-    });
-
-    if (sharedReferenceCount > 0) {
-      return {
-        success: false,
-        error: `无法删除：保存文件“${path.basename(filePath)}”仍被其他实验记录引用`
-      };
-    }
-  }
-
-  const deletedFilePaths: string[] = [];
-
-  for (const filePath of savedFilePaths) {
-    if (!fileExists(filePath)) {
-      continue;
-    }
-
-    try {
-      fs.rmSync(filePath);
-      deletedFilePaths.push(filePath);
-    } catch (error) {
-      console.error('deleteExperiment file removal failed:', {
-        experimentId,
-        filePath,
-        error
-      });
-
-      return {
-        success: false,
-        error: `删除保存文件失败：${path.basename(filePath)}。实验记录未删除`
-      };
-    }
-  }
-
-  try {
-    await prisma.experiment.delete({
-      where: { id: experimentId }
-    });
-
-    return { success: true };
-  } catch (error) {
-    console.error('deleteExperiment database removal failed after file deletion:', {
-      experimentId,
-      deletedFilePaths,
-      error
-    });
-
-    return {
-      success: false,
-      error: '保存文件已删除，但数据库记录删除失败，可能需要手动恢复数据'
-    };
-  }
-}
 
 app.whenReady().then(async () => {
   try {
@@ -539,6 +471,60 @@ app.whenReady().then(async () => {
     }
   );
 
+  ipcMain.handle(
+    'dictionary:list',
+    async (_event, payload?: ListDictionaryItemsPayload) => {
+      try {
+        return await listDictionaryItems(prisma, payload);
+      } catch (error) {
+        console.error('listDictionaryItems failed:', error);
+        throw error;
+      }
+    }
+  );
+
+  ipcMain.handle(
+    'dictionary:add',
+    async (_event, payload: AddDictionaryItemPayload) => {
+      try {
+        return await addDictionaryItem(prisma, payload);
+      } catch (error) {
+        console.error('addDictionaryItem failed:', error);
+        return { success: false, error: '添加词典项失败，请稍后重试' };
+      }
+    }
+  );
+
+  ipcMain.handle(
+    'dictionary:deactivate',
+    async (_event, payload: DeactivateDictionaryItemPayload): Promise<ActionResult> => {
+      try {
+        return await deactivateDictionaryItem(prisma, payload);
+      } catch (error) {
+        console.error('deactivateDictionaryItem failed:', error);
+        return { success: false, error: '删除词典项失败，请稍后重试' };
+      }
+    }
+  );
+
+  ipcMain.handle(
+    'log:listRecentOperations',
+    async (
+      _event,
+      payload?: {
+        filter?: 'all' | 'delete' | 'export';
+        limit?: number;
+      }
+    ) => {
+      try {
+        return await listRecentOperationLogs(prisma, payload);
+      } catch (error) {
+        console.error('listRecentOperationLogs failed:', error);
+        return [];
+      }
+    }
+  );
+
   ipcMain.handle('file:selectSourceFile', async () => {
     const result = await dialog.showOpenDialog({
       title: '选择原始文件',
@@ -560,14 +546,7 @@ app.whenReady().then(async () => {
     'file:copyToStorage',
     async (
       _event,
-      payload: {
-        sourcePath: string;
-        testProject: string;
-        sampleCode: string;
-        tester: string;
-        instrument: string;
-        testTime: string;
-      }
+      payload: CopyFileToStoragePayload
     ): Promise<CopyFileToStorageResult> => {
       try {
         if (!payload.sourcePath || !fileExists(payload.sourcePath)) {
@@ -582,9 +561,19 @@ app.whenReady().then(async () => {
 
         const { targetDir, fileName, fullPath } = buildManagedTargetPath(
           storageRoot,
-          payload
+          {
+            ...payload,
+            nameSuffixParts:
+              payload.templateType
+                ? [
+                    payload.templateType,
+                    payload.blockTitle || 'block',
+                    payload.blockToken || ''
+                  ]
+                : []
+          }
         );
-        const conflictError = await getManagedTargetConflictError(fullPath);
+        const conflictError = await getManagedTargetConflictError(prisma, fullPath);
 
         if (conflictError) {
           return { success: false, error: conflictError };
@@ -629,6 +618,16 @@ app.whenReady().then(async () => {
     'experiment:save',
     async (_event, payload: SaveExperimentPayload): Promise<SaveExperimentResult> => {
       try {
+        const normalizedTemplateBlocks = normalizeTemplateBlocks(payload.templateBlocks || []);
+        const templateBlockValidation = validateTemplateBlockPayloads(normalizedTemplateBlocks);
+
+        if ('error' in templateBlockValidation) {
+          return {
+            success: false,
+            error: templateBlockValidation.error
+          };
+        }
+
         const experiment = await prisma.experiment.create({
           data: {
             testProject: payload.step1.testProject,
@@ -656,6 +655,19 @@ app.whenReady().then(async () => {
                 originalFilePath: item.originalFilePath || null,
                 rowOrder: index + 1
               }))
+            },
+            templateBlocks: {
+              create: normalizedTemplateBlocks.map((block, index) => ({
+                templateType: block.templateType,
+                blockTitle: block.blockTitle,
+                blockOrder: index + 1,
+                metaJson: serializeTemplateBlockMeta(block),
+                dataJson: JSON.stringify(block.points),
+                sourceFileName: block.sourceFileName || null,
+                sourceFilePath: block.sourceFilePath || null,
+                originalFileName: block.originalFileName || null,
+                originalFilePath: block.originalFilePath || null
+              }))
             }
           }
         });
@@ -678,26 +690,49 @@ app.whenReady().then(async () => {
       payload?: {
         query?: string;
         groupBy?: 'sampleCode' | 'testProject' | 'testTime' | 'instrument' | 'tester' | 'sampleOwner';
+        filters?: {
+          testProject?: string;
+          tester?: string;
+        };
+        sortOrder?: 'newest' | 'oldest';
       }
     ) => {
       const keyword = (payload?.query || '').trim();
       const groupBy = payload?.groupBy || 'sampleCode';
+      const sortOrder = payload?.sortOrder || 'newest';
+      const testProjectFilter = (payload?.filters?.testProject || '').trim();
+      const testerFilter = (payload?.filters?.tester || '').trim();
+      const whereClauses = [];
+
+      if (keyword) {
+        whereClauses.push({
+          OR: [
+            { displayName: { contains: keyword } },
+            { sampleCode: { contains: keyword } },
+            { testProject: { contains: keyword } },
+            { tester: { contains: keyword } },
+            { instrument: { contains: keyword } },
+            { sampleOwner: { contains: keyword } }
+          ]
+        });
+      }
+
+      if (testProjectFilter) {
+        whereClauses.push({
+          testProject: testProjectFilter
+        });
+      }
+
+      if (testerFilter) {
+        whereClauses.push({
+          tester: testerFilter
+        });
+      }
 
       const experiments = await prisma.experiment.findMany({
-        where: keyword
-          ? {
-            OR: [
-              { displayName: { contains: keyword } },
-              { sampleCode: { contains: keyword } },
-              { testProject: { contains: keyword } },
-              { tester: { contains: keyword } },
-              { instrument: { contains: keyword } },
-              { sampleOwner: { contains: keyword } }
-            ]
-          }
-          : undefined,
+        where: whereClauses.length ? { AND: whereClauses } : undefined,
         orderBy: {
-          id: 'desc'
+          id: sortOrder === 'oldest' ? 'asc' : 'desc'
         }
       });
 
@@ -754,6 +789,38 @@ app.whenReady().then(async () => {
     }
   );
 
+  ipcMain.handle('experiment:listFilterOptions', async () => {
+    const [testProjects, testers] = await Promise.all([
+      prisma.experiment.findMany({
+        where: {
+          testProject: {
+            not: ''
+          }
+        },
+        select: {
+          testProject: true
+        },
+        distinct: ['testProject']
+      }),
+      prisma.experiment.findMany({
+        where: {
+          tester: {
+            not: ''
+          }
+        },
+        select: {
+          tester: true
+        },
+        distinct: ['tester']
+      })
+    ]);
+
+    return {
+      testProjects: testProjects.map((item) => item.testProject).sort((a, b) => a.localeCompare(b, 'zh-CN')),
+      testers: testers.map((item) => item.tester).sort((a, b) => a.localeCompare(b, 'zh-CN'))
+    };
+  });
+
   ipcMain.handle('experiment:getDetail', async (_event, experimentId: number) => {
     const experiment = await prisma.experiment.findUnique({
       where: { id: experimentId },
@@ -763,18 +830,98 @@ app.whenReady().then(async () => {
         },
         dataItems: {
           orderBy: { rowOrder: 'asc' }
+        },
+        templateBlocks: {
+          orderBy: { blockOrder: 'asc' }
         }
       }
     });
 
-    return experiment;
+    if (!experiment) {
+      return null;
+    }
+
+    const { templateBlocks, ...rest } = experiment;
+
+    return {
+      ...rest,
+      templateBlocks: templateBlocks.map((block) => {
+        const points = parseXYBlockPoints(block.dataJson);
+
+        if (block.templateType === XY_TEMPLATE_TYPE) {
+          const meta = parseTemplateBlockMeta(
+            block.templateType as TemplateBlockType,
+            block.metaJson
+          ) as XYCurveBlockMeta;
+
+          return {
+            id: block.id,
+            templateType: XY_TEMPLATE_TYPE,
+            blockTitle: block.blockTitle,
+            blockOrder: block.blockOrder,
+            xLabel: meta.xLabel,
+            xUnit: meta.xUnit,
+            yLabel: meta.yLabel,
+            yUnit: meta.yUnit,
+            note: meta.note,
+            points,
+            sourceFileName: block.sourceFileName,
+            sourceFilePath: block.sourceFilePath,
+            originalFileName: block.originalFileName,
+            originalFilePath: block.originalFilePath,
+            createdAt: block.createdAt.toISOString()
+          };
+        }
+
+        const meta = parseTemplateBlockMeta(
+          block.templateType as TemplateBlockType,
+          block.metaJson
+        ) as SpectrumBlockMeta;
+
+        return {
+          id: block.id,
+          templateType: SPECTRUM_TEMPLATE_TYPE,
+          blockTitle: block.blockTitle,
+          blockOrder: block.blockOrder,
+          spectrumAxisLabel: meta.spectrumAxisLabel,
+          spectrumAxisUnit: meta.spectrumAxisUnit,
+          signalLabel: meta.signalLabel,
+          signalUnit: meta.signalUnit,
+          note: meta.note,
+          points,
+          sourceFileName: block.sourceFileName,
+          sourceFilePath: block.sourceFilePath,
+          originalFileName: block.originalFileName,
+          originalFilePath: block.originalFilePath,
+          createdAt: block.createdAt.toISOString()
+        };
+      })
+    };
   });
+
+  ipcMain.handle(
+    'experiment:listEditLogs',
+    async (
+      _event,
+      payload: {
+        experimentId: number;
+        limit?: number;
+      }
+    ) => {
+      try {
+        return await listExperimentEditLogs(prisma, payload);
+      } catch (error) {
+        console.error('listExperimentEditLogs failed:', error);
+        return [];
+      }
+    }
+  );
 
   ipcMain.handle(
     'experiment:delete',
     async (_event, payload: { experimentId: number }): Promise<ActionResult> => {
       try {
-        return await deleteExperimentPermanently(payload.experimentId);
+        return await deleteExperimentPermanently(prisma, payload.experimentId);
       } catch (error) {
         console.error('deleteExperiment failed:', {
           experimentId: payload.experimentId,
@@ -852,390 +999,49 @@ app.whenReady().then(async () => {
   );
 
   ipcMain.handle(
+    'file:exportOrphanList',
+    async (_event, payload: { storageRoot: string; orphanPaths: string[] }) => {
+      try {
+        return await exportOrphanFileList(payload.storageRoot, payload.orphanPaths);
+      } catch (error) {
+        console.error('exportOrphanFileList failed:', error);
+        return { success: false, error: '导出孤儿文件清单失败' };
+      }
+    }
+  );
+
+  ipcMain.handle(
+    'file:quarantineOrphans',
+    async (_event, payload: { storageRoot: string; orphanPaths: string[] }) => {
+      try {
+        return await quarantineOrphanFiles(payload.storageRoot, payload.orphanPaths);
+      } catch (error) {
+        console.error('quarantineOrphanFiles failed:', error);
+        return { success: false, error: '隔离孤儿文件失败' };
+      }
+    }
+  );
+
+  ipcMain.handle(
+    'file:openPathLocation',
+    async (_event, payload: { targetPath: string }) => {
+      try {
+        return await openPathLocation(payload.targetPath);
+      } catch (error) {
+        console.error('openPathLocation failed:', error);
+        return { success: false, error: '打开路径失败' };
+      }
+    }
+  );
+
+  ipcMain.handle(
     'experiment:update',
     async (_event, payload: UpdateExperimentPayload): Promise<ActionResult> => {
       try {
-        const oldExperiment = await prisma.experiment.findUnique({
-          where: { id: payload.experimentId },
-          include: {
-            customFields: { orderBy: { sortOrder: 'asc' } },
-            dataItems: { orderBy: { rowOrder: 'asc' } }
-          }
-        });
-
-        if (!oldExperiment) {
-          return { success: false, error: '未找到对应实验记录' };
-        }
-
-        const storageRoot = await getSettingValue(
+        return await updateExperimentWithManagedFiles(payload, {
           prisma,
-          'storageRoot',
-          getDefaultStorageRoot()
-        );
-        const oldDataItemMap = new Map(
-          oldExperiment.dataItems.map((item) => [item.id, item])
-        );
-        const plannedTargetPaths = new Set<string>();
-        const filePlans: UpdateFilePlan[] = [];
-
-        for (const [index, item] of payload.step2.entries()) {
-          const oldItem = item.dataItemId ? oldDataItemMap.get(item.dataItemId) : undefined;
-          const currentSourcePath = oldItem?.sourceFilePath?.trim() || item.sourceFilePath.trim() || '';
-          const replacementSourcePath = item.replacementSourcePath?.trim() || '';
-          const replacementOriginalName = item.replacementOriginalName?.trim() || '';
-          const hasManagedFile = !!currentSourcePath;
-          const hasReplacement = !!replacementSourcePath;
-
-          if (!hasManagedFile && !hasReplacement) {
-            continue;
-          }
-
-          const namingSourcePath = hasReplacement ? replacementSourcePath : currentSourcePath;
-          const { fileName, fullPath } = buildManagedTargetPath(storageRoot, {
-            sourcePath: namingSourcePath,
-            testProject: payload.step1.testProject,
-            sampleCode: payload.step1.sampleCode,
-            tester: payload.step1.tester,
-            instrument: payload.step1.instrument,
-            testTime: payload.step1.testTime
-          });
-
-          if (plannedTargetPaths.has(fullPath)) {
-            return {
-              success: false,
-              error: '保存文件名与当前编辑中的其他数据项冲突，请调整后重试'
-            };
-          }
-
-          plannedTargetPaths.add(fullPath);
-
-          const conflictError = await getManagedTargetConflictError(fullPath, {
-            excludeDataItemId: item.dataItemId,
-            currentSourcePath
-          });
-
-          if (conflictError) {
-            return { success: false, error: conflictError };
-          }
-
-          if (hasReplacement && !fileExists(replacementSourcePath)) {
-            return { success: false, error: '新选择的原始文件不存在或路径无效' };
-          }
-
-          if (hasReplacement) {
-            filePlans.push({
-              index,
-              dataItemId: item.dataItemId,
-              currentSourcePath,
-              targetPath: fullPath,
-              targetFileName: fileName,
-              replacementSourcePath,
-              replacementOriginalName,
-              action: hasManagedFile ? 'replace' : 'create'
-            });
-            continue;
-          }
-
-          if (currentSourcePath && fullPath !== currentSourcePath) {
-            filePlans.push({
-              index,
-              dataItemId: item.dataItemId,
-              currentSourcePath,
-              targetPath: fullPath,
-              targetFileName: fileName,
-              replacementSourcePath: '',
-              replacementOriginalName: '',
-              action: 'rename'
-            });
-          }
-        }
-
-        const resolvedStep2 = payload.step2.map((item) => ({
-          ...item,
-          sourceFileName: item.sourceFileName || '',
-          sourceFilePath: item.sourceFilePath || '',
-          originalFileName: item.originalFileName || '',
-          originalFilePath: item.originalFilePath || ''
-        }));
-        const rollbackActions: Array<() => void> = [];
-        const finalizeActions: Array<() => void> = [];
-
-        try {
-          for (const plan of filePlans) {
-            if (plan.action === 'rename') {
-              if (!plan.currentSourcePath || !fileExists(plan.currentSourcePath)) {
-                return { success: false, error: '当前保存文件不存在，无法按新名称更新' };
-              }
-
-              ensureDir(path.dirname(plan.targetPath));
-              fs.renameSync(plan.currentSourcePath, plan.targetPath);
-
-              rollbackActions.unshift(() => {
-                if (fileExists(plan.targetPath) && !fileExists(plan.currentSourcePath)) {
-                  ensureDir(path.dirname(plan.currentSourcePath));
-                  fs.renameSync(plan.targetPath, plan.currentSourcePath);
-                }
-              });
-
-              resolvedStep2[plan.index] = {
-                ...resolvedStep2[plan.index],
-                sourceFileName: plan.targetFileName,
-                sourceFilePath: plan.targetPath
-              };
-
-              continue;
-            }
-
-            const tempPath = createManagedTempPath(plan.targetPath);
-
-            if (plan.action === 'create') {
-              try {
-                ensureDir(path.dirname(plan.targetPath));
-                fs.copyFileSync(plan.replacementSourcePath, tempPath);
-                fs.renameSync(tempPath, plan.targetPath);
-              } finally {
-                if (fileExists(tempPath)) {
-                  fs.rmSync(tempPath, { force: true });
-                }
-              }
-
-              rollbackActions.unshift(() => {
-                if (fileExists(plan.targetPath)) {
-                  fs.rmSync(plan.targetPath, { force: true });
-                }
-              });
-
-              resolvedStep2[plan.index] = {
-                ...resolvedStep2[plan.index],
-                sourceFileName: plan.targetFileName,
-                sourceFilePath: plan.targetPath,
-                originalFileName: plan.replacementOriginalName,
-                originalFilePath: plan.replacementSourcePath
-              };
-
-              continue;
-            }
-
-            if (!plan.currentSourcePath || !fileExists(plan.currentSourcePath)) {
-              return { success: false, error: '当前保存文件不存在，无法替换为新文件' };
-            }
-
-            const backupPath = createManagedBackupPath(plan.currentSourcePath);
-
-            try {
-              ensureDir(path.dirname(plan.targetPath));
-              fs.renameSync(plan.currentSourcePath, backupPath);
-              fs.copyFileSync(plan.replacementSourcePath, tempPath);
-              fs.renameSync(tempPath, plan.targetPath);
-            } catch (error) {
-              if (fileExists(tempPath)) {
-                fs.rmSync(tempPath, { force: true });
-              }
-
-              if (fileExists(backupPath) && !fileExists(plan.currentSourcePath)) {
-                try {
-                  ensureDir(path.dirname(plan.currentSourcePath));
-                  fs.renameSync(backupPath, plan.currentSourcePath);
-                } catch (restoreError) {
-                  console.error('restoreSavedFileAfterReplace failed:', {
-                    experimentId: payload.experimentId,
-                    dataItemId: plan.dataItemId,
-                    restoreError
-                  });
-                }
-              }
-
-              throw error;
-            }
-
-            finalizeActions.push(() => {
-              if (fileExists(backupPath)) {
-                fs.rmSync(backupPath, { force: true });
-              }
-            });
-
-            rollbackActions.unshift(() => {
-              if (fileExists(plan.targetPath)) {
-                fs.rmSync(plan.targetPath, { force: true });
-              }
-
-              if (fileExists(backupPath) && !fileExists(plan.currentSourcePath)) {
-                ensureDir(path.dirname(plan.currentSourcePath));
-                fs.renameSync(backupPath, plan.currentSourcePath);
-              }
-            });
-
-            resolvedStep2[plan.index] = {
-              ...resolvedStep2[plan.index],
-              sourceFileName: plan.targetFileName,
-              sourceFilePath: plan.targetPath,
-              originalFileName: plan.replacementOriginalName,
-              originalFilePath: plan.replacementSourcePath
-            };
-          }
-        } catch (error) {
-          for (const rollback of rollbackActions) {
-            try {
-              rollback();
-            } catch (rollbackError) {
-              console.error('rollbackUpdatedSavedFile failed:', {
-                experimentId: payload.experimentId,
-                rollbackError
-              });
-            }
-          }
-
-          console.error('prepareUpdatedSavedFiles failed:', {
-            experimentId: payload.experimentId,
-            error
-          });
-          return { success: false, error: '更新保存文件失败，请检查文件状态后重试' };
-        }
-
-        const oldSnapshot = {
-          testProject: oldExperiment.testProject,
-          sampleCode: oldExperiment.sampleCode,
-          tester: oldExperiment.tester,
-          instrument: oldExperiment.instrument,
-          testTime: oldExperiment.testTime,
-          sampleOwner: oldExperiment.sampleOwner,
-          displayName: oldExperiment.displayName,
-          customFields: oldExperiment.customFields.map((field) => ({
-            fieldName: field.fieldName,
-            fieldValue: field.fieldValue,
-            sortOrder: field.sortOrder
-          })),
-          dataItems: oldExperiment.dataItems.map((item) => ({
-            itemName: item.itemName,
-            itemValue: item.itemValue,
-            itemUnit: item.itemUnit,
-            sourceFileName: item.sourceFileName,
-            sourceFilePath: item.sourceFilePath,
-            originalFileName: item.originalFileName,
-            originalFilePath: item.originalFilePath,
-            rowOrder: item.rowOrder
-          }))
-        };
-
-        try {
-          await prisma.$transaction(async (tx) => {
-            await tx.experiment.update({
-              where: { id: payload.experimentId },
-              data: {
-                testProject: payload.step1.testProject,
-                sampleCode: payload.step1.sampleCode,
-                tester: payload.step1.tester,
-                instrument: payload.step1.instrument,
-                testTime: payload.step1.testTime,
-                sampleOwner: payload.step1.sampleOwner || null,
-                displayName: payload.displayName
-              }
-            });
-
-            await tx.experimentCustomField.deleteMany({
-              where: { experimentId: payload.experimentId }
-            });
-
-            await tx.experimentDataItem.deleteMany({
-              where: { experimentId: payload.experimentId }
-            });
-
-            if (payload.step1.dynamicFields.length) {
-              await tx.experimentCustomField.createMany({
-                data: payload.step1.dynamicFields.map((field, index) => ({
-                  experimentId: payload.experimentId,
-                  fieldName: field.name,
-                  fieldValue: field.value,
-                  sortOrder: index + 1
-                }))
-              });
-            }
-
-            if (resolvedStep2.length) {
-              await tx.experimentDataItem.createMany({
-                data: resolvedStep2.map((item, index) => ({
-                  experimentId: payload.experimentId,
-                  itemName: item.itemName,
-                  itemValue: item.itemValue,
-                  itemUnit: item.itemUnit || null,
-                  sourceFileName: item.sourceFileName || null,
-                  sourceFilePath: item.sourceFilePath || null,
-                  originalFileName: item.originalFileName || null,
-                  originalFilePath: item.originalFilePath || null,
-                  rowOrder: index + 1
-                }))
-              });
-            }
-
-            const newSnapshot = {
-              testProject: payload.step1.testProject,
-              sampleCode: payload.step1.sampleCode,
-              tester: payload.step1.tester,
-              instrument: payload.step1.instrument,
-              testTime: payload.step1.testTime,
-              sampleOwner: payload.step1.sampleOwner || null,
-              displayName: payload.displayName,
-              customFields: payload.step1.dynamicFields.map((field, index) => ({
-                fieldName: field.name,
-                fieldValue: field.value,
-                sortOrder: index + 1
-              })),
-              dataItems: resolvedStep2.map((item, index) => ({
-                itemName: item.itemName,
-                itemValue: item.itemValue,
-                itemUnit: item.itemUnit || null,
-                sourceFileName: item.sourceFileName || null,
-                sourceFilePath: item.sourceFilePath || null,
-                originalFileName: item.originalFileName || null,
-                originalFilePath: item.originalFilePath || null,
-                rowOrder: index + 1
-              }))
-            };
-
-            await tx.editLog.create({
-              data: {
-                experimentId: payload.experimentId,
-                editor: payload.editor,
-                editReason: payload.editReason,
-                editedFieldsJson: JSON.stringify({
-                  before: oldSnapshot,
-                  after: newSnapshot
-                })
-              }
-            });
-          });
-        } catch (error) {
-          for (const rollback of rollbackActions) {
-            try {
-              rollback();
-            } catch (rollbackError) {
-              console.error('rollbackUpdatedSavedFileAfterDbFailure failed:', {
-                experimentId: payload.experimentId,
-                rollbackError
-              });
-            }
-          }
-
-          throw error;
-        }
-
-        try {
-          for (const finalize of finalizeActions) {
-            finalize();
-          }
-        } catch (error) {
-          console.error('cleanupReplacedSavedFile failed:', {
-            experimentId: payload.experimentId,
-            error
-          });
-
-          return {
-            success: false,
-            error: '实验记录已更新，但旧的保存文件清理失败，可能需要手动处理'
-          };
-        }
-
-        return { success: true };
+          getDefaultStorageRoot
+        });
       } catch (error) {
         console.error('updateExperiment failed:', error);
         return { success: false, error: '更新实验数据失败' };

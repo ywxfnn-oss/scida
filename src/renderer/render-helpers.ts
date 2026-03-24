@@ -1,4 +1,10 @@
-import type { GroupByType } from '../electron-api';
+import type {
+  DuplicateExperimentMatch,
+  ExperimentEditHistoryEntry,
+  OperationLogFilter,
+  GroupByType,
+  RecentOperationLogEntry
+} from '../electron-api';
 
 type ExportModeType = 'full' | 'single-item' | 'all-items';
 
@@ -46,6 +52,24 @@ export function getPendingOriginalName(item: DataItemLike) {
 export function formatTestTimeForDisplay(value: string) {
   if (!value) return '';
   return value.replace('T', '-').replaceAll(':', '-');
+}
+
+export function formatDateTimeForDisplay(value: string) {
+  if (!value) return '-';
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  const hours = String(date.getHours()).padStart(2, '0');
+  const minutes = String(date.getMinutes()).padStart(2, '0');
+  const seconds = String(date.getSeconds()).padStart(2, '0');
+
+  return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
 }
 
 export function escapeHtml(value: string) {
@@ -118,7 +142,7 @@ export function renderExportModal(params: {
               value="single-item"
               ${exportMode === 'single-item' ? 'checked' : ''}
             />
-            <span>导出某一个二级数据项名称</span>
+            <span>导出单个二级数据项</span>
           </label>
 
           <label class="checkbox-row">
@@ -128,7 +152,7 @@ export function renderExportModal(params: {
               value="all-items"
               ${exportMode === 'all-items' ? 'checked' : ''}
             />
-            <span>导出全部二级数据项名称</span>
+            <span>导出全部二级数据项</span>
           </label>
         </div>
 
@@ -223,6 +247,106 @@ export function renderDeleteModal(params: {
   `;
 }
 
+export function renderDuplicateWarningModal(params: {
+  visible: boolean;
+  actionLabel: string;
+  sampleCode: string;
+  testProject: string;
+  testTime: string;
+  matches: DuplicateExperimentMatch[];
+  submitting: boolean;
+}) {
+  const {
+    visible,
+    actionLabel,
+    sampleCode,
+    testProject,
+    testTime,
+    matches,
+    submitting
+  } = params;
+
+  if (!visible || !matches.length) return '';
+
+  return `
+    <div class="export-modal-mask">
+      <div class="export-modal-card">
+        <div class="export-modal-title">发现可能重复的实验记录</div>
+        <div class="export-modal-desc">
+          这是提示，不会阻止${escapeHtml(actionLabel)}。你可以返回编辑、查看已有记录，或仍然继续${escapeHtml(actionLabel)}。
+        </div>
+
+        <div class="detail-section">
+          <div class="detail-section-title">匹配规则</div>
+          <div class="detail-list">
+            <div class="detail-list-item">
+              <span class="detail-list-key">样品编号</span>
+              <span class="detail-list-value">${escapeHtml(sampleCode || '-')}</span>
+            </div>
+            <div class="detail-list-item">
+              <span class="detail-list-key">测试项目</span>
+              <span class="detail-list-value">${escapeHtml(testProject || '-')}</span>
+            </div>
+            <div class="detail-list-item">
+              <span class="detail-list-key">测试时间</span>
+              <span class="detail-list-value">${escapeHtml(testTime || '-')}</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="detail-section">
+          <div class="detail-section-title">匹配到的现有记录</div>
+          <div class="detail-list">
+            ${matches
+              .map(
+                (match) => `
+                  <div class="detail-list-item">
+                    <div class="detail-list-key">#${match.id} ${escapeHtml(match.displayName)}</div>
+                    <div class="detail-list-value">
+                      样品编号：${escapeHtml(match.sampleCode)}<br />
+                      测试项目：${escapeHtml(match.testProject)}<br />
+                      测试时间：${escapeHtml(match.testTime)}<br />
+                      测试人：${escapeHtml(match.tester)}<br />
+                      测试仪器：${escapeHtml(match.instrument)}
+                    </div>
+                    <button
+                      class="secondary-btn"
+                      type="button"
+                      data-open-duplicate-match-id="${match.id}"
+                      ${submitting ? 'disabled' : ''}
+                    >
+                      查看详情
+                    </button>
+                  </div>
+                `
+              )
+              .join('')}
+          </div>
+        </div>
+
+        <div class="export-modal-actions">
+          <button
+            id="duplicate-warning-cancel-btn"
+            class="secondary-btn"
+            type="button"
+            ${submitting ? 'disabled' : ''}
+          >
+            返回编辑
+          </button>
+          <button
+            id="duplicate-warning-continue-btn"
+            class="primary-btn"
+            type="button"
+            ${submitting ? 'disabled' : ''}
+          >
+            ${submitting ? `${escapeHtml(actionLabel)}中...` : `仍然${escapeHtml(actionLabel)}`}
+          </button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
 export function renderGroupTabs(current: GroupByType) {
   const tabs: { key: GroupByType; label: string }[] = [
     { key: 'sampleCode', label: '按样品编号' },
@@ -246,6 +370,83 @@ export function renderGroupTabs(current: GroupByType) {
       `
     )
     .join('');
+}
+
+export function renderOperationLogFilterButtons(
+  currentFilter: OperationLogFilter,
+  disabled: boolean
+) {
+  const filters: Array<{ key: OperationLogFilter; label: string }> = [
+    { key: 'all', label: '全部' },
+    { key: 'delete', label: '删除' },
+    { key: 'export', label: '导出' }
+  ];
+
+  return filters
+    .map(
+      (filter) => `
+        <button
+          class="${currentFilter === filter.key ? 'primary-btn' : 'secondary-btn'} action-btn"
+          type="button"
+          data-operation-log-filter="${filter.key}"
+          ${disabled ? 'disabled' : ''}
+        >
+          ${filter.label}
+        </button>
+      `
+    )
+    .join('');
+}
+
+export function renderRecentOperationLogs(entries: RecentOperationLogEntry[]) {
+  if (!entries.length) {
+    return `<div class="detail-value">暂无最近操作日志</div>`;
+  }
+
+  return `
+    <div class="detail-list">
+      ${entries
+        .map(
+          (entry) => `
+            <div class="detail-list-item">
+              <div class="detail-list-key">${escapeHtml(formatDateTimeForDisplay(entry.createdAt))}</div>
+              <div class="detail-list-value">
+                操作类型：${escapeHtml(entry.operationType)}<br />
+                实验编号：${escapeHtml(entry.experimentId !== null ? String(entry.experimentId) : '-')}<br />
+                操作人：${escapeHtml(entry.actor || '-')}<br />
+                摘要：${escapeHtml(entry.summaryText || '-')}
+              </div>
+            </div>
+          `
+        )
+        .join('')}
+    </div>
+  `;
+}
+
+export function renderExperimentEditHistory(entries: ExperimentEditHistoryEntry[]) {
+  if (!entries.length) {
+    return `<div class="detail-value">暂无修改历史</div>`;
+  }
+
+  return `
+    <div class="detail-list">
+      ${entries
+        .map(
+          (entry) => `
+            <div class="detail-list-item">
+              <div class="detail-list-key">${escapeHtml(formatDateTimeForDisplay(entry.editedAt))}</div>
+              <div class="detail-list-value">
+                修改人：${escapeHtml(entry.editor || '-')}<br />
+                修改理由：${escapeHtml(entry.editReason || '-')}<br />
+                摘要：${escapeHtml(entry.summaryText || '修改记录')}
+              </div>
+            </div>
+          `
+        )
+        .join('')}
+    </div>
+  `;
 }
 
 export function renderDetailPair(label: string, value: string) {
