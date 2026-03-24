@@ -6,26 +6,22 @@ AI Guide for Scidata Manager
 
 Scidata Manager is a local Electron + TypeScript scientific data manager with:
 
-- Step 1 dictionary-driven standardized entry
-- Step 2 unified secondary-item entry
-- scalar secondary data
-- XY and spectrum structured blocks
-- unified secondary-item export for scalar, XY, and spectrum
-- full-record export and managed raw-file packaging
+- local experiment record storage in SQLite through Prisma
+- scalar experiment data entry, detail, edit, and save flows
+- full export and item-name export
+- managed raw-file storage
+- Settings-based file integrity scan and duplicate-record warning support
 
 ## Development Rules
 
 1. No schema changes without explicit justification.
 2. The export system must not be broken.
-3. The `二级数据项` concept is a core abstraction.
-4. Structured blocks are not separate systems; they are part of the secondary-item system.
-5. The export system is unified and must not be split again casually.
-6. Structured-data export has no strict alignment requirement by default.
-7. Avoid adding new export modes unless explicitly justified.
-8. Avoid scope expansion.
-9. Prefer the smallest necessary change.
-10. Do not refactor unrelated modules during feature work.
-11. Keep privileged logic in the main process.
+3. Preserve current item-name export behavior unless explicitly changing it.
+4. Avoid adding new product-level abstractions or export modes without explicit justification.
+5. Avoid scope expansion.
+6. Prefer the smallest necessary change.
+7. Do not refactor unrelated modules during feature work.
+8. Keep privileged logic in the main process.
 
 ## Workflow
 
@@ -52,8 +48,6 @@ Execution rules:
   - `src/renderer.ts`
 - Prefer focused helpers under `src/main/` and `src/renderer/`
 - Keep export logic centralized in `src/main/export-helpers.ts`
-- Keep template-block rules centralized in `src/template-blocks.ts`
-- Keep dictionary persistence centralized in `src/main/dictionary-settings.ts`
 
 ## Database Rules
 
@@ -75,7 +69,6 @@ Plan first before changing:
 - `src/main.ts`
 - `src/renderer.ts`
 - `src/main/export-helpers.ts`
-- `src/template-blocks.ts`
 - `prisma/schema.prisma`
 - `prisma/migrations/`
 - managed-file naming/copy logic
@@ -90,4 +83,4 @@ npx tsc --noEmit
 npm run lint
 ```
 
-If the change touches export, storage, or structured blocks, also do a focused manual smoke check when possible.
+If the change touches export, storage, or startup/runtime DB behavior, also do a focused manual smoke check when possible.

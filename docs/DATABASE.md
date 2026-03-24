@@ -1,131 +1,51 @@
 # DATABASE.md
 
-Database Guide for Scidata Manager
+Database guide for the current Scidata Manager main branch.
 
 ## Stack
 
 - Prisma ORM
 - SQLite
-- local runtime database at `app.getPath('userData')/scidata.db`
+- runtime DB at `app.getPath('userData')/scidata.db`
 
-## Core Data Model
+This file is limited to current main-branch runtime database behavior and safety rules.
 
-Current experiment storage is split into three layers:
+## Key Files
 
-- `Experiment`
-  - first-level standardized metadata
-  - `testProject`, `sampleCode`, `tester`, `instrument`, `testTime`, `displayName`
-- `ExperimentDataItem`
-  - scalar secondary data items
-  - stores `itemName`, `itemValue`, `itemUnit`, and optional managed/source file metadata
-- `ExperimentTemplateBlock`
-  - structured secondary data items
-  - currently supports:
-    - `templateType = "xy"`
-    - `templateType = "spectrum"`
-  - stores `blockTitle`, `blockOrder`, `metaJson`, `dataJson`, and optional managed/source file metadata
-
-Related tables:
-
-- `ExperimentCustomField`
-- `EditLog`
-- `OperationLog`
-- `AppSetting`
-
-## Unified Secondary-Item Concept
-
-The product now uses one user-facing abstraction:
-
-- `二级数据项`
-
-This unified concept maps to two storage forms:
-
-- scalar secondary item
-  - stored in `ExperimentDataItem`
-  - `secondaryItemName = itemName`
-- structured secondary item
-  - stored in `ExperimentTemplateBlock`
-  - `secondaryItemName = blockTitle`
-  - UI label is `二级数据项名称`
-
-Important rule:
-
-- export grouping uses the full original secondary-item name exactly as entered by the user
-- filesystem-safe renaming happens only during export path generation
-- sanitization must never change grouping semantics
-
-Examples:
-
-- `iv（-100，100）` and `iv（-1，1）` are different secondary items
-- they remain different groups even if their filesystem-safe names need suffixes
-
-## Structured Block Storage
-
-Structured blocks reuse one table:
-
-- `ExperimentTemplateBlock`
-
-Current fields:
-
-- `templateType`
-- `blockTitle`
-- `blockOrder`
-- `metaJson`
-- `dataJson`
-- `sourceFileName`
-- `sourceFilePath`
-- `originalFileName`
-- `originalFilePath`
-
-Current semantics:
-
-- `blockTitle` is the stored value behind the UI label `二级数据项名称`
-- `metaJson` stores template-specific metadata
-- `dataJson` stores ordered point arrays for XY and spectrum blocks
-- `blockOrder` preserves display and export order inside one experiment
-
-## Uniqueness Rules
-
-There is no schema-level uniqueness enforcement for the unified `二级数据项` concept across scalar and structured items.
-
-That means:
-
-- scalar `itemName` values are not globally unique
-- the same user-facing secondary-item name may exist across many experiments
-- the same name may exist in both scalar and structured forms
-- export-time naming collisions are resolved during export, not in the database
-
-Current export rule:
-
-- naming conflicts are handled at export time
-- folder, workbook, and copied raw-file collisions are resolved with suffixes such as `__2`
-- export-time collision handling must not be confused with database-level naming rules
-
-## Step 1 Dictionary Data
-
-Step 1 standardized fields are backed by dictionary settings stored in `AppSetting` JSON blobs:
-
-- `dictionary:testProject`
-- `dictionary:tester`
-- `dictionary:instrument`
-
-The dictionary layer is separate from experiment records:
-
-- deleting a dictionary item removes it from future suggestions only
-- historical experiment records are never mutated
+- `prisma/schema.prisma`
+- `prisma.config.ts`
+- `prisma/migrations/`
+- `dev.db` for the bundled seed database
+- runtime database at `app.getPath('userData')/scidata.db`
+- `src/main.ts` for startup preparation and Prisma initialization
+- `src/main/runtime-db-helpers.ts` for runtime DB path and migration discovery helpers
+- `src/main/auth-settings.ts` for settings and password-related data access
 
 ## Startup and Migration Behavior
 
 At startup the main process:
 
-1. ensures the runtime database file exists
+1. resolves the runtime DB path
 2. copies `dev.db` on first launch if needed
-3. checks applied migrations
+3. inspects `_prisma_migrations`
 4. applies any missing SQL migrations from `prisma/migrations/`
-5. performs required runtime setting migrations
+5. migrates legacy auth settings from `loginPassword` to `loginPasswordHash`
 6. connects Prisma
 
-If startup needs to mutate an existing runtime database, it creates a backup first.
+If startup needs to mutate an existing runtime DB, it creates a backup first.
+
+## Prisma Client Generation
+
+Current setup:
+
+- `@prisma/client` is generated with `npm run prisma:generate`
+- `postinstall` runs Prisma generate automatically after install
+- `prisma.config.ts` points Prisma at:
+  - `prisma/schema.prisma`
+  - `prisma/migrations/`
+  - `DATABASE_URL` from the environment
+
+This matters because startup depends on Prisma Client being generated correctly. A missing generated client can surface as module resolution errors under `@prisma/client`.
 
 ## Change Rules
 
@@ -133,15 +53,14 @@ When changing database behavior:
 
 1. preserve existing user data
 2. justify every schema change explicitly
-3. do not treat export-time naming problems as database uniqueness problems by default
-4. keep first-level dictionaries, scalar items, and structured blocks conceptually separate
-5. keep all privileged reads and writes in the main process
+3. keep startup and migration behavior safe and idempotent
+4. keep privileged reads and writes in the main process
 
 ## Risk Areas
 
 - `prisma/schema.prisma`
 - `prisma/migrations/`
 - runtime DB bootstrap in `src/main.ts`
+- auth-settings migration flow
 - managed-file path and copy logic
 - update/delete flows that coordinate DB state with filesystem state
-- any change that blurs scalar vs structured storage semantics
