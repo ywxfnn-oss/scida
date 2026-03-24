@@ -1,12 +1,14 @@
 # DATABASE.md
 
-Database Guide for Scidata Manager
+Database guide for the current Scidata Manager main branch.
 
 ## Stack
 
 - Prisma ORM
 - SQLite
-- local runtime database
+- runtime DB at `app.getPath('userData')/scidata.db`
+
+This file is limited to current main-branch runtime database behavior and safety rules.
 
 ## Key Files
 
@@ -19,18 +21,18 @@ Database Guide for Scidata Manager
 - `src/main/runtime-db-helpers.ts` for runtime DB path and migration discovery helpers
 - `src/main/auth-settings.ts` for settings and password-related data access
 
-## Startup Behavior
+## Startup and Migration Behavior
 
 At startup the main process:
 
-1. ensures the runtime database file exists
+1. resolves the runtime DB path
 2. copies `dev.db` on first launch if needed
 3. inspects `_prisma_migrations`
 4. applies any missing SQL migrations from `prisma/migrations/`
 5. migrates legacy auth settings from `loginPassword` to `loginPasswordHash`
 6. connects Prisma
 
-If startup needs to mutate an existing runtime database, it creates a backup first.
+If startup needs to mutate an existing runtime DB, it creates a backup first.
 
 ## Prisma Client Generation
 
@@ -45,34 +47,20 @@ Current setup:
 
 This matters because startup depends on Prisma Client being generated correctly. A missing generated client can surface as module resolution errors under `@prisma/client`.
 
-## Principles
+## Change Rules
 
-1. Use Prisma Client for normal application reads and writes.
-2. Keep schema changes intentional and traceable through migrations.
-3. Preserve existing user data during upgrades.
-4. Do not reintroduce plain-text password storage.
-5. Avoid destructive migration behavior without a backup path.
+When changing database behavior:
 
-## Migration Workflow
-
-When schema changes are required:
-
-1. update `prisma/schema.prisma`
-2. generate a new migration
-3. regenerate Prisma Client
-4. verify startup upgrade compatibility for existing `scidata.db` files
-5. test read/write flows after the migration
-
-Recommended commands:
-
-```bash
-npm run prisma:generate
-```
+1. preserve existing user data
+2. justify every schema change explicitly
+3. keep startup and migration behavior safe and idempotent
+4. keep privileged reads and writes in the main process
 
 ## Risk Areas
 
-- changing relation definitions
-- changing required fields
-- altering auth-setting keys used at startup
-- modifying migration order or migration detection logic
-- changing `prepareRuntimeDatabase`, `initPrisma`, backup behavior, or auth-settings migration flow in `src/main.ts`
+- `prisma/schema.prisma`
+- `prisma/migrations/`
+- runtime DB bootstrap in `src/main.ts`
+- auth-settings migration flow
+- managed-file path and copy logic
+- update/delete flows that coordinate DB state with filesystem state

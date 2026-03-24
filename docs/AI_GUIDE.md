@@ -1,90 +1,69 @@
 # AI_GUIDE.md
 
-AI Working Guide for Scidata Manager
+AI working guide for the current Scidata Manager main branch.
 
-## Purpose
+## Read First
 
-This document helps AI agents safely analyze and modify this repository.
-
-Read these files first before making any code changes:
+Before changing the project, read:
 
 1. `CODEX.md`
-2. `PROJECT_STRUCTURE.md`
-3. `ARCHITECTURE.md`
-4. `docs/MODULE_GUIDE.md`
-5. `docs/DATABASE.md`
-6. `docs/EXPORT_FLOW.md`
+2. `ARCHITECTURE.md`
+3. `PROJECT_STATUS.md`
+4. `docs/DATABASE.md`
+5. `CHANGELOG.md`
 
----
+## Current Product Baseline
 
-## Primary Goals
+The current main-branch baseline includes:
 
-When working on this project, prioritize:
+- local experiment storage and edit flows
+- scalar experiment data export
+- full export and item-name export
+- Settings-based file integrity scan
+- duplicate-record warning before create and update saves
 
-- Stability
-- Minimal modifications
-- Data safety
-- Cross-platform compatibility
-- Clear separation between renderer and main process
+## Core Rules for AI Work
 
----
+1. Do not break export behavior.
+2. Do not introduce schema changes without clear justification.
+3. Preserve current startup/runtime DB safety behavior.
+4. Prefer the smallest safe change.
 
-## Rules for AI Agents
+## When Extending Export
 
-1. Do not introduce new dependencies unless explicitly approved
-2. Do not refactor unrelated code
-3. Do not move files unless necessary
-4. Do not change build or packaging configuration unless required
-5. Do not break Prisma schema compatibility
-6. Do not access filesystem or database from renderer directly
-7. Keep Electron security boundaries intact
+If the request touches export:
 
----
+- audit `src/main/export-helpers.ts` first
+- preserve full export behavior
+- preserve current item-name export workbook behavior unless explicitly asked otherwise
+- treat filesystem naming and grouping as export-time concerns
+- do not convert export-time naming behavior into database constraints
 
-## Safe Change Workflow
+## Safe Workflow
 
-Before modifying code:
+Preferred execution order:
 
-1. Identify the target feature or bug
-2. Identify involved files
-3. Explain the planned change
-4. Make the smallest possible code change
-5. Explain how to verify the change
+1. plan
+2. audit the current code path
+3. implement one bounded change
+4. validate with `npx tsc --noEmit` and `npm run lint`
+5. note remaining manual checks
 
----
+## High-Risk Areas
 
-## Typical File Roles
+Plan first before touching:
 
-- `src/main.ts` → Electron main process
-- `src/preload.ts` → secure API bridge
-- `src/renderer.ts` → renderer/UI logic
-- `src/storage/` → persistence/data helpers
-- `prisma/schema.prisma` → database schema
-- `prisma/migrations/` → schema migration history
-- `forge.config.ts` → Electron Forge packaging
-- `vite.*.config.ts` → build configuration
+- `src/main.ts`
+- `src/renderer.ts`
+- `src/main/export-helpers.ts`
+- `prisma/schema.prisma`
+- `prisma/migrations/`
 
----
+## Anti-Patterns
 
-## Typical Dangerous Changes
+Avoid these unless explicitly requested:
 
-Avoid changing these casually:
-
-- IPC channel names
-- preload API signatures
-- Prisma schema field names
-- packaging configuration
-- file export paths
-- database initialization logic
-
----
-
-## Expected Response Style for AI
-
-When suggesting code changes, AI should:
-
-- name the files to change
-- explain why each file is involved
-- prefer minimal diffs
-- mention possible side effects
-- include a verification method
+- export-system redesign
+- schema churn for naming problems
+- broad renderer refactors during small feature work
+- silent behavior changes to export grouping or export shape
