@@ -62,6 +62,18 @@ When changing database behavior:
 3. do not use schema changes to solve export-only naming issues
 4. justify any new migration in the task report
 
+## Security Rules
+
+- Do not expose stored password material to the renderer.
+- Keep authentication checks in the main process.
+- Store only hashed passwords in app settings.
+
+## Packaging Rules
+
+- Do not break the Vite + Electron Forge pipeline.
+- Preserve Prisma and `better-sqlite3` runtime compatibility in packaged builds.
+- Avoid unnecessary new dependencies.
+
 ## High-Risk Areas
 
 Plan first before changing:
