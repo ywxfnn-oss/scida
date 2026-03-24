@@ -14,12 +14,6 @@ import {
   ensureDir,
   fileExists
 } from './file-helpers';
-import {
-  normalizeTemplateBlocks,
-  serializeTemplateBlockMeta,
-  validateTemplateBlockPayloads,
-  type TemplateBlockPayload
-} from '../template-blocks';
 
 type UpdateFilePlan = {
   index: number;
@@ -66,17 +60,6 @@ type OldExperimentRecord = {
     originalFilePath: string | null;
     rowOrder: number;
   }>;
-  templateBlocks: Array<{
-    templateType: string;
-    blockTitle: string;
-    blockOrder: number;
-    metaJson: string;
-    dataJson: string;
-    sourceFileName: string | null;
-    sourceFilePath: string | null;
-    originalFileName: string | null;
-    originalFilePath: string | null;
-  }>;
 };
 
 type OldDataItemRecord = {
@@ -96,17 +79,6 @@ async function findConflictingDataItem(
   });
 }
 
-async function findConflictingTemplateBlock(
-  prisma: PrismaClient,
-  targetPath: string
-) {
-  return prisma.experimentTemplateBlock.findFirst({
-    where: {
-      sourceFilePath: targetPath
-    }
-  });
-}
-
 export async function getManagedTargetConflictError(
   prisma: PrismaClient,
   targetPath: string,
@@ -119,12 +91,6 @@ export async function getManagedTargetConflictError(
   );
 
   if (conflictingItem) {
-    return '保存文件名与其他实验记录冲突，请调整后重试';
-  }
-
-  const conflictingBlock = await findConflictingTemplateBlock(prisma, targetPath);
-
-  if (conflictingBlock && targetPath !== options?.currentSourcePath) {
     return '保存文件名与其他实验记录冲突，请调整后重试';
   }
 
@@ -172,24 +138,12 @@ function buildOldSnapshot(oldExperiment: OldExperimentRecord | null) {
       originalFileName: item.originalFileName,
       originalFilePath: item.originalFilePath,
       rowOrder: item.rowOrder
-    })),
-    templateBlocks: oldExperiment.templateBlocks.map((block) => ({
-      templateType: block.templateType,
-      blockTitle: block.blockTitle,
-      blockOrder: block.blockOrder,
-      metaJson: block.metaJson,
-      dataJson: block.dataJson,
-      sourceFileName: block.sourceFileName,
-      sourceFilePath: block.sourceFilePath,
-      originalFileName: block.originalFileName,
-      originalFilePath: block.originalFilePath
     }))
   };
 }
 
 function buildNewSnapshot(
   payload: UpdateExperimentPayload,
-  normalizedTemplateBlocks: TemplateBlockPayload[],
   resolvedStep2: Array<
     UpdateExperimentDataItemPayload & {
       sourceFileName: string;
@@ -221,44 +175,8 @@ function buildNewSnapshot(
       originalFileName: item.originalFileName || null,
       originalFilePath: item.originalFilePath || null,
       rowOrder: index + 1
-    })),
-    templateBlocks: normalizedTemplateBlocks.map((block, index) => ({
-      templateType: block.templateType,
-      blockTitle: block.blockTitle,
-      blockOrder: index + 1,
-      metaJson: serializeTemplateBlockMeta(block),
-      dataJson: JSON.stringify(block.points),
-      sourceFileName: block.sourceFileName || null,
-      sourceFilePath: block.sourceFilePath || null,
-      originalFileName: block.originalFileName || null,
-      originalFilePath: block.originalFilePath || null
     }))
   };
-}
-
-function buildFileOperationDetails(
-  filePlans: UpdateFilePlan[],
-  resolvedStep2: Array<
-    UpdateExperimentDataItemPayload & {
-      sourceFileName: string;
-      sourceFilePath: string;
-      originalFileName: string;
-      originalFilePath: string;
-    }
-  >
-) {
-  return filePlans.map((plan) => ({
-    action: plan.action,
-    dataItemId: plan.dataItemId || null,
-    itemName: resolvedStep2[plan.index]?.itemName || '',
-    previousManagedFilePath: plan.currentSourcePath || null,
-    previousManagedFileName: plan.currentSourcePath
-      ? path.basename(plan.currentSourcePath)
-      : null,
-    nextManagedFilePath: plan.targetPath,
-    nextManagedFileName: plan.targetFileName,
-    replacementOriginalFileName: plan.replacementOriginalName || null
-  }));
 }
 
 async function buildUpdateFilePlans(
@@ -509,8 +427,7 @@ export async function updateExperimentWithManagedFiles(
     where: { id: payload.experimentId },
     include: {
       customFields: { orderBy: { sortOrder: 'asc' } },
-      dataItems: { orderBy: { rowOrder: 'asc' } },
-      templateBlocks: { orderBy: { blockOrder: 'asc' } }
+      dataItems: { orderBy: { rowOrder: 'asc' } }
     }
   });
 
@@ -526,15 +443,6 @@ export async function updateExperimentWithManagedFiles(
   const oldDataItemMap = new Map(
     oldExperiment.dataItems.map((item) => [item.id, item])
   );
-  const normalizedTemplateBlocks = normalizeTemplateBlocks(payload.templateBlocks || []);
-  const templateBlockValidation = validateTemplateBlockPayloads(normalizedTemplateBlocks);
-
-  if ('error' in templateBlockValidation) {
-    return {
-      success: false,
-      error: templateBlockValidation.error
-    };
-  }
   const { error: filePlanError, filePlans } = await buildUpdateFilePlans(
     prisma,
     payload,
@@ -578,8 +486,6 @@ export async function updateExperimentWithManagedFiles(
   }
 
   const oldSnapshot = buildOldSnapshot(oldExperiment);
-  const newSnapshot = buildNewSnapshot(payload, normalizedTemplateBlocks, resolvedStep2);
-  const fileOperations = buildFileOperationDetails(filePlans, resolvedStep2);
 
   try {
     await prisma.$transaction(async (tx) => {
@@ -601,10 +507,6 @@ export async function updateExperimentWithManagedFiles(
       });
 
       await tx.experimentDataItem.deleteMany({
-        where: { experimentId: payload.experimentId }
-      });
-
-      await tx.experimentTemplateBlock.deleteMany({
         where: { experimentId: payload.experimentId }
       });
 
@@ -635,22 +537,19 @@ export async function updateExperimentWithManagedFiles(
         });
       }
 
-      if (normalizedTemplateBlocks.length) {
-        await tx.experimentTemplateBlock.createMany({
-          data: normalizedTemplateBlocks.map((block, index) => ({
-            experimentId: payload.experimentId,
-            templateType: block.templateType,
-            blockTitle: block.blockTitle,
-            blockOrder: index + 1,
-            metaJson: serializeTemplateBlockMeta(block),
-            dataJson: JSON.stringify(block.points),
-            sourceFileName: block.sourceFileName || null,
-            sourceFilePath: block.sourceFilePath || null,
-            originalFileName: block.originalFileName || null,
-            originalFilePath: block.originalFilePath || null
-          }))
-        });
-      }
+      const newSnapshot = buildNewSnapshot(payload, resolvedStep2);
+
+      await tx.editLog.create({
+        data: {
+          experimentId: payload.experimentId,
+          editor: payload.editor,
+          editReason: payload.editReason,
+          editedFieldsJson: JSON.stringify({
+            before: oldSnapshot,
+            after: newSnapshot
+          })
+        }
+      });
     });
   } catch (error) {
     for (const rollback of rollbackActions) {
@@ -678,29 +577,9 @@ export async function updateExperimentWithManagedFiles(
     });
 
     return {
-      success: true,
-      warning: '实验记录已更新，但旧的保存文件清理失败，可能需要手动处理'
+      success: false,
+      error: '实验记录已更新，但旧的保存文件清理失败，可能需要手动处理'
     };
-  }
-
-  try {
-    await prisma.editLog.create({
-      data: {
-        experimentId: payload.experimentId,
-        editor: payload.editor,
-        editReason: payload.editReason,
-        editedFieldsJson: JSON.stringify({
-          before: oldSnapshot,
-          after: newSnapshot,
-          ...(fileOperations.length ? { fileOperations } : {})
-        })
-      }
-    });
-  } catch (error) {
-    console.error('createEditLogAfterSuccessfulUpdate failed:', {
-      experimentId: payload.experimentId,
-      error
-    });
   }
 
   return { success: true };

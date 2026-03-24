@@ -2,61 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { PrismaClient } from '@prisma/client';
 import type { ActionResult } from '../electron-api';
-import { createManagedDeleteStagingPath, ensureDir, fileExists } from './file-helpers';
-import { getOperationActor, writeOperationLog } from './operation-log';
-
-type StagedDeleteEntry = {
-  originalPath: string;
-  stagedPath: string;
-};
-
-function restoreStagedFiles(entries: StagedDeleteEntry[], experimentId: number) {
-  let restoreFailed = false;
-
-  for (const entry of [...entries].reverse()) {
-    if (!fileExists(entry.stagedPath) || fileExists(entry.originalPath)) {
-      continue;
-    }
-
-    try {
-      ensureDir(path.dirname(entry.originalPath));
-      fs.renameSync(entry.stagedPath, entry.originalPath);
-    } catch (error) {
-      restoreFailed = true;
-      console.error('restoreDeletedManagedFile failed:', {
-        experimentId,
-        originalPath: entry.originalPath,
-        stagedPath: entry.stagedPath,
-        error
-      });
-    }
-  }
-
-  return restoreFailed;
-}
-
-function purgeStagedFiles(entries: StagedDeleteEntry[], experimentId: number) {
-  let cleanupFailed = false;
-
-  for (const entry of entries) {
-    if (!fileExists(entry.stagedPath)) {
-      continue;
-    }
-
-    try {
-      fs.rmSync(entry.stagedPath, { force: true });
-    } catch (error) {
-      cleanupFailed = true;
-      console.error('purgeDeletedManagedFile failed:', {
-        experimentId,
-        stagedPath: entry.stagedPath,
-        error
-      });
-    }
-  }
-
-  return cleanupFailed;
-}
+import { fileExists } from './file-helpers';
 
 export async function deleteExperimentPermanently(
   prisma: PrismaClient,
@@ -65,8 +11,7 @@ export async function deleteExperimentPermanently(
   const experiment = await prisma.experiment.findUnique({
     where: { id: experimentId },
     include: {
-      dataItems: true,
-      templateBlocks: true
+      dataItems: true
     }
   });
 
@@ -76,7 +21,7 @@ export async function deleteExperimentPermanently(
 
   const savedFilePaths = Array.from(
     new Set(
-      [...experiment.dataItems, ...experiment.templateBlocks]
+      experiment.dataItems
         .map((item) => item.sourceFilePath?.trim() || '')
         .filter(Boolean)
     )
@@ -92,16 +37,7 @@ export async function deleteExperimentPermanently(
       }
     });
 
-    const sharedTemplateBlockCount = await prisma.experimentTemplateBlock.count({
-      where: {
-        sourceFilePath: filePath,
-        experimentId: {
-          not: experimentId
-        }
-      }
-    });
-
-    if (sharedReferenceCount + sharedTemplateBlockCount > 0) {
+    if (sharedReferenceCount > 0) {
       return {
         success: false,
         error: `无法删除：保存文件“${path.basename(filePath)}”仍被其他实验记录引用`
@@ -109,7 +45,7 @@ export async function deleteExperimentPermanently(
     }
   }
 
-  const stagedEntries: StagedDeleteEntry[] = [];
+  const deletedFilePaths: string[] = [];
 
   for (const filePath of savedFilePaths) {
     if (!fileExists(filePath)) {
@@ -117,28 +53,18 @@ export async function deleteExperimentPermanently(
     }
 
     try {
-      const stagedPath = createManagedDeleteStagingPath(filePath);
-      ensureDir(path.dirname(stagedPath));
-      fs.renameSync(filePath, stagedPath);
-      stagedEntries.push({
-        originalPath: filePath,
-        stagedPath
-      });
+      fs.rmSync(filePath);
+      deletedFilePaths.push(filePath);
     } catch (error) {
-      const restoreFailed = restoreStagedFiles(stagedEntries, experimentId);
-
-      console.error('deleteExperiment file staging failed:', {
+      console.error('deleteExperiment file removal failed:', {
         experimentId,
         filePath,
-        stagedEntries,
         error
       });
 
       return {
         success: false,
-        error: restoreFailed
-          ? `删除保存文件失败：${path.basename(filePath)}。实验记录未删除，已转移的保存文件可能需要手动恢复`
-          : `删除保存文件失败：${path.basename(filePath)}。实验记录未删除`
+        error: `删除保存文件失败：${path.basename(filePath)}。实验记录未删除`
       };
     }
   }
@@ -148,50 +74,17 @@ export async function deleteExperimentPermanently(
       where: { id: experimentId }
     });
 
-    try {
-      await writeOperationLog(prisma, {
-        operationType: 'experiment_delete',
-        experimentId,
-        actor: await getOperationActor(prisma),
-        summary: JSON.stringify({
-          experimentId,
-          displayName: experiment.displayName,
-          sampleCode: experiment.sampleCode,
-          testProject: experiment.testProject,
-          testTime: experiment.testTime,
-          deletedManagedFileCount: stagedEntries.length,
-          deletedManagedFilePaths: stagedEntries.map((entry) => entry.originalPath)
-        })
-      });
-    } catch (error) {
-      console.error('writeDeleteOperationLog failed:', {
-        experimentId,
-        error
-      });
-    }
-
-    const cleanupFailed = purgeStagedFiles(stagedEntries, experimentId);
-
-    return cleanupFailed
-      ? {
-          success: true,
-          warning: '实验记录已删除，但待删除的保存文件清理失败，可能需要手动处理'
-        }
-      : { success: true };
+    return { success: true };
   } catch (error) {
-    const restoreFailed = restoreStagedFiles(stagedEntries, experimentId);
-
-    console.error('deleteExperiment database removal failed after file staging:', {
+    console.error('deleteExperiment database removal failed after file deletion:', {
       experimentId,
-      stagedEntries,
+      deletedFilePaths,
       error
     });
 
     return {
       success: false,
-      error: restoreFailed
-        ? '数据库记录删除失败，已转移的保存文件可能需要手动恢复'
-        : '数据库记录删除失败，保存文件已恢复'
+      error: '保存文件已删除，但数据库记录删除失败，可能需要手动恢复数据'
     };
   }
 }
