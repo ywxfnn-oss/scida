@@ -6,12 +6,14 @@ import type {
   DuplicateExperimentMatch,
   ExperimentEditHistoryEntry,
   ExperimentDetail,
-  ExperimentFilterOptions,
   ExperimentGroup,
+  ImportManualDelimiter,
+  ImportPreviewFileResult,
   ExperimentListSortOrder,
   FileIntegrityReport,
   GroupByType,
   OperationLogFilter,
+  PreviewManualImportXYResult,
   RecentOperationLogEntry,
   SaveExperimentPayload,
   SaveExperimentTemplateBlockPayload,
@@ -33,9 +35,18 @@ import {
   renderExportModal,
   renderGroupTabs,
   renderOperationLogFilterButtons,
-  renderRecentOperationLogs,
-  renderStep2Rows
+  renderRecentOperationLogs
 } from './renderer/render-helpers';
+import {
+  getStructuredBlockPurposeLabel,
+  getValueNatureLabelText,
+  resolveStep2TemplateFamily,
+  STRUCTURED_BLOCK_PURPOSE_OPTIONS,
+  type Step2RecommendedScalarItem,
+  type Step2RecommendedStructuredBlock,
+  type Step2TemplateFamily,
+  type StructuredBlockPurpose
+} from './renderer/step2-template-registry';
 import {
   getTemplateBlockTypeLabel,
   formatXYPointInput,
@@ -73,6 +84,7 @@ type DynamicField = {
 type DataItem = {
   id: string;
   dataItemId?: number;
+  scalarRole?: ScalarItemRole;
   itemName: string;
   itemValue: string;
   itemUnit: string;
@@ -83,6 +95,10 @@ type DataItem = {
   replacementSourcePath?: string;
   replacementOriginalName?: string;
 };
+
+type ScalarItemRole = 'condition' | 'metric';
+
+type ScalarItemEditContext = 'create-step2' | 'detail-edit';
 
 type Step1FormData = {
   testProject: string;
@@ -98,6 +114,7 @@ type TemplateBlockFormData = {
   id: string;
   blockId?: number;
   templateType: TemplateBlockType;
+  purposeType?: StructuredBlockPurpose;
   blockTitle: string;
   primaryLabel: string;
   primaryUnit: string;
@@ -109,8 +126,36 @@ type TemplateBlockFormData = {
   sourceFilePath: string;
   originalFileName: string;
   originalFilePath: string;
+  replacementSourcePath?: string;
+  replacementOriginalName?: string;
+  importPreviewLoading?: boolean;
+  importPreviewError?: string;
+  importParserLabel?: string;
+  importWarnings?: string[];
+  importPreviewCandidate?: ImportPreviewFileResult['candidates'][number];
+  importPreviewSelectedName?: string;
+  importPreviewSelectedPath?: string;
+  importManualReview?: ImportReviewManualState;
   createdAt?: string;
 };
+
+type ImportReviewManualState = {
+  available: boolean;
+  delimiter: ImportManualDelimiter;
+  suggestedDelimiter: ImportManualDelimiter;
+  previewRows: Array<{
+    rowNumber: number;
+    columns: string[];
+  }>;
+  maxColumnCount: number;
+  dataStartRow: number;
+  xColumnIndex: number;
+  yColumnIndex: number;
+  previewLoading: boolean;
+  previewError: string;
+};
+
+type TemplateBlockEditContext = 'create-step2' | 'detail-edit';
 
 type DuplicateWarningState =
   | {
@@ -134,6 +179,61 @@ type SettingsSubView = 'general' | 'dictionary';
 
 const DICTIONARY_TYPES: DictionaryType[] = ['testProject', 'tester', 'instrument'];
 const STEP1_SUGGESTION_LIMIT = 8;
+const CONDITION_NAME_KEYWORDS = [
+  '温度',
+  '偏压',
+  '光功率',
+  '波长',
+  '频率',
+  '环境气氛',
+  '测试气氛',
+  '条件',
+  '气压',
+  '湿度',
+  'bias',
+  'temperature',
+  'power',
+  'wavelength',
+  'frequency',
+  'condition',
+  'atmosphere',
+  'humidity'
+];
+const METRIC_NAME_KEYWORDS = [
+  'rise time',
+  'fall time',
+  'responsivity',
+  'eqe',
+  'dark current',
+  'd*',
+  'detectivity',
+  'nep',
+  'on/off',
+  'on off',
+  '峰值响应',
+  '截止波长',
+  '响应度',
+  '暗电流',
+  '上升时间',
+  '下降时间'
+];
+const SCALAR_ROLE_META: Record<
+  ScalarItemRole,
+  { title: string; subtitle: string; addButtonLabel: string; emptyText: string }
+> = {
+  condition: {
+    title: '实验条件',
+    subtitle: '记录实验是如何进行的，如温度、偏压、光功率、波长、频率和测试气氛等条件。',
+    addButtonLabel: '新增条件',
+    emptyText: '当前还没有实验条件'
+  },
+  metric: {
+    title: '结果指标',
+    subtitle: '记录最终标量结果和关键测量指标，如 Rise time、Responsivity、D*、EQE 等。',
+    addButtonLabel: '新增结果指标',
+    emptyText: '当前还没有结果指标'
+  }
+};
 
 const DICTIONARY_SECTION_META: Array<{ type: DictionaryType; label: string }> = [
   { type: 'testProject', label: '测试项目' },
@@ -165,19 +265,50 @@ function buildEmptyDictionaryErrorState(): Record<DictionaryType, string> {
   };
 }
 
+function inferScalarItemRole(itemName: string): ScalarItemRole {
+  const normalized = itemName.trim().toLowerCase();
+  if (!normalized) {
+    return 'metric';
+  }
+
+  if (CONDITION_NAME_KEYWORDS.some((keyword) => normalized.includes(keyword.toLowerCase()))) {
+    return 'condition';
+  }
+
+  if (METRIC_NAME_KEYWORDS.some((keyword) => normalized.includes(keyword.toLowerCase()))) {
+    return 'metric';
+  }
+
+  return 'metric';
+}
+
+function buildEmptyDataItem(role: ScalarItemRole = 'metric'): DataItem {
+  return {
+    id: generateId(),
+    scalarRole: role,
+    itemName: '',
+    itemValue: '',
+    itemUnit: '',
+    sourceFileName: '',
+    sourceFilePath: '',
+    originalFileName: '',
+    originalFilePath: ''
+  };
+}
+
 let currentView: ViewType = 'login';
 let lastSavedExperimentId: number | null = null;
 let settingsSubView: SettingsSubView = 'general';
 
 let databaseSearchKeyword = '';
 let databaseGroupBy: GroupByType = 'sampleCode';
-let databaseSortOrder: ExperimentListSortOrder = 'newest';
+const databaseSortOrder: ExperimentListSortOrder = 'newest';
+let databaseFilterPanelVisible = false;
+let databaseFilterSampleCode = '';
 let databaseFilterTestProject = '';
+let databaseFilterInstrument = '';
 let databaseFilterTester = '';
-let databaseFilterOptions: ExperimentFilterOptions = {
-  testProjects: [],
-  testers: []
-};
+let databaseFilterSampleOwner = '';
 let databaseGroups: ExperimentGroup[] = [];
 let currentDetail: ExperimentDetail | null = null;
 let currentEditHistory: ExperimentEditHistoryEntry[] = [];
@@ -188,6 +319,8 @@ let detailEditor = '';
 let detailEditStep1: Step1FormData | null = null;
 let detailEditStep2: DataItem[] = [];
 let detailEditTemplateBlocks: TemplateBlockFormData[] = [];
+let detailActiveTemplateBlockImportId = '';
+let step2ActiveTemplateBlockImportId = '';
 
 let selectedExperimentIds: number[] = [];
 let exportModalVisible = false;
@@ -229,18 +362,7 @@ let step1FormData: Step1FormData = {
   dynamicFields: []
 };
 
-let step2DataItems: DataItem[] = [
-  {
-    id: generateId(),
-    itemName: '',
-    itemValue: '',
-    itemUnit: '',
-    sourceFileName: '',
-    sourceFilePath: '',
-    originalFileName: '',
-    originalFilePath: ''
-  }
-];
+let step2DataItems: DataItem[] = [];
 let step2TemplateBlocks: TemplateBlockFormData[] = [];
 
 const root = document.getElementById('app');
@@ -405,6 +527,7 @@ async function openExperimentDetail(experimentId: number) {
   detailEditStep1 = null;
   detailEditStep2 = [];
   detailEditTemplateBlocks = [];
+  resetTemplateBlockImportState('detail-edit');
   currentView = 'database-detail';
   void render();
 }
@@ -458,6 +581,7 @@ async function performUpdateSave(payload: UpdateExperimentPayload) {
   detailEditStep1 = null;
   detailEditStep2 = [];
   detailEditTemplateBlocks = [];
+  resetTemplateBlockImportState('detail-edit');
   void render();
 
   if (result.warning) {
@@ -700,6 +824,7 @@ function buildEmptyTemplateBlock(templateType: TemplateBlockType): TemplateBlock
   return {
     id: generateId(),
     templateType,
+    purposeType: '',
     blockTitle: '',
     primaryLabel: '',
     primaryUnit: '',
@@ -710,8 +835,1123 @@ function buildEmptyTemplateBlock(templateType: TemplateBlockType): TemplateBlock
     sourceFileName: '',
     sourceFilePath: '',
     originalFileName: '',
-    originalFilePath: ''
+    originalFilePath: '',
+    replacementSourcePath: '',
+    replacementOriginalName: '',
+    importPreviewLoading: false,
+    importPreviewError: '',
+    importParserLabel: '',
+    importWarnings: [],
+    importPreviewSelectedName: '',
+    importPreviewSelectedPath: ''
   };
+}
+
+function buildRecommendedScalarItem(
+  role: ScalarItemRole,
+  recommendation?: Step2RecommendedScalarItem
+) {
+  return {
+    ...buildEmptyDataItem(role),
+    itemName: recommendation?.name || '',
+    itemUnit: recommendation?.defaultUnit || ''
+  };
+}
+
+function buildRecommendedTemplateBlock(
+  templateType: TemplateBlockType,
+  recommendation?: Step2RecommendedStructuredBlock
+): TemplateBlockFormData {
+  const block = buildEmptyTemplateBlock(templateType);
+  if (!recommendation) {
+    return block;
+  }
+
+  return {
+    ...block,
+    purposeType: recommendation.purposeType || '',
+    blockTitle: recommendation.titleSuggestion || '',
+    primaryLabel: recommendation.primaryLabel || '',
+    primaryUnit: recommendation.primaryUnit || '',
+    secondaryLabel: recommendation.secondaryLabel || '',
+    secondaryUnit: recommendation.secondaryUnit || ''
+  };
+}
+
+function getTemplateBlocksForContext(context: TemplateBlockEditContext) {
+  return context === 'detail-edit' ? detailEditTemplateBlocks : step2TemplateBlocks;
+}
+
+function getScalarItemsForContext(context: ScalarItemEditContext) {
+  return context === 'detail-edit' ? detailEditStep2 : step2DataItems;
+}
+
+function setScalarItemsForContext(context: ScalarItemEditContext, rows: DataItem[]) {
+  if (context === 'detail-edit') {
+    detailEditStep2 = rows;
+    return;
+  }
+
+  step2DataItems = rows;
+}
+
+function setTemplateBlocksForContext(context: TemplateBlockEditContext, blocks: TemplateBlockFormData[]) {
+  if (context === 'detail-edit') {
+    detailEditTemplateBlocks = blocks;
+    return;
+  }
+
+  step2TemplateBlocks = blocks;
+}
+
+function getActiveTemplateBlockImportId(context: TemplateBlockEditContext) {
+  return context === 'detail-edit'
+    ? detailActiveTemplateBlockImportId
+    : step2ActiveTemplateBlockImportId;
+}
+
+function setActiveTemplateBlockImportId(context: TemplateBlockEditContext, blockId: string) {
+  if (context === 'detail-edit') {
+    detailActiveTemplateBlockImportId = blockId;
+    return;
+  }
+
+  step2ActiveTemplateBlockImportId = blockId;
+}
+
+function getStep2TemplateContext(context: ScalarItemEditContext | TemplateBlockEditContext | 'detail-readonly') {
+  if (context === 'detail-edit') {
+    return detailEditStep1?.testProject || currentDetail?.testProject || '';
+  }
+
+  if (context === 'detail-readonly') {
+    return currentDetail?.testProject || '';
+  }
+
+  return step1FormData.testProject;
+}
+
+function getActiveStep2TemplateFamily(
+  context: ScalarItemEditContext | TemplateBlockEditContext | 'detail-readonly'
+) {
+  return resolveStep2TemplateFamily(getStep2TemplateContext(context));
+}
+
+function renderStep2TemplateContextHint(
+  context: ScalarItemEditContext | TemplateBlockEditContext | 'detail-readonly'
+) {
+  const family = getActiveStep2TemplateFamily(context);
+  if (!family) {
+    return '';
+  }
+
+  const testProject = getStep2TemplateContext(context);
+
+  return `
+    <div class="step2-template-context-hint">
+      <div class="step2-template-context-title">当前语义模板：${escapeHtml(family.label)}</div>
+      <div class="step2-template-context-body">
+        基于测试项目“${escapeHtml(testProject || '未指定')}”，推荐实验条件、结果指标和结构化数据起点；以下建议均可手动修改。
+      </div>
+    </div>
+  `;
+}
+
+function renderScalarRecommendationButtons(
+  context: ScalarItemEditContext,
+  role: ScalarItemRole,
+  items: Step2RecommendedScalarItem[]
+) {
+  if (!items.length) {
+    return '';
+  }
+
+  return `
+    <div class="step2-template-recommendation-row">
+      <div class="step2-template-recommendation-label">推荐起点</div>
+      <div class="step2-template-recommendation-list">
+        ${items
+          .map((item) => {
+            const defaultUnit = item.defaultUnit ? ` · ${item.defaultUnit}` : '';
+            const valueNature = getValueNatureLabelText(item.valueNatures);
+
+            return `
+              <button
+                class="step2-template-pill"
+                type="button"
+                data-template-scalar-context="${context}"
+                data-template-scalar-role="${role}"
+                data-template-scalar-name="${escapeHtml(item.name)}"
+                data-template-scalar-unit="${escapeHtml(item.defaultUnit)}"
+              >
+                <span>${escapeHtml(item.name)}${escapeHtml(defaultUnit)}</span>
+                ${valueNature
+                  ? `<span class="step2-template-pill-meta">${escapeHtml(valueNature)}</span>`
+                  : ''}
+              </button>
+            `;
+          })
+          .join('')}
+      </div>
+    </div>
+  `;
+}
+
+function renderStructuredRecommendationButtons(
+  context: TemplateBlockEditContext,
+  family: Step2TemplateFamily | null
+) {
+  if (!family?.recommendedStructuredBlocks.length) {
+    return '';
+  }
+
+  return `
+    <div class="step2-template-recommendation-row">
+      <div class="step2-template-recommendation-label">推荐结构化数据</div>
+      <div class="step2-template-recommendation-list">
+        ${family.recommendedStructuredBlocks
+          .map(
+            (item, index) => `
+              <button
+                class="step2-template-pill"
+                type="button"
+                data-template-block-context="${context}"
+                data-template-block-recommendation-index="${index}"
+              >
+                <span>${escapeHtml(item.label)}</span>
+                <span class="step2-template-pill-meta">${escapeHtml(
+                  getStructuredBlockPurposeLabel(item.purposeType)
+                )}</span>
+              </button>
+            `
+          )
+          .join('')}
+      </div>
+    </div>
+  `;
+}
+
+function getDefaultStructuredRecommendation(context: TemplateBlockEditContext) {
+  return getActiveStep2TemplateFamily(context)?.recommendedStructuredBlocks[0];
+}
+
+function resetTemplateBlockImportState(context: TemplateBlockEditContext) {
+  setActiveTemplateBlockImportId(context, '');
+  setTemplateBlocksForContext(
+    context,
+    getTemplateBlocksForContext(context).map((block) => ({
+      ...block,
+      importPreviewLoading: false,
+      importPreviewError: '',
+      importParserLabel: '',
+      importWarnings: [] as string[],
+      importPreviewCandidate: undefined as ImportPreviewFileResult['candidates'][number] | undefined,
+      importPreviewSelectedName: '',
+      importPreviewSelectedPath: '',
+      importManualReview: undefined as ImportReviewManualState | undefined
+    }))
+  );
+}
+
+function buildManualReviewState(
+  block: TemplateBlockFormData,
+  file: ImportPreviewFileResult
+): ImportReviewManualState | undefined {
+  if (!file.manualReview) {
+    return undefined;
+  }
+
+  return {
+    available: true,
+    delimiter: file.manualReview.suggestedDelimiter,
+    suggestedDelimiter: file.manualReview.suggestedDelimiter,
+    previewRows: file.manualReview.previewRows,
+    maxColumnCount: file.manualReview.maxColumnCount,
+    dataStartRow: file.manualReview.previewRows.length > 1 ? 2 : 1,
+    xColumnIndex: 0,
+    yColumnIndex: 1,
+    previewLoading: false,
+    previewError: ''
+  };
+}
+
+function updateManualReviewPreviewRows(
+  existing: ImportReviewManualState,
+  next: NonNullable<PreviewManualImportXYResult['manualReview']>
+): ImportReviewManualState {
+  return {
+    ...existing,
+    delimiter: next.suggestedDelimiter,
+    suggestedDelimiter: next.suggestedDelimiter,
+    previewRows: next.previewRows,
+    maxColumnCount: next.maxColumnCount
+  };
+}
+
+function syncTemplateBlockImportInputsToState(context: TemplateBlockEditContext) {
+  setTemplateBlocksForContext(
+    context,
+    getTemplateBlocksForContext(context).map((block) => {
+      if (!block.importManualReview) {
+        return block;
+      }
+
+      return {
+        ...block,
+        importManualReview: {
+          ...block.importManualReview,
+          delimiter:
+            ((document.getElementById(
+              `template-block-import-delimiter-${block.id}`
+            ) as HTMLSelectElement | null)?.value as ImportManualDelimiter | undefined) ||
+            block.importManualReview.delimiter,
+          dataStartRow:
+            Number(
+              (document.getElementById(
+                `template-block-import-start-row-${block.id}`
+              ) as HTMLInputElement | null)?.value || block.importManualReview.dataStartRow
+            ) || block.importManualReview.dataStartRow,
+          xColumnIndex:
+            Math.max(
+              0,
+              Number(
+                (document.getElementById(
+                  `template-block-import-x-column-${block.id}`
+                ) as HTMLInputElement | null)?.value || block.importManualReview.xColumnIndex + 1
+              ) - 1
+            ),
+          yColumnIndex:
+            Math.max(
+              0,
+              Number(
+                (document.getElementById(
+                  `template-block-import-y-column-${block.id}`
+                ) as HTMLInputElement | null)?.value || block.importManualReview.yColumnIndex + 1
+              ) - 1
+            ),
+        }
+      };
+    })
+  );
+}
+
+function applyTemplateBlockImportCandidate(params: {
+  context: TemplateBlockEditContext;
+  blockId: string;
+}) {
+  setTemplateBlocksForContext(
+    params.context,
+    getTemplateBlocksForContext(params.context).map((block) => {
+      if (block.id !== params.blockId) {
+        return block;
+      }
+
+      const candidate = block.importPreviewCandidate;
+      if (!candidate || candidate.candidateType !== 'templateBlock') {
+        return block;
+      }
+
+      const nextImportManualReview = block.importManualReview
+        ? {
+            ...block.importManualReview,
+            previewLoading: false,
+            previewError: ''
+          }
+        : undefined;
+
+      return {
+        ...block,
+        blockTitle: candidate.templateBlock.blockTitle,
+        primaryLabel: candidate.templateBlock.xLabel,
+        primaryUnit: candidate.templateBlock.xUnit,
+        secondaryLabel: candidate.templateBlock.yLabel,
+        secondaryUnit: candidate.templateBlock.yUnit,
+        dataText: formatXYPointInput(candidate.templateBlock.points),
+        note: candidate.templateBlock.note,
+        originalFileName: block.importPreviewSelectedName || block.originalFileName,
+        originalFilePath: block.importPreviewSelectedPath || block.originalFilePath,
+        replacementSourcePath: block.sourceFilePath
+          ? block.importPreviewSelectedPath || block.replacementSourcePath || ''
+          : '',
+        replacementOriginalName: block.sourceFilePath
+          ? block.importPreviewSelectedName || block.replacementOriginalName || ''
+          : '',
+        sourceFileName: block.sourceFilePath ? block.sourceFileName : '',
+        sourceFilePath: block.sourceFilePath ? block.sourceFilePath : '',
+        importParserLabel: candidate.parserLabel,
+        importWarnings: candidate.warnings,
+        importPreviewError: '',
+        importManualReview: nextImportManualReview
+      };
+    })
+  );
+  setActiveTemplateBlockImportId(params.context, '');
+}
+
+async function handleTemplateBlockImportSelection(
+  context: TemplateBlockEditContext,
+  blockId: string
+) {
+  if (context === 'detail-edit') {
+    collectDetailEditState();
+  } else {
+    saveStep2InputsToState();
+  }
+
+  syncTemplateBlockImportInputsToState(context);
+  setActiveTemplateBlockImportId(context, blockId);
+  setTemplateBlocksForContext(
+    context,
+    getTemplateBlocksForContext(context).map((block) => ({
+      ...block,
+      importPreviewError: block.id === blockId ? '' : block.importPreviewError,
+      importPreviewLoading: block.id === blockId,
+      importParserLabel: block.id === blockId ? '' : block.importParserLabel,
+      importWarnings: block.id === blockId ? [] : block.importWarnings,
+      importManualReview: block.id === blockId ? block.importManualReview : block.importManualReview
+    }))
+  );
+  requestRender(true);
+
+  try {
+    const selected = await window.electronAPI.selectSourceFile();
+    if (!selected) {
+      setTemplateBlocksForContext(
+        context,
+        getTemplateBlocksForContext(context).map((block) => ({
+          ...block,
+          importPreviewLoading: block.id === blockId ? false : block.importPreviewLoading
+        }))
+      );
+      requestRender(true);
+      return;
+    }
+
+    const previewResult = await window.electronAPI.previewImportFiles({
+      filePaths: [selected.originalPath]
+    });
+    const previewFile = previewResult.files[0];
+
+    if (!previewFile) {
+      setTemplateBlocksForContext(
+        context,
+        getTemplateBlocksForContext(context).map((block) => ({
+          ...block,
+          importPreviewLoading: block.id === blockId ? false : block.importPreviewLoading,
+          importPreviewError: block.id === blockId ? '导入预览失败' : block.importPreviewError
+        }))
+      );
+      requestRender(true);
+      return;
+    }
+
+    setTemplateBlocksForContext(
+      context,
+      getTemplateBlocksForContext(context).map((block) => {
+        if (block.id !== blockId) {
+          return block;
+        }
+
+        return {
+          ...block,
+          importPreviewLoading: false,
+          importPreviewError: previewFile.error || '',
+          importParserLabel: previewFile.parserLabel || '',
+          importWarnings: previewFile.warnings,
+          importPreviewCandidate: previewFile.candidates[0],
+          importPreviewSelectedName: selected.originalName,
+          importPreviewSelectedPath: selected.originalPath,
+          importManualReview: buildManualReviewState(block, previewFile),
+        };
+      })
+    );
+  } catch (error) {
+    setTemplateBlocksForContext(
+      context,
+      getTemplateBlocksForContext(context).map((block) => ({
+        ...block,
+        importPreviewLoading: block.id === blockId ? false : block.importPreviewLoading,
+        importPreviewError:
+          block.id === blockId
+            ? getErrorMessage(error) || '导入预览失败'
+            : block.importPreviewError
+      }))
+    );
+  }
+
+  requestRender(true);
+}
+
+async function regenerateTemplateBlockImportFromManualReview(
+  context: TemplateBlockEditContext,
+  blockId: string
+) {
+  if (context === 'detail-edit') {
+    collectDetailEditState();
+  } else {
+    saveStep2InputsToState();
+  }
+
+  syncTemplateBlockImportInputsToState(context);
+  const targetBlock = getTemplateBlocksForContext(context).find((block) => block.id === blockId);
+  if (!targetBlock?.importManualReview) {
+    return;
+  }
+
+  const importFilePath = targetBlock.importPreviewSelectedPath || targetBlock.originalFilePath;
+  const importFileName = targetBlock.importPreviewSelectedName || targetBlock.originalFileName;
+  if (!importFilePath) {
+    setTemplateBlocksForContext(
+      context,
+      getTemplateBlocksForContext(context).map((block) => {
+        if (block.id !== blockId || !block.importManualReview) {
+          return block;
+        }
+
+        return {
+          ...block,
+          importManualReview: {
+            ...block.importManualReview,
+            previewLoading: false,
+            previewError: '导入文件不存在或者路径无效'
+          }
+        };
+      })
+    );
+    requestRender(true);
+    return;
+  }
+
+  targetBlock.importManualReview.previewLoading = true;
+  targetBlock.importManualReview.previewError = '';
+  requestRender(true);
+
+  try {
+    const result = await window.electronAPI.previewManualImportXY({
+      filePath: importFilePath,
+      delimiter: targetBlock.importManualReview.delimiter,
+      dataStartRow: targetBlock.importManualReview.dataStartRow,
+      xColumnIndex: targetBlock.importManualReview.xColumnIndex,
+      yColumnIndex: targetBlock.importManualReview.yColumnIndex,
+      blockTitle: targetBlock.blockTitle,
+      xLabel: targetBlock.primaryLabel,
+      xUnit: targetBlock.primaryUnit,
+      yLabel: targetBlock.secondaryLabel,
+      yUnit: targetBlock.secondaryUnit
+    });
+
+    if (!result.success || !result.candidate) {
+      setTemplateBlocksForContext(
+        context,
+        getTemplateBlocksForContext(context).map((block) => {
+          if (block.id !== blockId || !block.importManualReview) {
+            return block;
+          }
+
+          return {
+            ...block,
+            importManualReview: {
+              ...block.importManualReview,
+              previewLoading: false,
+              previewError: result.error || '手动预览生成失败'
+            }
+          };
+        })
+      );
+      requestRender(true);
+      return;
+    }
+
+    setTemplateBlocksForContext(
+      context,
+      getTemplateBlocksForContext(context).map((block) => {
+        if (block.id !== blockId || !block.importManualReview) {
+          return block;
+        }
+
+        return {
+          ...block,
+          importManualReview: {
+            ...(result.manualReview
+              ? updateManualReviewPreviewRows(block.importManualReview, result.manualReview)
+              : block.importManualReview),
+            previewLoading: false,
+            previewError: ''
+          },
+          importPreviewCandidate: result.candidate,
+          importParserLabel: result.candidate.parserLabel,
+          importWarnings: result.candidate.warnings,
+          importPreviewSelectedPath: importFilePath,
+          importPreviewSelectedName: importFileName
+        };
+      })
+    );
+  } catch (error) {
+    setTemplateBlocksForContext(
+      context,
+      getTemplateBlocksForContext(context).map((block) => {
+        if (block.id !== blockId || !block.importManualReview) {
+          return block;
+        }
+
+        return {
+          ...block,
+          importManualReview: {
+            ...block.importManualReview,
+            previewLoading: false,
+            previewError: getErrorMessage(error) || '手动预览生成失败'
+          }
+        };
+      })
+    );
+  }
+
+  requestRender(true);
+}
+
+function addTemplateBlockForContext(
+  context: TemplateBlockEditContext,
+  templateType: TemplateBlockType = XY_TEMPLATE_TYPE,
+  recommendation?: Step2RecommendedStructuredBlock
+) {
+  const block = buildRecommendedTemplateBlock(templateType, recommendation);
+  if (context === 'detail-edit') {
+    detailEditTemplateBlocks = [...detailEditTemplateBlocks, block];
+    return;
+  }
+
+  step2TemplateBlocks = [...step2TemplateBlocks, block];
+}
+
+function bindTemplateBlockEditorEvents(params: {
+  context: TemplateBlockEditContext;
+  addButtonId?: string;
+}) {
+  if (params.addButtonId) {
+    document.getElementById(params.addButtonId)?.addEventListener('click', () => {
+      if (params.context === 'detail-edit') {
+        collectDetailEditState();
+      } else {
+        saveStep2InputsToState();
+      }
+
+      addTemplateBlockForContext(
+        params.context,
+        XY_TEMPLATE_TYPE,
+        getDefaultStructuredRecommendation(params.context)
+      );
+      requestRender(true);
+    });
+  }
+
+  document.querySelectorAll('[data-template-block-recommendation-index]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const target = button as HTMLElement;
+      const context = target.dataset.templateBlockContext as TemplateBlockEditContext | undefined;
+      const recommendationIndex = Number(target.dataset.templateBlockRecommendationIndex);
+      if (context !== params.context || Number.isNaN(recommendationIndex)) {
+        return;
+      }
+
+      if (params.context === 'detail-edit') {
+        collectDetailEditState();
+      } else {
+        saveStep2InputsToState();
+      }
+
+      const recommendation =
+        getActiveStep2TemplateFamily(params.context)?.recommendedStructuredBlocks[recommendationIndex];
+      addTemplateBlockForContext(params.context, XY_TEMPLATE_TYPE, recommendation);
+      requestRender(true);
+    });
+  });
+
+  document.querySelectorAll('[data-remove-template-block-id]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const target = button as HTMLElement;
+      const blockId = target.dataset.removeTemplateBlockId;
+      if (!blockId) return;
+
+      if (params.context === 'detail-edit') {
+        collectDetailEditState();
+        detailEditTemplateBlocks = detailEditTemplateBlocks.filter((block) => block.id !== blockId);
+        if (detailActiveTemplateBlockImportId === blockId) {
+          detailActiveTemplateBlockImportId = '';
+        }
+      } else {
+        saveStep2InputsToState();
+        step2TemplateBlocks = step2TemplateBlocks.filter((block) => block.id !== blockId);
+        if (step2ActiveTemplateBlockImportId === blockId) {
+          step2ActiveTemplateBlockImportId = '';
+        }
+      }
+
+      requestRender(true);
+    });
+  });
+
+  document.querySelectorAll('[data-template-file-block-id]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const target = button as HTMLElement;
+      const blockId = target.dataset.templateFileBlockId;
+      if (!blockId) return;
+
+      await handleTemplateBlockImportSelection(params.context, blockId);
+    });
+  });
+
+  document.querySelectorAll('[data-template-block-apply-import-id]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const target = button as HTMLElement;
+      const blockId = target.dataset.templateBlockApplyImportId;
+      if (!blockId) return;
+
+      if (params.context === 'detail-edit') {
+        collectDetailEditState();
+      } else {
+        saveStep2InputsToState();
+      }
+
+      applyTemplateBlockImportCandidate({
+        context: params.context,
+        blockId
+      });
+      requestRender(true);
+    });
+  });
+
+  document.querySelectorAll('[data-template-block-toggle-import-id]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const target = button as HTMLElement;
+      const blockId = target.dataset.templateBlockToggleImportId;
+      if (!blockId) return;
+
+      if (params.context === 'detail-edit') {
+        collectDetailEditState();
+      } else {
+        saveStep2InputsToState();
+      }
+
+      syncTemplateBlockImportInputsToState(params.context);
+      setActiveTemplateBlockImportId(
+        params.context,
+        getActiveTemplateBlockImportId(params.context) === blockId ? '' : blockId
+      );
+      requestRender(true);
+    });
+  });
+
+  document.querySelectorAll('[data-template-block-manual-preview-id]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const target = button as HTMLElement;
+      const blockId = target.dataset.templateBlockManualPreviewId;
+      if (!blockId) return;
+
+      await regenerateTemplateBlockImportFromManualReview(params.context, blockId);
+    });
+  });
+}
+
+function getScalarFileButtonLabel(item: DataItem) {
+  if (item.sourceFileName || item.originalFileName || item.replacementOriginalName) {
+    return '更换原始文件';
+  }
+
+  return '选择原始文件';
+}
+
+function renderEditableScalarSection(
+  context: ScalarItemEditContext,
+  role: ScalarItemRole,
+  rows: DataItem[]
+) {
+  const meta = SCALAR_ROLE_META[role];
+  const family = getActiveStep2TemplateFamily(context);
+  const oppositeRole: ScalarItemRole = role === 'condition' ? 'metric' : 'condition';
+  const contextPrefix = context === 'detail-edit' ? 'detail' : 'create';
+  const addButtonId =
+    role === 'condition'
+      ? `${contextPrefix}-add-condition-row-btn`
+      : `${contextPrefix}-add-metric-row-btn`;
+
+  return `
+    <div class="detail-section">
+      <div class="dynamic-header">
+        <div>
+          <div class="dynamic-title">${meta.title}</div>
+          <div class="dynamic-subtitle">${meta.subtitle}</div>
+        </div>
+        <div class="table-toolbar">
+          <button id="${addButtonId}" class="secondary-btn" type="button">${meta.addButtonLabel}</button>
+        </div>
+      </div>
+
+      ${renderScalarRecommendationButtons(
+        context,
+        role,
+        role === 'condition'
+          ? family?.recommendedConditions || []
+          : family?.recommendedMetrics || []
+      )}
+
+      ${rows.length
+        ? `
+            <div class="data-table-wrapper">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th>名称</th>
+                    <th>数值</th>
+                    <th>单位</th>
+                    <th>原始文件</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${rows
+                    .map((row) => {
+                      const fileMeta = [
+                        `原始文件：${escapeHtml(getPendingOriginalName(row))}`,
+                        row.sourceFileName ? `保存文件：${escapeHtml(row.sourceFileName)}` : ''
+                      ]
+                        .filter(Boolean)
+                        .join(' · ');
+
+                      return `
+                        <tr>
+                          <td>
+                            <input
+                              id="scalar-item-name-${row.id}"
+                              class="table-input"
+                              placeholder="${role === 'condition' ? '如：温度、偏压、光功率' : '如：Responsivity、Rise time'}"
+                              value="${escapeHtml(row.itemName)}"
+                            />
+                          </td>
+                          <td>
+                            <input
+                              id="scalar-item-value-${row.id}"
+                              class="table-input"
+                              placeholder="请输入数值"
+                              value="${escapeHtml(row.itemValue)}"
+                            />
+                          </td>
+                          <td>
+                            <input
+                              id="scalar-item-unit-${row.id}"
+                              class="table-input"
+                              placeholder="请输入单位"
+                              value="${escapeHtml(row.itemUnit)}"
+                            />
+                          </td>
+                          <td>
+                            <div class="detail-file-edit-cell">
+                              <button
+                                class="file-btn"
+                                type="button"
+                                data-scalar-file-row-id="${row.id}"
+                                data-scalar-file-context="${context}"
+                                title="${escapeHtml(row.sourceFilePath || row.originalFilePath || row.replacementSourcePath || '')}"
+                              >
+                                ${escapeHtml(getScalarFileButtonLabel(row))}
+                              </button>
+                              <div>${fileMeta || '原始文件：-'}</div>
+                            </div>
+                          </td>
+                          <td>
+                            <div class="detail-file-edit-cell">
+                              <button
+                                class="secondary-btn detail-replace-file-btn"
+                                type="button"
+                                data-move-scalar-row-id="${row.id}"
+                                data-move-scalar-context="${context}"
+                                data-target-scalar-role="${oppositeRole}"
+                              >
+                                ${role === 'condition' ? '移至结果指标' : '移至实验条件'}
+                              </button>
+                              <button
+                                class="danger-btn small-danger-btn"
+                                type="button"
+                                data-remove-scalar-row-id="${row.id}"
+                                data-remove-scalar-context="${context}"
+                              >
+                                删除
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      `;
+                    })
+                    .join('')}
+                </tbody>
+              </table>
+            </div>
+          `
+        : `<div class="empty-tip">${meta.emptyText}</div>`}
+    </div>
+  `;
+}
+
+function renderReadonlyScalarSection(role: ScalarItemRole, rows: ExperimentDetail['dataItems']) {
+  const meta = SCALAR_ROLE_META[role];
+
+  return `
+    <div class="detail-section">
+      <div class="detail-section-title">${meta.title}</div>
+      <div class="detail-section-subtitle">${meta.subtitle}</div>
+      ${rows.length
+        ? `
+            <div class="data-table-wrapper">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th>名称</th>
+                    <th>数值</th>
+                    <th>单位</th>
+                    <th>保存文件名</th>
+                    <th>原始文件名</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${rows
+                    .map(
+                      (item) => `
+                        <tr>
+                          <td>${escapeHtml(item.itemName)}</td>
+                          <td>${escapeHtml(item.itemValue)}</td>
+                          <td>${escapeHtml(item.itemUnit || '-')}</td>
+                          <td>
+                            ${item.sourceFileName && item.sourceFilePath
+                              ? `
+                                  <div class="saved-file-cell">
+                                    <button
+                                      class="file-link-btn"
+                                      type="button"
+                                      data-open-saved-file="${escapeHtml(item.sourceFilePath)}"
+                                    >
+                                      ${escapeHtml(item.sourceFileName)}
+                                    </button>
+                                    <button
+                                      class="file-folder-btn"
+                                      type="button"
+                                      data-open-saved-folder="${escapeHtml(item.sourceFilePath)}"
+                                      title="打开所在文件夹"
+                                    >
+                                      打开文件夹
+                                    </button>
+                                  </div>
+                                `
+                              : '-'}
+                          </td>
+                          <td>${escapeHtml(item.originalFileName || '-')}</td>
+                        </tr>
+                      `
+                    )
+                    .join('')}
+                </tbody>
+              </table>
+            </div>
+          `
+        : `<div class="empty-tip">${meta.emptyText}</div>`}
+    </div>
+  `;
+}
+
+function renderScalarSections(
+  context: ScalarItemEditContext,
+  rows: DataItem[]
+) {
+  const conditionRows = rows.filter((row) => (row.scalarRole || 'metric') === 'condition');
+  const metricRows = rows.filter((row) => (row.scalarRole || 'metric') === 'metric');
+
+  return `
+    ${renderStep2TemplateContextHint(context)}
+    ${renderEditableScalarSection(context, 'condition', conditionRows)}
+    ${renderEditableScalarSection(context, 'metric', metricRows)}
+  `;
+}
+
+function validateScalarItems(rows: DataItem[]) {
+  for (const row of rows) {
+    const hasName = !!row.itemName;
+    const hasValue = !!row.itemValue;
+    const hasUnit = !!row.itemUnit;
+    const hasFile = !!row.sourceFileName || !!row.replacementOriginalName || !!row.originalFileName;
+
+    if ((hasName || hasValue || hasUnit || hasFile) && !hasName) {
+      return '请为已填写的数据行补充名称';
+    }
+
+    if ((hasName || hasValue || hasUnit || hasFile) && !hasValue) {
+      return '请为已填写的数据行补充数值';
+    }
+  }
+
+  return '';
+}
+
+async function handleScalarFileSelection(context: ScalarItemEditContext, rowId: string) {
+  if (context === 'detail-edit') {
+    collectDetailEditState();
+  } else {
+    saveStep2InputsToState();
+  }
+
+  try {
+    const selected = await window.electronAPI.selectSourceFile();
+    if (!selected) return;
+
+    if (context === 'detail-edit') {
+      setScalarItemsForContext(
+        context,
+        getScalarItemsForContext(context).map((item) =>
+          item.id !== rowId
+            ? item
+            : {
+                ...item,
+                replacementSourcePath: selected.originalPath,
+                replacementOriginalName: selected.originalName
+              }
+        )
+      );
+      requestRender(true);
+      return;
+    }
+
+    const copied = await window.electronAPI.copyFileToStorage({
+      sourcePath: selected.originalPath,
+      testProject: step1FormData.testProject,
+      sampleCode: step1FormData.sampleCode,
+      tester: step1FormData.tester,
+      instrument: step1FormData.instrument,
+      testTime: step1FormData.testTime
+    });
+
+    if (!copied.success || !copied.savedFileName || !copied.savedPath) {
+      alert(copied.error || '复制原始文件失败');
+      return;
+    }
+
+    setScalarItemsForContext(
+      context,
+      getScalarItemsForContext(context).map((row) =>
+        row.id !== rowId
+          ? row
+          : {
+              ...row,
+              sourceFileName: copied.savedFileName,
+              sourceFilePath: copied.savedPath,
+              originalFileName: selected.originalName,
+              originalFilePath: selected.originalPath
+            }
+      )
+    );
+
+    requestRender(true);
+  } catch (error) {
+    handleAsyncError(error, context === 'detail-edit' ? '选择替换文件失败' : '处理原始文件失败');
+  }
+}
+
+function bindScalarItemEditorEvents(params: {
+  context: ScalarItemEditContext;
+  addConditionButtonId: string;
+  addMetricButtonId: string;
+}) {
+  const syncStateBeforeMutation = () => {
+    if (params.context === 'detail-edit') {
+      collectDetailEditState();
+    } else {
+      saveStep2InputsToState();
+    }
+  };
+
+  document.getElementById(params.addConditionButtonId)?.addEventListener('click', () => {
+    syncStateBeforeMutation();
+
+    setScalarItemsForContext(params.context, [
+      ...getScalarItemsForContext(params.context),
+      buildEmptyDataItem('condition')
+    ]);
+    requestRender(true);
+  });
+
+  document.getElementById(params.addMetricButtonId)?.addEventListener('click', () => {
+    syncStateBeforeMutation();
+
+    setScalarItemsForContext(params.context, [
+      ...getScalarItemsForContext(params.context),
+      buildEmptyDataItem('metric')
+    ]);
+    requestRender(true);
+  });
+
+  document.querySelectorAll('[data-template-scalar-name]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const target = button as HTMLElement;
+      const context = target.dataset.templateScalarContext as ScalarItemEditContext | undefined;
+      const role = target.dataset.templateScalarRole as ScalarItemRole | undefined;
+      const name = target.dataset.templateScalarName || '';
+      const unit = target.dataset.templateScalarUnit || '';
+      if (context !== params.context || !role) {
+        return;
+      }
+
+      syncStateBeforeMutation();
+      setScalarItemsForContext(params.context, [
+        ...getScalarItemsForContext(params.context),
+        buildRecommendedScalarItem(role, { name, defaultUnit: unit })
+      ]);
+      requestRender(true);
+    });
+  });
+
+  document.querySelectorAll('[data-remove-scalar-row-id]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const target = button as HTMLElement;
+      const rowId = target.dataset.removeScalarRowId;
+      const rowContext = target.dataset.removeScalarContext as ScalarItemEditContext | undefined;
+      if (!rowId || rowContext !== params.context) return;
+
+      syncStateBeforeMutation();
+
+      setScalarItemsForContext(
+        params.context,
+        getScalarItemsForContext(params.context).filter((row) => row.id !== rowId)
+      );
+      requestRender(true);
+    });
+  });
+
+  document.querySelectorAll('[data-move-scalar-row-id]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const target = button as HTMLElement;
+      const rowId = target.dataset.moveScalarRowId;
+      const rowContext = target.dataset.moveScalarContext as ScalarItemEditContext | undefined;
+      const targetRole = target.dataset.targetScalarRole as ScalarItemRole | undefined;
+      if (!rowId || rowContext !== params.context || !targetRole) return;
+
+      syncStateBeforeMutation();
+
+      setScalarItemsForContext(
+        params.context,
+        getScalarItemsForContext(params.context).map((row) =>
+          row.id === rowId ? { ...row, scalarRole: targetRole } : row
+        )
+      );
+      requestRender(true);
+    });
+  });
+
+  document.querySelectorAll('[data-scalar-file-row-id]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const target = button as HTMLElement;
+      const rowId = target.dataset.scalarFileRowId;
+      const rowContext = target.dataset.scalarFileContext as ScalarItemEditContext | undefined;
+      if (!rowId || rowContext !== params.context) return;
+
+      await handleScalarFileSelection(params.context, rowId);
+    });
+  });
 }
 
 function countTemplateBlockPointLines(dataText: string) {
@@ -721,52 +1961,220 @@ function countTemplateBlockPointLines(dataText: string) {
     .filter(Boolean).length;
 }
 
-function getTemplateBlockFieldConfig(templateType: TemplateBlockType) {
-  if (templateType === XY_TEMPLATE_TYPE) {
-    return {
-      typeLabel: 'XY 曲线块',
-      subtitle: '支持格式：x,y 或 x<TAB>y；每行一组数据',
-      dataLabel: 'XY 数据',
-      dataPlaceholder: '每行一组 XY 数据，例如：&#10;0,1.23&#10;0.1,1.28',
-      titlePlaceholder: '如：IV 曲线',
-      primaryLabelText: 'X 轴名称',
-      primaryLabelPlaceholder: '如：Voltage',
-      primaryUnitText: 'X 轴单位',
-      primaryUnitPlaceholder: '如：V',
-      secondaryLabelText: 'Y 轴名称',
-      secondaryLabelPlaceholder: '如：Current',
-      secondaryUnitText: 'Y 轴单位',
-      secondaryUnitPlaceholder: '如：A'
-    };
+function renderTemplateBlockImportPanel(block: TemplateBlockFormData) {
+  const manualReview = block.importManualReview;
+  const warnings = block.importWarnings || [];
+  const importCandidate =
+    block.importPreviewCandidate?.candidateType === 'templateBlock'
+      ? block.importPreviewCandidate
+      : null;
+
+  if (
+    !block.importPreviewError &&
+    !warnings.length &&
+    !block.importParserLabel &&
+    !manualReview?.available &&
+    !importCandidate
+  ) {
+    return '';
   }
 
+  return `
+    <div class="import-manual-review-panel">
+      ${block.importPreviewSelectedName
+        ? `<div class="import-preview-file-status">预览文件：${escapeHtml(block.importPreviewSelectedName)}</div>`
+        : ''}
+      ${block.importParserLabel
+        ? `<div class="import-preview-file-status">当前识别：${escapeHtml(block.importParserLabel)}</div>`
+        : ''}
+      ${warnings.length
+        ? `
+            <div class="import-preview-warning-list">
+              ${warnings
+                .map((warning) => `<div class="import-preview-warning-item">${escapeHtml(warning)}</div>`)
+                .join('')}
+            </div>
+          `
+        : ''}
+      ${block.importPreviewError
+        ? `<div class="error-message">${escapeHtml(block.importPreviewError)}</div>`
+        : ''}
+      ${importCandidate
+        ? `
+            <div class="import-manual-review-title">识别结果预览</div>
+            <div class="import-manual-review-subtitle">识别或重新生成只更新预览，不会自动覆盖当前块。确认无误后，再写入当前块的主编辑字段。</div>
+            <div class="template-block-grid">
+              <div class="form-group">
+                <label class="form-label">预览二级数据项名称</label>
+                <div class="detail-list-value">${escapeHtml(importCandidate.templateBlock.blockTitle || '-')}</div>
+              </div>
+              <div class="form-group">
+                <label class="form-label">预览点数</label>
+                <div class="detail-list-value">${importCandidate.templateBlock.points.length}</div>
+              </div>
+            </div>
+            <button
+              class="secondary-btn"
+              type="button"
+              data-template-block-apply-import-id="${block.id}"
+            >
+              写入 XY 数据
+            </button>
+          `
+        : ''}
+      ${manualReview?.available
+        ? `
+            <div class="import-manual-review-title">行列映射调整</div>
+            <div class="import-manual-review-subtitle">如果自动识别结果不理想，可在这里调整数据起始行、分隔符和 X/Y 列后重新生成预览。标题、主轴名称、单位和信号名称请直接在当前结构化数据块主字段中继续编辑；确认后再写入当前块。</div>
+
+            <div class="template-block-grid">
+              <div class="form-group">
+                <label class="form-label">数据起始行</label>
+                <input
+                  id="template-block-import-start-row-${block.id}"
+                  class="form-input"
+                  type="number"
+                  min="1"
+                  value="${manualReview.dataStartRow}"
+                />
+              </div>
+
+              <div class="form-group">
+                <label class="form-label">分隔符</label>
+                <select
+                  id="template-block-import-delimiter-${block.id}"
+                  class="form-input"
+                >
+                  <option value="comma" ${manualReview.delimiter === 'comma' ? 'selected' : ''}>逗号</option>
+                  <option value="tab" ${manualReview.delimiter === 'tab' ? 'selected' : ''}>Tab</option>
+                  <option value="semicolon" ${manualReview.delimiter === 'semicolon' ? 'selected' : ''}>分号</option>
+                  <option value="whitespace" ${manualReview.delimiter === 'whitespace' ? 'selected' : ''}>空白字符</option>
+                </select>
+              </div>
+
+              <div class="form-group">
+                <label class="form-label">X 列</label>
+                <input
+                  id="template-block-import-x-column-${block.id}"
+                  class="form-input"
+                  type="number"
+                  min="1"
+                  value="${manualReview.xColumnIndex + 1}"
+                />
+              </div>
+
+              <div class="form-group">
+                <label class="form-label">Y 列</label>
+                <input
+                  id="template-block-import-y-column-${block.id}"
+                  class="form-input"
+                  type="number"
+                  min="1"
+                  value="${manualReview.yColumnIndex + 1}"
+                />
+              </div>
+            </div>
+
+            <button
+              class="secondary-btn"
+              type="button"
+              data-template-block-manual-preview-id="${block.id}"
+              ${manualReview.previewLoading ? 'disabled' : ''}
+            >
+              ${manualReview.previewLoading ? '生成中...' : '重新生成块数据'}
+            </button>
+
+            ${manualReview.previewError ? `<div class="error-message">${escapeHtml(manualReview.previewError)}</div>` : ''}
+
+            <div class="import-manual-preview-table-wrapper">
+              <table class="import-manual-preview-table">
+                <thead>
+                  <tr>
+                    <th>行号</th>
+                    ${Array.from({ length: manualReview.maxColumnCount })
+                      .map((_, index) => `<th>列 ${index + 1}</th>`)
+                      .join('')}
+                  </tr>
+                </thead>
+                <tbody>
+                  ${manualReview.previewRows
+                    .map(
+                      (row) => `
+                        <tr>
+                          <td>${row.rowNumber}</td>
+                          ${Array.from({ length: manualReview.maxColumnCount })
+                            .map((_, index) => `<td>${escapeHtml(row.columns[index] || '')}</td>`)
+                            .join('')}
+                        </tr>
+                      `
+                    )
+                    .join('')}
+                </tbody>
+              </table>
+            </div>
+          `
+        : ''}
+    </div>
+  `;
+}
+
+function getTemplateBlockFileButtonLabel(block: TemplateBlockFormData) {
+  if (block.importPreviewSelectedName && !block.sourceFileName && !block.originalFileName) {
+    return '重新选择导入文件';
+  }
+
+  if (block.sourceFileName || block.originalFileName || block.replacementOriginalName) {
+    return '更换导入文件';
+  }
+
+  return '导入原始文件';
+}
+
+function getTemplateBlockDisplayedOriginalName(block: TemplateBlockFormData) {
+  return block.replacementOriginalName || block.originalFileName || '-';
+}
+
+function shouldShowTemplateBlockAdjustButton(
+  block: TemplateBlockFormData
+) {
+  return (
+    !!(block.importPreviewSelectedPath || block.originalFilePath) &&
+    !!block.importManualReview?.available
+  );
+}
+
+function getTemplateBlockFieldConfig(templateType?: TemplateBlockType) {
+  void templateType;
   return {
-    typeLabel: '光谱块',
-    subtitle: '支持格式：x,y 或 x<TAB>y；每行一组数据',
-    dataLabel: '光谱数据',
-    dataPlaceholder: '每行一组光谱数据，例如：&#10;450,12.5&#10;460,13.1',
-    titlePlaceholder: '如：PL 光谱',
-    primaryLabelText: '光谱轴名称',
-    primaryLabelPlaceholder: '如：Wavelength',
-    primaryUnitText: '光谱轴单位',
-    primaryUnitPlaceholder: '如：nm',
+    typeLabel: '结构化数据块',
+    subtitle: '统一录入曲线、光谱等结构化序列数据；支持文件导入、解析调整、预览重生成和显式写入当前块',
+    dataLabel: 'XY 数据',
+    dataPlaceholder: '每行一组结构化数据，例如：&#10;0,1.23&#10;0.1,1.28',
+    titlePlaceholder: '如：IV 曲线、XRD 图谱、EQE 曲线',
+    primaryLabelText: '主轴名称',
+    primaryLabelPlaceholder: '如：Voltage、Wavelength、2θ',
+    primaryUnitText: '主轴单位',
+    primaryUnitPlaceholder: '如：V、nm、degree',
     secondaryLabelText: '信号名称',
-    secondaryLabelPlaceholder: '如：Intensity',
+    secondaryLabelPlaceholder: '如：Current、Intensity、Responsivity',
     secondaryUnitText: '信号单位',
-    secondaryUnitPlaceholder: '如：a.u.'
+    secondaryUnitPlaceholder: '如：A、a.u.、A/W'
   };
 }
 
-function renderTemplateBlockCards(blocks: TemplateBlockFormData[]) {
+function renderTemplateBlockCards(
+  blocks: TemplateBlockFormData[],
+  context: TemplateBlockEditContext
+) {
   if (!blocks.length) {
-    return `<div class="empty-tip">当前还没有添加模板块</div>`;
+    return `<div class="empty-tip">当前还没有添加结构化数据块</div>`;
   }
 
   return blocks
     .map(
       (block, index) => `
         ${(() => {
-          const fieldConfig = getTemplateBlockFieldConfig(block.templateType);
+          const fieldConfig = getTemplateBlockFieldConfig();
           return `
         <div class="template-block-card">
           <div class="template-block-header">
@@ -783,7 +2191,55 @@ function renderTemplateBlockCards(blocks: TemplateBlockFormData[]) {
             </button>
           </div>
 
+          <div class="template-block-file-row">
+            <button
+              class="file-btn"
+              type="button"
+              data-template-file-block-id="${block.id}"
+              data-template-file-context="${context}"
+              title="${escapeHtml(block.originalFilePath || '')}"
+              ${block.importPreviewLoading ? 'disabled' : ''}
+            >
+              ${block.importPreviewLoading
+                ? '导入预览中...'
+                : escapeHtml(getTemplateBlockFileButtonLabel(block))}
+            </button>
+            <div class="template-block-file-meta">
+              原始文件：${escapeHtml(getTemplateBlockDisplayedOriginalName(block))}
+              ${block.sourceFileName ? ` · 保存文件：${escapeHtml(block.sourceFileName)}` : ''}
+            </div>
+            ${shouldShowTemplateBlockAdjustButton(block)
+              ? `
+                  <button
+                    class="secondary-btn"
+                    type="button"
+                    data-template-block-toggle-import-id="${block.id}"
+                    data-template-block-toggle-context="${context}"
+                  >
+                    ${getActiveTemplateBlockImportId(context) === block.id ? '收起解析' : '调整解析'}
+                  </button>
+                `
+              : ''}
+          </div>
+
+          ${getActiveTemplateBlockImportId(context) === block.id
+            ? renderTemplateBlockImportPanel(block)
+            : ''}
+
           <div class="template-block-grid">
+            <div class="form-group">
+              <label class="form-label">数据用途</label>
+              <select id="template-block-purpose-${block.id}" class="form-input">
+                ${STRUCTURED_BLOCK_PURPOSE_OPTIONS.map(
+                  (option) => `
+                    <option value="${option.value}" ${block.purposeType === option.value ? 'selected' : ''}>
+                      ${option.label}
+                    </option>
+                  `
+                ).join('')}
+              </select>
+            </div>
+
             <div class="form-group">
               <label class="form-label">二级数据项名称 <span class="required-star">*</span></label>
               <input
@@ -849,20 +2305,6 @@ function renderTemplateBlockCards(blocks: TemplateBlockFormData[]) {
               value="${escapeHtml(block.note)}"
             />
           </div>
-
-          <div class="template-block-file-row">
-            <button
-              class="file-btn"
-              type="button"
-              data-template-file-block-id="${block.id}"
-              title="${escapeHtml(block.sourceFilePath || '')}"
-            >
-              ${block.sourceFileName ? escapeHtml(block.sourceFileName) : '选择原始文件'}
-            </button>
-            <div class="template-block-file-meta">
-              原始文件：${escapeHtml(block.originalFileName || '-')}
-            </div>
-          </div>
         </div>
       `;
         })()}
@@ -873,7 +2315,7 @@ function renderTemplateBlockCards(blocks: TemplateBlockFormData[]) {
 
 function renderReadonlyTemplateBlocks(blocks: TemplateBlockFormData[], showReadonlyHint = false) {
   if (!blocks.length) {
-    return `<div class="empty-tip">无模板块</div>`;
+    return `<div class="empty-tip">无结构化数据块</div>`;
   }
 
   return blocks
@@ -892,6 +2334,7 @@ function renderReadonlyTemplateBlocks(blocks: TemplateBlockFormData[], showReado
           </div>
 
           <div class="detail-grid template-block-detail-grid">
+            ${renderDetailPair('数据用途', getStructuredBlockPurposeLabel(block.purposeType))}
             ${renderDetailPair(fieldConfig.primaryLabelText, block.primaryLabel || '-')}
             ${renderDetailPair(fieldConfig.primaryUnitText, block.primaryUnit || '-')}
             ${renderDetailPair(fieldConfig.secondaryLabelText, block.secondaryLabel || '-')}
@@ -978,6 +2421,7 @@ function buildValidatedTemplateBlocks(
 
     if (block.templateType === XY_TEMPLATE_TYPE) {
       normalizedBlocks.push({
+        blockId: block.blockId,
         templateType: XY_TEMPLATE_TYPE,
         blockTitle,
         blockOrder: index + 1,
@@ -990,12 +2434,15 @@ function buildValidatedTemplateBlocks(
         sourceFileName: block.sourceFileName,
         sourceFilePath: block.sourceFilePath,
         originalFileName: block.originalFileName,
-        originalFilePath: block.originalFilePath
+        originalFilePath: block.originalFilePath,
+        replacementSourcePath: block.replacementSourcePath,
+        replacementOriginalName: block.replacementOriginalName
       });
       continue;
     }
 
     normalizedBlocks.push({
+      blockId: block.blockId,
       templateType: SPECTRUM_TEMPLATE_TYPE,
       blockTitle,
       blockOrder: index + 1,
@@ -1008,7 +2455,9 @@ function buildValidatedTemplateBlocks(
       sourceFileName: block.sourceFileName,
       sourceFilePath: block.sourceFilePath,
       originalFileName: block.originalFileName,
-      originalFilePath: block.originalFilePath
+      originalFilePath: block.originalFilePath,
+      replacementSourcePath: block.replacementSourcePath,
+      replacementOriginalName: block.replacementOriginalName
     });
   }
 
@@ -1324,20 +2773,25 @@ async function render() {
           <section class="content-area">
             <div class="welcome-card">
               <h2>欢迎使用 ${appName}</h2>
-              <p class="subtitle">请选择你要进入的功能模块</p>
+              <p class="subtitle">请选择你要进入的功能模块；日常记录、查看和导出最终都会回到实验数据工作区。</p>
+
+              <div class="name-preview-card">
+                <div class="name-preview-label">首次使用建议</div>
+                <div class="name-preview-value">如为首次使用，建议先进入设置，配置保存根目录并维护一级字段词典（测试项目 / 测试人 / 测试仪器）。</div>
+              </div>
 
               <div class="entry-grid">
                 <div class="entry-card">
                   <div class="entry-icon">＋</div>
                   <div class="entry-title">添加新数据</div>
-                  <div class="entry-desc">进入实验数据录入流程</div>
+                  <div class="entry-desc">进入 Step 1 / Step 2 录入流程，创建新的实验记录</div>
                   <button id="add-data-btn" class="primary-btn">进入</button>
                 </div>
 
                 <div class="entry-card">
                   <div class="entry-icon">▣</div>
                   <div class="entry-title">数据库入口</div>
-                  <div class="entry-desc">查看和搜索已保存数据</div>
+                  <div class="entry-desc">进入主要工作区，查看、选择、打开和导出已有实验记录</div>
                   <button id="database-btn" class="secondary-btn big-btn">进入</button>
                 </div>
               </div>
@@ -1396,7 +2850,7 @@ async function render() {
           <section class="content-area">
             <div class="welcome-card">
               <h2>一级信息录入</h2>
-              <p class="subtitle">请先填写实验主信息，必填项完成后才能进入下一步</p>
+              <p class="subtitle">Step 1 用于定义实验身份信息和标准化一级元数据；必填项完成后才能进入 Step 2。</p>
 
               <div class="step-form-grid">
                 <div class="form-group">
@@ -1512,52 +2966,34 @@ async function render() {
           <section class="content-area">
             <div class="welcome-card">
               <h2>二级数据录入</h2>
-              <p class="subtitle">请填写具体数据项信息，可新增多行，并关联原始文件</p>
+              <p class="subtitle">Step 2 用于填写实验内容和二级数据项，包括实验条件、结果指标和结构化数据块。</p>
 
               <div class="name-preview-card">
                 <div class="name-preview-label">自动命名预览</div>
                 <div class="name-preview-value">${escapeHtml(buildDisplayName(step1FormData))}</div>
               </div>
 
-              <div class="data-table-wrapper">
-                <table class="data-table">
-                  <thead>
-                    <tr>
-                      <th>名称</th>
-                      <th>数值</th>
-                      <th>单位</th>
-                      <th>原始文件</th>
-                      <th>操作</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    ${renderStep2Rows(step2DataItems)}
-                  </tbody>
-                </table>
-              </div>
-
-              <div class="table-toolbar">
-                <button id="add-row-btn" class="secondary-btn" type="button">新增一行</button>
-              </div>
+              ${renderScalarSections('create-step2', step2DataItems)}
 
               <div class="template-block-section">
                 <div class="dynamic-header">
                   <div>
-                    <div class="dynamic-title">模板块</div>
-                    <div class="dynamic-subtitle">用于录入结构化二级数据，当前版本支持 XY 曲线块和光谱块</div>
+                    <div class="dynamic-title">结构化数据块</div>
+                    <div class="dynamic-subtitle">记录曲线型或序列型数据，如光谱、I-V、XRD、EQE 等；文件导入、解析调整和写入均在块内完成。</div>
                   </div>
 
                   <div class="template-block-toolbar">
-                    <select id="template-block-type-select" class="form-input template-block-select">
-                      <option value="xy">XY 曲线块</option>
-                      <option value="spectrum">光谱块</option>
-                    </select>
-                    <button id="add-template-block-btn" class="secondary-btn" type="button">添加模板块</button>
+                    <button id="add-template-block-btn" class="secondary-btn" type="button">添加结构化数据块</button>
                   </div>
                 </div>
 
+                ${renderStructuredRecommendationButtons(
+                  'create-step2',
+                  getActiveStep2TemplateFamily('create-step2')
+                )}
+
                 <div id="template-blocks-container" class="template-block-list">
-                  ${renderTemplateBlockCards(step2TemplateBlocks)}
+                  ${renderTemplateBlockCards(step2TemplateBlocks, 'create-step2')}
                 </div>
               </div>
 
@@ -1672,7 +3108,7 @@ async function render() {
           <section class="content-area">
             <div class="welcome-card">
               <h2>实验数据列表</h2>
-              <p class="subtitle">默认按样品编号分类，可搜索和切换分类方式</p>
+              <p class="subtitle">这里是已有实验记录的主要工作区：可浏览、勾选、打开详情并从所选记录发起导出。</p>
 
               <div class="search-row">
                 <input
@@ -1682,39 +3118,51 @@ async function render() {
                   value="${escapeHtml(databaseSearchKeyword)}"
                 />
                 <button id="db-search-btn" class="primary-btn search-btn">搜索</button>
-                <select id="db-sort-order" class="form-input">
-                  <option value="newest" ${databaseSortOrder === 'newest' ? 'selected' : ''}>最新优先</option>
-                  <option value="oldest" ${databaseSortOrder === 'oldest' ? 'selected' : ''}>最早优先</option>
-                </select>
+                <button id="db-filter-btn" class="secondary-btn search-btn" type="button">筛选</button>
               </div>
 
-              <div class="search-row">
-                <select id="db-filter-test-project" class="form-input">
-                  <option value="">全部测试项目</option>
-                  ${databaseFilterOptions.testProjects
-        .map(
-          (value) => `
-                        <option value="${escapeHtml(value)}" ${databaseFilterTestProject === value ? 'selected' : ''}>
-                          ${escapeHtml(value)}
-                        </option>
-                      `
-        )
-        .join('')}
-                </select>
-                <select id="db-filter-tester" class="form-input">
-                  <option value="">全部测试人</option>
-                  ${databaseFilterOptions.testers
-        .map(
-          (value) => `
-                        <option value="${escapeHtml(value)}" ${databaseFilterTester === value ? 'selected' : ''}>
-                          ${escapeHtml(value)}
-                        </option>
-                      `
-        )
-        .join('')}
-                </select>
-                <button id="db-reset-btn" class="secondary-btn" type="button">重置</button>
+              ${databaseFilterPanelVisible
+        ? `
+              <div class="db-filter-panel">
+                <div class="db-filter-panel-header">
+                  <div class="db-filter-panel-title">筛选实验记录</div>
+                  <div class="db-filter-panel-subtitle">按字段缩小当前实验列表范围；不改变分组方式。</div>
+                </div>
+
+                <div class="step-form-grid db-filter-grid">
+                  <div class="form-group">
+                    <label class="form-label">测试项目</label>
+                    <input id="db-filter-test-project" class="form-input" value="${escapeHtml(databaseFilterTestProject)}" />
+                  </div>
+
+                  <div class="form-group">
+                    <label class="form-label">样品编号</label>
+                    <input id="db-filter-sample-code" class="form-input" value="${escapeHtml(databaseFilterSampleCode)}" />
+                  </div>
+
+                  <div class="form-group">
+                    <label class="form-label">测试人</label>
+                    <input id="db-filter-tester" class="form-input" value="${escapeHtml(databaseFilterTester)}" />
+                  </div>
+
+                  <div class="form-group">
+                    <label class="form-label">测试仪器</label>
+                    <input id="db-filter-instrument" class="form-input" value="${escapeHtml(databaseFilterInstrument)}" />
+                  </div>
+
+                  <div class="form-group">
+                    <label class="form-label">样品所属人员</label>
+                    <input id="db-filter-sample-owner" class="form-input" value="${escapeHtml(databaseFilterSampleOwner)}" />
+                  </div>
+                </div>
+
+                <div class="form-action-row db-filter-actions">
+                  <button id="db-filter-clear-btn" class="secondary-btn" type="button">清空筛选</button>
+                  <button id="db-filter-apply-btn" class="primary-btn" type="button">应用筛选</button>
+                </div>
               </div>
+              `
+        : ''}
 
               <div class="group-tabs">
                 ${renderGroupTabs(databaseGroupBy)}
@@ -1775,29 +3223,35 @@ async function render() {
       void applyDatabaseSearch();
     });
 
-    document.getElementById('db-sort-order')?.addEventListener('change', async () => {
-      const select = document.getElementById('db-sort-order') as HTMLSelectElement | null;
-      databaseSortOrder = (select?.value as ExperimentListSortOrder) || 'newest';
+    document.getElementById('db-filter-btn')?.addEventListener('click', () => {
+      databaseFilterPanelVisible = !databaseFilterPanelVisible;
+      void renderPreservingContentScroll();
+    });
+
+    document.getElementById('db-filter-apply-btn')?.addEventListener('click', async () => {
+      databaseFilterSampleCode =
+        (document.getElementById('db-filter-sample-code') as HTMLInputElement | null)?.value.trim() || '';
+      databaseFilterTestProject =
+        (document.getElementById('db-filter-test-project') as HTMLInputElement | null)?.value.trim() || '';
+      databaseFilterInstrument =
+        (document.getElementById('db-filter-instrument') as HTMLInputElement | null)?.value.trim() || '';
+      databaseFilterTester =
+        (document.getElementById('db-filter-tester') as HTMLInputElement | null)?.value.trim() || '';
+      databaseFilterSampleOwner =
+        (document.getElementById('db-filter-sample-owner') as HTMLInputElement | null)?.value.trim() || '';
+      databaseFilterPanelVisible = false;
       await loadDatabaseList();
       void render();
     });
 
-    document.getElementById('db-filter-test-project')?.addEventListener('change', async () => {
-      const select = document.getElementById('db-filter-test-project') as HTMLSelectElement | null;
-      databaseFilterTestProject = select?.value || '';
+    document.getElementById('db-filter-clear-btn')?.addEventListener('click', async () => {
+      databaseFilterSampleCode = '';
+      databaseFilterTestProject = '';
+      databaseFilterInstrument = '';
+      databaseFilterTester = '';
+      databaseFilterSampleOwner = '';
+      databaseFilterPanelVisible = false;
       await loadDatabaseList();
-      void render();
-    });
-
-    document.getElementById('db-filter-tester')?.addEventListener('change', async () => {
-      const select = document.getElementById('db-filter-tester') as HTMLSelectElement | null;
-      databaseFilterTester = select?.value || '';
-      await loadDatabaseList();
-      void render();
-    });
-
-    document.getElementById('db-reset-btn')?.addEventListener('click', async () => {
-      await resetDatabaseListControls();
       void render();
     });
 
@@ -2133,99 +3587,36 @@ async function render() {
       }
               </div>
 
-              <div class="detail-section">
-                <div class="detail-section-title">二级数据项</div>
-                ${currentDetail.dataItems.length || detailEditMode
-        ? `
-                      <div class="data-table-wrapper">
-                        <table class="data-table">
-                          <thead>
-                            <tr>
-                              <th>名称</th>
-                              <th>数值</th>
-                              <th>单位</th>
-                              <th>保存文件名</th>
-                              <th>原始文件名</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            ${detailEditMode
-          ? detailEditStep2
-            .map(
-              (item, index) => `
-                                        <tr>
-                                          <td><input id="edit-item-name-${index}" class="table-input" value="${escapeHtml(item.itemName)}" /></td>
-                                          <td><input id="edit-item-value-${index}" class="table-input" value="${escapeHtml(item.itemValue)}" /></td>
-                                          <td><input id="edit-item-unit-${index}" class="table-input" value="${escapeHtml(item.itemUnit)}" /></td>
-                                          <td>
-                                            <div class="detail-file-edit-cell">
-                                              <div>${escapeHtml(item.sourceFileName || '-')}</div>
-                                              <button
-                                                class="secondary-btn detail-replace-file-btn"
-                                                type="button"
-                                                data-edit-file-row-id="${escapeHtml(item.id)}"
-                                              >
-                                                更换文件
-                                              </button>
-                                            </div>
-                                          </td>
-                                          <td>${escapeHtml(getPendingOriginalName(item))}</td>
-                                        </tr>
-                                      `
-            )
-            .join('')
-          : currentDetail.dataItems
-            .map(
-              (item) => `
-                                        <tr>
-                                          <td>${escapeHtml(item.itemName)}</td>
-                                          <td>${escapeHtml(item.itemValue)}</td>
-                                          <td>${escapeHtml(item.itemUnit || '-')}</td>
-                                          <td>
-                                            ${item.sourceFileName && item.sourceFilePath
-                  ? `
-                                                  <div class="saved-file-cell">
-                                                    <button
-                                                      class="file-link-btn"
-                                                      type="button"
-                                                      data-open-saved-file="${escapeHtml(item.sourceFilePath)}"
-                                                    >
-                                                      ${escapeHtml(item.sourceFileName)}
-                                                    </button>
-                                                    <button
-                                                      class="file-folder-btn"
-                                                      type="button"
-                                                      data-open-saved-folder="${escapeHtml(item.sourceFilePath)}"
-                                                      title="打开所在文件夹"
-                                                    >
-                                                      打开文件夹
-                                                    </button>
-                                                  </div>
-                                                `
-                  : '-'
-                }
-                                          </td>
-                                          <td>${escapeHtml(item.originalFileName || '-')}</td>
-                                        </tr>
-                                      `
-            )
-            .join('')
-        }
-                          </tbody>
-                        </table>
-                      </div>
-                    `
-        : `<div class="empty-tip">无二级数据项</div>`
-      }
-              </div>
+              ${detailEditMode
+        ? renderScalarSections('detail-edit', detailEditStep2)
+        : `
+            ${renderStep2TemplateContextHint('detail-readonly')}
+            ${renderReadonlyScalarSection(
+              'condition',
+              currentDetail.dataItems.filter((item) => inferScalarItemRole(item.itemName) === 'condition')
+            )}
+            ${renderReadonlyScalarSection(
+              'metric',
+              currentDetail.dataItems.filter((item) => inferScalarItemRole(item.itemName) === 'metric')
+            )}
+          `}
 
               <div class="detail-section">
-                <div class="detail-section-title">模板块</div>
-                ${currentDetail.templateBlocks.length || (detailEditMode && detailEditTemplateBlocks.length)
-        ? renderReadonlyTemplateBlocks(
-          detailEditMode
-            ? detailEditTemplateBlocks
-            : currentDetail.templateBlocks.map((block) => ({
+                <div class="detail-section-title">结构化数据块</div>
+                ${detailEditMode
+        ? `
+            <div class="template-block-toolbar">
+              <button id="detail-add-template-block-btn" class="secondary-btn" type="button">添加结构化数据块</button>
+            </div>
+            ${renderStructuredRecommendationButtons(
+              'detail-edit',
+              getActiveStep2TemplateFamily('detail-edit')
+            )}
+            ${renderTemplateBlockCards(detailEditTemplateBlocks, 'detail-edit')}
+          `
+        : currentDetail.templateBlocks.length
+          ? renderReadonlyTemplateBlocks(
+            currentDetail.templateBlocks.map((block) => ({
               id: `detail_template_${block.id}`,
               blockId: block.id,
               templateType: block.templateType,
@@ -2253,10 +3644,8 @@ async function render() {
               originalFileName: block.originalFileName || '',
               originalFilePath: block.originalFilePath || '',
               createdAt: block.createdAt
-            })),
-          detailEditMode
-        )
-        : `<div class="empty-tip">无模板块</div>`
+            })))
+          : `<div class="empty-tip">无结构化数据块</div>`
       }
               </div>
 
@@ -2365,8 +3754,22 @@ async function render() {
       detailEditStep1 = null;
       detailEditStep2 = [];
       detailEditTemplateBlocks = [];
+      resetTemplateBlockImportState('detail-edit');
       requestRender(true);
     });
+
+    if (detailEditMode) {
+      bindScalarItemEditorEvents({
+        context: 'detail-edit',
+        addConditionButtonId: 'detail-add-condition-row-btn',
+        addMetricButtonId: 'detail-add-metric-row-btn'
+      });
+
+      bindTemplateBlockEditorEvents({
+        context: 'detail-edit',
+        addButtonId: 'detail-add-template-block-btn'
+      });
+    }
 
     document.getElementById('detail-save-edit-btn')?.addEventListener('click', async () => {
       if (!currentDetail) return;
@@ -2398,6 +3801,12 @@ async function render() {
       }
 
       try {
+        const scalarValidationError = validateScalarItems(collected.step2);
+        if (scalarValidationError) {
+          if (errorBox) errorBox.textContent = scalarValidationError;
+          return;
+        }
+
         const templateBlocksResult = buildValidatedTemplateBlocks(collected.templateBlocks);
         if (templateBlocksResult.error) {
           if (errorBox) errorBox.textContent = templateBlocksResult.error;
@@ -2458,35 +3867,6 @@ async function render() {
         if (errorBox) errorBox.textContent = '修改失败，请稍后重试';
         console.error(error);
       }
-    });
-
-    document.querySelectorAll('[data-edit-file-row-id]').forEach((button) => {
-      button.addEventListener('click', async () => {
-        const target = button as HTMLElement;
-        const rowId = target.dataset.editFileRowId;
-        if (!rowId) return;
-
-        collectDetailEditState();
-
-        try {
-          const selected = await window.electronAPI.selectSourceFile();
-          if (!selected) return;
-
-          detailEditStep2 = detailEditStep2.map((item) => {
-            if (item.id !== rowId) return item;
-
-            return {
-              ...item,
-              replacementSourcePath: selected.originalPath,
-              replacementOriginalName: selected.originalName
-            };
-          });
-
-          requestRender(true);
-        } catch (error) {
-          handleAsyncError(error, '选择替换文件失败');
-        }
-      });
     });
 
     return;
@@ -3262,30 +4642,15 @@ function bindDynamicFieldEvents() {
 }
 
 function bindStep2Events() {
-  document.getElementById('add-row-btn')?.addEventListener('click', () => {
-    saveStep2InputsToState();
-    step2DataItems.push({
-      id: generateId(),
-      itemName: '',
-      itemValue: '',
-      itemUnit: '',
-      sourceFileName: '',
-      sourceFilePath: '',
-      originalFileName: '',
-      originalFilePath: ''
-    });
-    requestRender(true);
+  bindScalarItemEditorEvents({
+    context: 'create-step2',
+    addConditionButtonId: 'create-add-condition-row-btn',
+    addMetricButtonId: 'create-add-metric-row-btn'
   });
 
-  document.getElementById('add-template-block-btn')?.addEventListener('click', () => {
-    saveStep2InputsToState();
-
-    const templateType = ((document.getElementById(
-      'template-block-type-select'
-    ) as HTMLSelectElement | null)?.value || XY_TEMPLATE_TYPE) as TemplateBlockType;
-
-    step2TemplateBlocks.push(buildEmptyTemplateBlock(templateType));
-    requestRender(true);
+  bindTemplateBlockEditorEvents({
+    context: 'create-step2',
+    addButtonId: 'add-template-block-btn'
   });
 
   document.getElementById('back-step1-btn-top')?.addEventListener('click', () => {
@@ -3362,153 +4727,6 @@ function bindStep2Events() {
     }
   });
 
-  const removeButtons = document.querySelectorAll('[data-remove-row-id]');
-  removeButtons.forEach((button) => {
-    button.addEventListener('click', () => {
-      const target = button as HTMLElement;
-      const id = target.dataset.removeRowId;
-      if (!id) return;
-
-      saveStep2InputsToState();
-
-      if (step2DataItems.length === 1) {
-        alert('至少保留一行数据');
-        return;
-      }
-
-      step2DataItems = step2DataItems.filter((row) => row.id !== id);
-      requestRender(true);
-    });
-  });
-
-  document.querySelectorAll('[data-remove-template-block-id]').forEach((button) => {
-    button.addEventListener('click', () => {
-      const target = button as HTMLElement;
-      const blockId = target.dataset.removeTemplateBlockId;
-      if (!blockId) return;
-
-      saveStep2InputsToState();
-      step2TemplateBlocks = step2TemplateBlocks.filter((block) => block.id !== blockId);
-      requestRender(true);
-    });
-  });
-
-  const fileButtons = document.querySelectorAll('[data-file-row-id]');
-  fileButtons.forEach((button) => {
-    button.addEventListener('click', async () => {
-      const target = button as HTMLElement;
-      const rowId = target.dataset.fileRowId;
-      if (!rowId) return;
-
-      saveStep2InputsToState();
-
-      try {
-        const selected = await window.electronAPI.selectSourceFile();
-        if (!selected) return;
-
-        const copied = await window.electronAPI.copyFileToStorage({
-          sourcePath: selected.originalPath,
-          testProject: step1FormData.testProject,
-          sampleCode: step1FormData.sampleCode,
-          tester: step1FormData.tester,
-          instrument: step1FormData.instrument,
-          testTime: step1FormData.testTime
-        });
-
-        if (!copied.success || !copied.savedFileName || !copied.savedPath) {
-          alert(copied.error || '复制原始文件失败');
-          return;
-        }
-
-        step2DataItems = step2DataItems.map((row) => {
-          if (row.id !== rowId) return row;
-
-          return {
-            ...row,
-            sourceFileName: copied.savedFileName,
-            sourceFilePath: copied.savedPath,
-            originalFileName: selected.originalName,
-            originalFilePath: selected.originalPath
-          };
-        });
-
-        requestRender(true);
-      } catch (error) {
-        handleAsyncError(error, '处理原始文件失败');
-      }
-    });
-  });
-
-  document.querySelectorAll('[data-template-file-block-id]').forEach((button) => {
-    button.addEventListener('click', async () => {
-      const target = button as HTMLElement;
-      const blockId = target.dataset.templateFileBlockId;
-      if (!blockId) return;
-
-      saveStep2InputsToState();
-      const currentBlock = step2TemplateBlocks.find((block) => block.id === blockId);
-      if (!currentBlock) return;
-
-      try {
-        const selected = await window.electronAPI.selectSourceFile();
-        if (!selected) return;
-
-        const copied = await window.electronAPI.copyFileToStorage({
-          sourcePath: selected.originalPath,
-          testProject: step1FormData.testProject,
-          sampleCode: step1FormData.sampleCode,
-          tester: step1FormData.tester,
-          instrument: step1FormData.instrument,
-          testTime: step1FormData.testTime,
-          templateType: currentBlock.templateType,
-          blockTitle: currentBlock.blockTitle,
-          blockToken: currentBlock.id
-        });
-
-        if (!copied.success || !copied.savedFileName || !copied.savedPath) {
-          alert(copied.error || '复制原始文件失败');
-          return;
-        }
-
-        step2TemplateBlocks = step2TemplateBlocks.map((block) => {
-          if (block.id !== blockId) return block;
-
-          return {
-            ...block,
-            sourceFileName: copied.savedFileName,
-            sourceFilePath: copied.savedPath,
-            originalFileName: selected.originalName,
-            originalFilePath: selected.originalPath
-          };
-        });
-
-        requestRender(true);
-      } catch (error) {
-        handleAsyncError(
-          error,
-          `处理${getTemplateBlockTypeLabel(currentBlock.templateType)}原始文件失败`
-        );
-      }
-    });
-  });
-}
-
-async function loadDatabaseFilterOptions() {
-  databaseFilterOptions = await window.electronAPI.listExperimentFilterOptions();
-
-  if (
-    databaseFilterTestProject &&
-    !databaseFilterOptions.testProjects.includes(databaseFilterTestProject)
-  ) {
-    databaseFilterTestProject = '';
-  }
-
-  if (
-    databaseFilterTester &&
-    !databaseFilterOptions.testers.includes(databaseFilterTester)
-  ) {
-    databaseFilterTester = '';
-  }
 }
 
 async function loadDatabaseList(
@@ -3519,8 +4737,11 @@ async function loadDatabaseList(
     query,
     groupBy,
     filters: {
+      sampleCode: databaseFilterSampleCode || undefined,
       testProject: databaseFilterTestProject || undefined,
-      tester: databaseFilterTester || undefined
+      instrument: databaseFilterInstrument || undefined,
+      tester: databaseFilterTester || undefined,
+      sampleOwner: databaseFilterSampleOwner || undefined
     },
     sortOrder: databaseSortOrder
   });
@@ -3530,25 +4751,18 @@ async function loadDatabaseList(
 }
 
 async function loadDatabaseListView() {
-  await loadDatabaseFilterOptions();
   await loadDatabaseList();
 }
 
 function hasActiveDatabaseSearchOrFilters() {
   return Boolean(
     databaseSearchKeyword ||
+    databaseFilterSampleCode ||
     databaseFilterTestProject ||
-    databaseFilterTester
+    databaseFilterInstrument ||
+    databaseFilterTester ||
+    databaseFilterSampleOwner
   );
-}
-
-async function resetDatabaseListControls() {
-  databaseSearchKeyword = '';
-  databaseFilterTestProject = '';
-  databaseFilterTester = '';
-  databaseSortOrder = 'newest';
-  databaseGroupBy = 'sampleCode';
-  await loadDatabaseListView();
 }
 
 function renderDatabaseGroups(groups: ExperimentGroup[]) {
@@ -3618,6 +4832,7 @@ function prepareDetailEditState() {
   detailEditStep2 = currentDetail.dataItems.map((item) => ({
     id: `detail_item_${item.id}`,
     dataItemId: item.id,
+    scalarRole: inferScalarItemRole(item.itemName),
     itemName: item.itemName,
     itemValue: item.itemValue,
     itemUnit: item.itemUnit || '',
@@ -3633,6 +4848,7 @@ function prepareDetailEditState() {
     id: `detail_template_${block.id}`,
     blockId: block.id,
     templateType: block.templateType,
+    purposeType: '',
     blockTitle: block.blockTitle,
     primaryLabel:
       block.templateType === XY_TEMPLATE_TYPE ? block.xLabel : block.spectrumAxisLabel,
@@ -3648,6 +4864,12 @@ function prepareDetailEditState() {
     sourceFilePath: block.sourceFilePath || '',
     originalFileName: block.originalFileName || '',
     originalFilePath: block.originalFilePath || '',
+    replacementSourcePath: '',
+    replacementOriginalName: '',
+    importPreviewLoading: false,
+    importPreviewError: '',
+    importParserLabel: '',
+    importWarnings: [] as string[],
     createdAt: block.createdAt
   }));
 }
@@ -3678,16 +4900,59 @@ function collectDetailEditState() {
       ''
   }));
 
-  detailEditStep2 = detailEditStep2.map((item, index) => ({
+  detailEditStep2 = detailEditStep2.map((item) => ({
     ...item,
     itemName:
-      (document.getElementById(`edit-item-name-${index}`) as HTMLInputElement)?.value.trim() || '',
+      (document.getElementById(`scalar-item-name-${item.id}`) as HTMLInputElement)?.value.trim() ||
+      '',
     itemValue:
-      (document.getElementById(`edit-item-value-${index}`) as HTMLInputElement)?.value.trim() ||
+      (document.getElementById(`scalar-item-value-${item.id}`) as HTMLInputElement)?.value.trim() ||
       '',
     itemUnit:
-      (document.getElementById(`edit-item-unit-${index}`) as HTMLInputElement)?.value.trim() || ''
+      (document.getElementById(`scalar-item-unit-${item.id}`) as HTMLInputElement)?.value.trim() ||
+      ''
   }));
+
+  detailEditTemplateBlocks = detailEditTemplateBlocks.map((block) => {
+    const purposeType = document.getElementById(
+      `template-block-purpose-${block.id}`
+    ) as HTMLSelectElement | null;
+    const blockTitle = document.getElementById(
+      `template-block-title-${block.id}`
+    ) as HTMLInputElement | null;
+    const primaryLabel = document.getElementById(
+      `template-block-primary-label-${block.id}`
+    ) as HTMLInputElement | null;
+    const primaryUnit = document.getElementById(
+      `template-block-primary-unit-${block.id}`
+    ) as HTMLInputElement | null;
+    const secondaryLabel = document.getElementById(
+      `template-block-secondary-label-${block.id}`
+    ) as HTMLInputElement | null;
+    const secondaryUnit = document.getElementById(
+      `template-block-secondary-unit-${block.id}`
+    ) as HTMLInputElement | null;
+    const dataText = document.getElementById(
+      `template-block-data-${block.id}`
+    ) as HTMLTextAreaElement | null;
+    const note = document.getElementById(
+      `template-block-note-${block.id}`
+    ) as HTMLInputElement | null;
+
+    return {
+      ...block,
+      purposeType: (purposeType?.value as StructuredBlockPurpose | undefined) || block.purposeType || '',
+      blockTitle: blockTitle?.value || '',
+      primaryLabel: primaryLabel?.value || '',
+      primaryUnit: primaryUnit?.value || '',
+      secondaryLabel: secondaryLabel?.value || '',
+      secondaryUnit: secondaryUnit?.value || '',
+      dataText: dataText?.value || '',
+      note: note?.value || ''
+    };
+  });
+
+  syncTemplateBlockImportInputsToState('detail-edit');
 
   detailEditReason =
     (document.getElementById('edit-reason-input') as HTMLInputElement)?.value.trim() || '';
@@ -3730,9 +4995,9 @@ function saveStep1InputsToState() {
 
 function saveStep2InputsToState() {
   step2DataItems = step2DataItems.map((row) => {
-    const itemName = document.getElementById(`item-name-${row.id}`) as HTMLInputElement | null;
-    const itemValue = document.getElementById(`item-value-${row.id}`) as HTMLInputElement | null;
-    const itemUnit = document.getElementById(`item-unit-${row.id}`) as HTMLInputElement | null;
+    const itemName = document.getElementById(`scalar-item-name-${row.id}`) as HTMLInputElement | null;
+    const itemValue = document.getElementById(`scalar-item-value-${row.id}`) as HTMLInputElement | null;
+    const itemUnit = document.getElementById(`scalar-item-unit-${row.id}`) as HTMLInputElement | null;
 
     return {
       ...row,
@@ -3743,6 +5008,9 @@ function saveStep2InputsToState() {
   });
 
   step2TemplateBlocks = step2TemplateBlocks.map((block) => {
+    const purposeType = document.getElementById(
+      `template-block-purpose-${block.id}`
+    ) as HTMLSelectElement | null;
     const blockTitle = document.getElementById(
       `template-block-title-${block.id}`
     ) as HTMLInputElement | null;
@@ -3767,6 +5035,7 @@ function saveStep2InputsToState() {
 
     return {
       ...block,
+      purposeType: (purposeType?.value as StructuredBlockPurpose | undefined) || block.purposeType || '',
       blockTitle: blockTitle?.value || '',
       primaryLabel: primaryLabel?.value || '',
       primaryUnit: primaryUnit?.value || '',
@@ -3776,6 +5045,8 @@ function saveStep2InputsToState() {
       note: note?.value || ''
     };
   });
+
+  syncTemplateBlockImportInputsToState('create-step2');
 }
 
 function validateStep1() {
@@ -3846,30 +5117,17 @@ function validateStep2() {
 
   if (!hasAnyContent) {
     return {
-      error: '请至少填写一行二级数据或一个模板块',
+      error: '请至少填写一行二级数据或一个结构化数据块',
       templateBlocks: []
     };
   }
 
-  for (const row of step2DataItems) {
-    const hasName = !!row.itemName;
-    const hasValue = !!row.itemValue;
-    const hasUnit = !!row.itemUnit;
-    const hasFile = !!row.sourceFileName;
-
-    if ((hasName || hasValue || hasUnit || hasFile) && !hasName) {
-      return {
-        error: '请为已填写的数据行补充名称',
-        templateBlocks: []
-      };
-    }
-
-    if ((hasName || hasValue || hasUnit || hasFile) && !hasValue) {
-      return {
-        error: '请为已填写的数据行补充数值',
-        templateBlocks: []
-      };
-    }
+  const scalarValidationError = validateScalarItems(step2DataItems);
+  if (scalarValidationError) {
+    return {
+      error: scalarValidationError,
+      templateBlocks: []
+    };
   }
 
   const templateBlocksResult = buildValidatedTemplateBlocks(step2TemplateBlocks);
@@ -3895,19 +5153,9 @@ function resetFormState() {
     dynamicFields: []
   };
 
-  step2DataItems = [
-    {
-      id: generateId(),
-      itemName: '',
-      itemValue: '',
-      itemUnit: '',
-      sourceFileName: '',
-      sourceFilePath: '',
-      originalFileName: '',
-      originalFilePath: ''
-    }
-  ];
+  step2DataItems = [];
   step2TemplateBlocks = [];
+  resetTemplateBlockImportState('create-step2');
 }
 
 function renderFatalError(error: unknown) {

@@ -59,12 +59,14 @@ export function formatXYPointInput(points: XYPoint[]) {
   return points.map((point) => `${point.x},${point.y}`).join('\n');
 }
 
-export function getTemplateBlockTypeLabel(templateType: TemplateBlockType) {
-  return templateType === XY_TEMPLATE_TYPE ? 'XY 曲线块' : '光谱块';
+export function getTemplateBlockTypeLabel(templateType?: TemplateBlockType) {
+  void templateType;
+  return '结构化数据块';
 }
 
-export function getTemplateBlockDataLabel(templateType: TemplateBlockType) {
-  return templateType === XY_TEMPLATE_TYPE ? 'XY 数据' : '光谱数据';
+export function getTemplateBlockDataLabel(templateType?: TemplateBlockType) {
+  void templateType;
+  return 'XY 数据';
 }
 
 export function parseTemplateBlockPointInput(
