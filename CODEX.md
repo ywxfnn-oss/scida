@@ -37,6 +37,7 @@ Execution rules:
 - work in small safe steps only
 - avoid scope creep
 - update docs when product semantics change
+- keep `docs/DEFAULT_TEMPLATES.md` aligned when Step 1-driven Step 2 template guidance changes
 - validate with the narrowest relevant checks
 - do not auto-commit unless explicitly asked
 

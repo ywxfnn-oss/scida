@@ -119,7 +119,7 @@ export function renderExportModal(params: {
       <div class="export-modal-card">
         <div class="export-modal-title">导出选中实验数据</div>
         <div class="export-modal-desc">
-          当前已选择 <strong>${selectedExperimentIds.length}</strong> 条实验记录
+          当前已选择 <strong>${selectedExperimentIds.length}</strong> 条实验记录。导出始终基于当前勾选的实验集合。
         </div>
 
         <div class="form-group">

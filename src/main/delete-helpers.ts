@@ -11,7 +11,8 @@ export async function deleteExperimentPermanently(
   const experiment = await prisma.experiment.findUnique({
     where: { id: experimentId },
     include: {
-      dataItems: true
+      dataItems: true,
+      templateBlocks: true
     }
   });
 
@@ -21,21 +22,32 @@ export async function deleteExperimentPermanently(
 
   const savedFilePaths = Array.from(
     new Set(
-      experiment.dataItems
+      [...experiment.dataItems, ...experiment.templateBlocks]
         .map((item) => item.sourceFilePath?.trim() || '')
         .filter(Boolean)
     )
   );
 
   for (const filePath of savedFilePaths) {
-    const sharedReferenceCount = await prisma.experimentDataItem.count({
-      where: {
-        sourceFilePath: filePath,
-        experimentId: {
-          not: experimentId
+    const [sharedDataItemCount, sharedTemplateBlockCount] = await Promise.all([
+      prisma.experimentDataItem.count({
+        where: {
+          sourceFilePath: filePath,
+          experimentId: {
+            not: experimentId
+          }
         }
-      }
-    });
+      }),
+      prisma.experimentTemplateBlock.count({
+        where: {
+          sourceFilePath: filePath,
+          experimentId: {
+            not: experimentId
+          }
+        }
+      })
+    ]);
+    const sharedReferenceCount = sharedDataItemCount + sharedTemplateBlockCount;
 
     if (sharedReferenceCount > 0) {
       return {

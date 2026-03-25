@@ -1,19 +1,26 @@
 # Scidata Manager Handoff
 
-## Current Branch
+## Release Baseline
 
-- Primary branch: `codex/document-electron-app-architecture`
+Scidata Manager is now at the point of a first complete usable release candidate.
 
 ## Current State
 
-Scidata Manager is now in a stable-core phase:
+Current release-level capabilities:
 
-- core write paths are hardened
-- day-to-day list workflow is usable and faster
-- export and diagnostics are operational
-- detail view now includes recent edit-history visibility
+- login and Settings workflow are usable
+- Step 1 supports standardized first-level metadata entry with dictionary guidance
+- Step 2 now uses three semantic sections:
+  - 实验条件
+  - 结果指标
+  - 结构化数据块
+- structured data blocks support in-block file import, parse adjustment, explicit write, and normal save/update flow
+- database list acts as the main workspace for browse, filter, grouping, selection, detail open, and export
+- detail view, detail edit, duplicate warning, and edit history are operational
+- export remains available from selected experiments in the database list
+- Step 1 `testProject` can guide Step 2 through default template recommendations
 
-The current direction should stay narrow:
+Current direction should stay narrow:
 
 - prefer small, safe, high-value improvements
 - avoid schema changes unless clearly necessary
@@ -21,27 +28,42 @@ The current direction should stay narrow:
 
 ## Recent Completed Work
 
-- P6: hardened delete and update write-path recovery semantics
-- P7: added search-state consistency and minimal filters
-- P8: added newest/oldest list sorting
-- P9: added list interaction polish for search/reset/empty state
-- P10: added clear-selection and selected-count feedback
-- P11: added post-export open-folder action
-- P12: added detail-page recent edit history
+- hardened delete/update managed-file mutation paths
+- unified Step 2 around conditions, metrics, and structured data blocks
+- added structured block import preview, manual remap, XRD parsing, and apply-to-block flow
+- integrated imported structured-block files into managed storage on save/update
+- aligned create Step 2 and detail-edit around the same block-centered structured-data workflow
+- simplified database list search/filter controls and clarified export-from-selection workflow
+- added Step 1-driven Step 2 default template guidance and documentation
 
 ## Current Product Capabilities
 
 - safer delete/update file handling
-- search, filter, sort, grouping, selection, batch delete/export
+- dictionary-guided Step 1 input
+- semantic Step 2 entry for conditions, metrics, and structured data
+- structured-data import/replace/parse/write workflow inside the block editor
+- search, filter, grouping, selection, batch delete/export
 - file integrity scan and recent operation logs in Settings
-- duplicate warning before save
-- recent edit history on the detail page
+- duplicate warning before create/update save
+- detail edit with edit-history visibility
+- Step 1-driven Step 2 default template guidance for first-release photodetector workflows
+
+## Documentation Pointers
+
+Primary docs for the current release baseline:
+
+- `docs/MODULE_GUIDE.md`
+- `docs/DATABASE.md`
+- `docs/EXPORT_FLOW.md`
+- `docs/DEFAULT_TEMPLATES.md`
+- `CODEX.md`
 
 ## Guardrails
 
 - keep main / preload / renderer boundaries intact
 - prefer renderer-only changes when possible
 - do not change Prisma schema lightly
+- do not break export semantics
 - do not expand scope without a capability audit first
 
 ## Recommended Working Style

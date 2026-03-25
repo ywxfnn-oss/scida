@@ -39,9 +39,10 @@ import {
   scanManagedFileIntegrity
 } from './main/file-integrity';
 import {
-  getManagedTargetConflictError,
   updateExperimentWithManagedFiles
 } from './main/record-file-update-helpers';
+import { getManagedTargetConflictError } from './main/managed-file-conflicts';
+import { resolveManagedTemplateBlockFiles } from './main/template-block-file-helpers';
 import {
   getBundledDbPath,
   getKnownMigrationTables,
@@ -61,6 +62,11 @@ import {
   deactivateDictionaryItem,
   listDictionaryItems
 } from './main/dictionary-settings';
+import {
+  previewManualImportXY,
+  previewImportFiles,
+  selectImportFiles
+} from './main/import-preview-service';
 import { listExperimentEditLogs } from './main/edit-log';
 import { listRecentOperationLogs } from './main/operation-log';
 import {
@@ -389,10 +395,6 @@ const createWindow = (): void => {
     mainWindow.focus();
   });
 
-  mainWindow.webContents.on('did-finish-load', () => {
-    console.log('[main] window did-finish-load');
-  });
-
   mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription) => {
     console.error('[main] window did-fail-load:', errorCode, errorDescription);
   });
@@ -542,6 +544,38 @@ app.whenReady().then(async () => {
     };
   });
 
+  ipcMain.handle('file:selectImportFiles', async () => {
+    try {
+      return await selectImportFiles();
+    } catch (error) {
+      console.error('selectImportFiles failed:', error);
+      return [];
+    }
+  });
+
+  ipcMain.handle('import:previewFiles', async (_event, payload: { filePaths: string[] }) => {
+    try {
+      return await previewImportFiles(payload);
+    } catch (error) {
+      console.error('previewImportFiles failed:', error);
+      return {
+        files: []
+      };
+    }
+  });
+
+  ipcMain.handle('import:previewManualXY', async (_event, payload) => {
+    try {
+      return await previewManualImportXY(payload);
+    } catch (error) {
+      console.error('previewManualImportXY failed:', error);
+      return {
+        success: false,
+        error: '手动 XY 预览失败'
+      };
+    }
+  });
+
   ipcMain.handle(
     'file:copyToStorage',
     async (
@@ -628,49 +662,98 @@ app.whenReady().then(async () => {
           };
         }
 
-        const experiment = await prisma.experiment.create({
-          data: {
-            testProject: payload.step1.testProject,
-            sampleCode: payload.step1.sampleCode,
-            tester: payload.step1.tester,
-            instrument: payload.step1.instrument,
-            testTime: payload.step1.testTime,
-            sampleOwner: payload.step1.sampleOwner || null,
-            displayName: payload.displayName,
-            customFields: {
-              create: payload.step1.dynamicFields.map((field, index) => ({
-                fieldName: field.name,
-                fieldValue: field.value,
-                sortOrder: index + 1
-              }))
-            },
-            dataItems: {
-              create: payload.step2.map((item, index) => ({
-                itemName: item.itemName,
-                itemValue: item.itemValue,
-                itemUnit: item.itemUnit || null,
-                sourceFileName: item.sourceFileName || null,
-                sourceFilePath: item.sourceFilePath || null,
-                originalFileName: item.originalFileName || null,
-                originalFilePath: item.originalFilePath || null,
-                rowOrder: index + 1
-              }))
-            },
-            templateBlocks: {
-              create: normalizedTemplateBlocks.map((block, index) => ({
-                templateType: block.templateType,
-                blockTitle: block.blockTitle,
-                blockOrder: index + 1,
-                metaJson: serializeTemplateBlockMeta(block),
-                dataJson: JSON.stringify(block.points),
-                sourceFileName: block.sourceFileName || null,
-                sourceFilePath: block.sourceFilePath || null,
-                originalFileName: block.originalFileName || null,
-                originalFilePath: block.originalFilePath || null
-              }))
+        const storageRoot = await getSettingValue(
+          prisma,
+          'storageRoot',
+          getDefaultStorageRoot()
+        );
+        const templateBlockResult = await resolveManagedTemplateBlockFiles({
+          prisma,
+          storageRoot,
+          step1: payload.step1,
+          templateBlocks: normalizedTemplateBlocks
+        });
+
+        if (templateBlockResult.error) {
+          return {
+            success: false,
+            error: templateBlockResult.error
+          };
+        }
+
+        let experiment;
+        try {
+          experiment = await prisma.experiment.create({
+            data: {
+              testProject: payload.step1.testProject,
+              sampleCode: payload.step1.sampleCode,
+              tester: payload.step1.tester,
+              instrument: payload.step1.instrument,
+              testTime: payload.step1.testTime,
+              sampleOwner: payload.step1.sampleOwner || null,
+              displayName: payload.displayName,
+              customFields: {
+                create: payload.step1.dynamicFields.map((field, index) => ({
+                  fieldName: field.name,
+                  fieldValue: field.value,
+                  sortOrder: index + 1
+                }))
+              },
+              dataItems: {
+                create: payload.step2.map((item, index) => ({
+                  itemName: item.itemName,
+                  itemValue: item.itemValue,
+                  itemUnit: item.itemUnit || null,
+                  sourceFileName: item.sourceFileName || null,
+                  sourceFilePath: item.sourceFilePath || null,
+                  originalFileName: item.originalFileName || null,
+                  originalFilePath: item.originalFilePath || null,
+                  rowOrder: index + 1
+                }))
+              },
+              templateBlocks: {
+                create: templateBlockResult.resolvedTemplateBlocks.map((block, index) => ({
+                  templateType: block.templateType,
+                  blockTitle: block.blockTitle,
+                  blockOrder: index + 1,
+                  metaJson: serializeTemplateBlockMeta(block),
+                  dataJson: JSON.stringify(block.points),
+                  sourceFileName: block.sourceFileName || null,
+                  sourceFilePath: block.sourceFilePath || null,
+                  originalFileName: block.originalFileName || null,
+                  originalFilePath: block.originalFilePath || null
+                }))
+              }
+            }
+          });
+        } catch (error) {
+          for (const rollback of templateBlockResult.rollbackActions) {
+            try {
+              rollback();
+            } catch (rollbackError) {
+              console.error('rollbackPreparedTemplateBlockFileAfterSaveFailure failed:', {
+                rollbackError
+              });
             }
           }
-        });
+
+          throw error;
+        }
+
+        try {
+          for (const finalize of templateBlockResult.finalizeActions) {
+            finalize();
+          }
+        } catch (error) {
+          console.error('cleanupReplacedTemplateBlockSavedFileAfterSave failed:', {
+            error
+          });
+
+          return {
+            success: false,
+            error: '实验记录已保存，但旧的模板块保存文件清理失败，可能需要手动处理'
+          };
+        }
 
         return {
           success: true,
@@ -691,8 +774,11 @@ app.whenReady().then(async () => {
         query?: string;
         groupBy?: 'sampleCode' | 'testProject' | 'testTime' | 'instrument' | 'tester' | 'sampleOwner';
         filters?: {
+          sampleCode?: string;
           testProject?: string;
+          instrument?: string;
           tester?: string;
+          sampleOwner?: string;
         };
         sortOrder?: 'newest' | 'oldest';
       }
@@ -700,8 +786,11 @@ app.whenReady().then(async () => {
       const keyword = (payload?.query || '').trim();
       const groupBy = payload?.groupBy || 'sampleCode';
       const sortOrder = payload?.sortOrder || 'newest';
+      const sampleCodeFilter = (payload?.filters?.sampleCode || '').trim();
       const testProjectFilter = (payload?.filters?.testProject || '').trim();
+      const instrumentFilter = (payload?.filters?.instrument || '').trim();
       const testerFilter = (payload?.filters?.tester || '').trim();
+      const sampleOwnerFilter = (payload?.filters?.sampleOwner || '').trim();
       const whereClauses = [];
 
       if (keyword) {
@@ -717,15 +806,33 @@ app.whenReady().then(async () => {
         });
       }
 
+      if (sampleCodeFilter) {
+        whereClauses.push({
+          sampleCode: { contains: sampleCodeFilter }
+        });
+      }
+
       if (testProjectFilter) {
         whereClauses.push({
-          testProject: testProjectFilter
+          testProject: { contains: testProjectFilter }
+        });
+      }
+
+      if (instrumentFilter) {
+        whereClauses.push({
+          instrument: { contains: instrumentFilter }
         });
       }
 
       if (testerFilter) {
         whereClauses.push({
-          tester: testerFilter
+          tester: { contains: testerFilter }
+        });
+      }
+
+      if (sampleOwnerFilter) {
+        whereClauses.push({
+          sampleOwner: { contains: sampleOwnerFilter }
         });
       }
 
@@ -1038,7 +1145,20 @@ app.whenReady().then(async () => {
     'experiment:update',
     async (_event, payload: UpdateExperimentPayload): Promise<ActionResult> => {
       try {
-        return await updateExperimentWithManagedFiles(payload, {
+        const normalizedTemplateBlocks = normalizeTemplateBlocks(payload.templateBlocks || []);
+        const templateBlockValidation = validateTemplateBlockPayloads(normalizedTemplateBlocks);
+
+        if ('error' in templateBlockValidation) {
+          return {
+            success: false,
+            error: templateBlockValidation.error
+          };
+        }
+
+        return await updateExperimentWithManagedFiles({
+          ...payload,
+          templateBlocks: normalizedTemplateBlocks
+        }, {
           prisma,
           getDefaultStorageRoot
         });

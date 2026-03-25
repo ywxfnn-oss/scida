@@ -14,6 +14,9 @@ import {
   ensureDir,
   fileExists
 } from './file-helpers';
+import { getManagedTargetConflictError } from './managed-file-conflicts';
+import { resolveManagedTemplateBlockFiles } from './template-block-file-helpers';
+import { serializeTemplateBlockMeta } from '../template-blocks';
 
 type UpdateFilePlan = {
   index: number;
@@ -24,11 +27,6 @@ type UpdateFilePlan = {
   replacementSourcePath: string;
   replacementOriginalName: string;
   action: 'rename' | 'replace' | 'create';
-};
-
-type ManagedTargetConflictOptions = {
-  excludeDataItemId?: number;
-  currentSourcePath?: string;
 };
 
 type UpdateExperimentFlowOptions = {
@@ -65,41 +63,6 @@ type OldExperimentRecord = {
 type OldDataItemRecord = {
   sourceFilePath: string | null;
 };
-
-async function findConflictingDataItem(
-  prisma: PrismaClient,
-  targetPath: string,
-  excludeDataItemId?: number
-) {
-  return prisma.experimentDataItem.findFirst({
-    where: {
-      sourceFilePath: targetPath,
-      ...(excludeDataItemId ? { NOT: { id: excludeDataItemId } } : {})
-    }
-  });
-}
-
-export async function getManagedTargetConflictError(
-  prisma: PrismaClient,
-  targetPath: string,
-  options?: ManagedTargetConflictOptions
-) {
-  const conflictingItem = await findConflictingDataItem(
-    prisma,
-    targetPath,
-    options?.excludeDataItemId
-  );
-
-  if (conflictingItem) {
-    return '保存文件名与其他实验记录冲突，请调整后重试';
-  }
-
-  if (fileExists(targetPath) && targetPath !== options?.currentSourcePath) {
-    return '目标保存文件已存在，无法覆盖，请调整后重试';
-  }
-
-  return '';
-}
 
 function normalizeStep2Items(payload: UpdateExperimentPayload) {
   return payload.step2.map((item) => ({
@@ -455,6 +418,7 @@ export async function updateExperimentWithManagedFiles(
   }
 
   const resolvedStep2 = normalizeStep2Items(payload);
+  let resolvedTemplateBlocks = payload.templateBlocks.map((block) => ({ ...block }));
   let rollbackActions: Array<() => void> = [];
   let finalizeActions: Array<() => void> = [];
 
@@ -465,6 +429,35 @@ export async function updateExperimentWithManagedFiles(
 
     if (filePlanResult.error) {
       return { success: false, error: filePlanResult.error };
+    }
+
+    const templateBlockResult = await resolveManagedTemplateBlockFiles(
+      {
+        prisma,
+        storageRoot,
+        step1: payload.step1,
+        templateBlocks: payload.templateBlocks
+      },
+      { experimentId: payload.experimentId }
+    );
+
+    rollbackActions = [...templateBlockResult.rollbackActions, ...rollbackActions];
+    finalizeActions = [...finalizeActions, ...templateBlockResult.finalizeActions];
+    resolvedTemplateBlocks = templateBlockResult.resolvedTemplateBlocks;
+
+    if (templateBlockResult.error) {
+      for (const rollback of rollbackActions) {
+        try {
+          rollback();
+        } catch (rollbackError) {
+          console.error('rollbackUpdatedSavedFileAfterTemplateBlockFailure failed:', {
+            experimentId: payload.experimentId,
+            rollbackError
+          });
+        }
+      }
+
+      return { success: false, error: templateBlockResult.error };
     }
   } catch (error) {
     for (const rollback of rollbackActions) {
@@ -533,6 +526,27 @@ export async function updateExperimentWithManagedFiles(
             originalFileName: item.originalFileName || null,
             originalFilePath: item.originalFilePath || null,
             rowOrder: index + 1
+          }))
+        });
+      }
+
+      await tx.experimentTemplateBlock.deleteMany({
+        where: { experimentId: payload.experimentId }
+      });
+
+      if (resolvedTemplateBlocks.length) {
+        await tx.experimentTemplateBlock.createMany({
+          data: resolvedTemplateBlocks.map((block, index) => ({
+            experimentId: payload.experimentId,
+            templateType: block.templateType,
+            blockTitle: block.blockTitle,
+            blockOrder: index + 1,
+            metaJson: serializeTemplateBlockMeta(block),
+            dataJson: JSON.stringify(block.points),
+            sourceFileName: block.sourceFileName || null,
+            sourceFilePath: block.sourceFilePath || null,
+            originalFileName: block.originalFileName || null,
+            originalFilePath: block.originalFilePath || null
           }))
         });
       }

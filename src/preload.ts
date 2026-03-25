@@ -20,6 +20,15 @@ const electronAPI: ElectronAPI = {
     selectSourceFile: () =>
         ipcRenderer.invoke('file:selectSourceFile'),
 
+    selectImportFiles: () =>
+        ipcRenderer.invoke('file:selectImportFiles'),
+
+    previewImportFiles: (payload) =>
+        ipcRenderer.invoke('import:previewFiles', payload),
+
+    previewManualImportXY: (payload) =>
+        ipcRenderer.invoke('import:previewManualXY', payload),
+
     copyFileToStorage: (payload) =>
         ipcRenderer.invoke('file:copyToStorage', payload),
 

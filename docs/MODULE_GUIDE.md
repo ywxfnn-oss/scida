@@ -26,6 +26,12 @@ Current helper modules:
   - login verification
   - app settings reads and writes
   - password hashing and verification helpers
+- `delete-helpers.ts`
+  - managed-file-aware experiment delete flow
+  - shared-reference protection during delete
+- `record-file-update-helpers.ts`
+  - managed-file-aware experiment update flow
+  - update rollback and finalize ordering
 - `export-helpers.ts`
   - full export
   - item-name export
@@ -37,6 +43,19 @@ Current helper modules:
 - `runtime-db-helpers.ts`
   - runtime DB path resolution
   - migration discovery helpers
+- `import-format-registry.ts`
+  - parser registration contracts for import preview
+- `import-parsers.ts`
+  - generic XY parsing
+  - manual XY remap support
+  - XRD text parsing
+- `import-preview-service.ts`
+  - import file preview orchestration
+  - parser selection and preview result generation
+- `managed-file-conflicts.ts`
+  - collision checks for managed-file save/update paths
+- `template-block-file-helpers.ts`
+  - structured-block managed-file copy and replacement preparation
 - `file-integrity.ts`
   - read-only managed-file scan and report generation
 - `duplicate-check.ts`
@@ -58,6 +77,7 @@ Current additive safety-related APIs include:
 
 - duplicate check before save/update warning
 - file integrity scan report
+- structured-block import preview and manual remap preview
 
 ## Shared IPC Contract
 
@@ -83,6 +103,8 @@ Current renderer responsibilities:
 - manage view state and form state
 - call preload APIs
 - surface user-visible success and error states
+- apply Step 1 `testProject`-driven default template guidance in Step 2 for recommended conditions, metrics, and structured data starting points
+- keep create Step 2 and detail-edit aligned around the same secondary-item editing model
 
 Current renderer helper responsibilities:
 
@@ -126,6 +148,7 @@ Database access stays in the main process. Startup and migration safety remain h
 Current runtime storage concerns:
 
 - managed source-file storage under the configured storage root
+- managed structured-block source files copied from imported originals
 - exported workbooks and ZIPs
 - runtime SQLite database under the user-data directory
 

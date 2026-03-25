@@ -70,6 +70,28 @@ export type SelectSourceFileResult = {
   originalName: string;
 } | null;
 
+export type ImportSelectedFile = {
+  filePath: string;
+  fileName: string;
+  sizeBytes: number;
+};
+
+export type SelectImportFilesResult = ImportSelectedFile[];
+
+export type ImportManualDelimiter = 'comma' | 'tab' | 'semicolon' | 'whitespace';
+
+export type ImportManualPreviewRow = {
+  rowNumber: number;
+  columns: string[];
+};
+
+export type ImportManualXYReviewSupport = {
+  reviewType: 'xyText';
+  suggestedDelimiter: ImportManualDelimiter;
+  previewRows: ImportManualPreviewRow[];
+  maxColumnCount: number;
+};
+
 export type CopyFileToStorageResult = ActionResult & {
   savedFileName?: string;
   savedPath?: string;
@@ -93,6 +115,7 @@ export type XYPoint = {
 };
 
 export type SaveExperimentXYBlockPayload = {
+  blockId?: number;
   templateType: 'xy';
   blockTitle: string;
   blockOrder: number;
@@ -106,9 +129,12 @@ export type SaveExperimentXYBlockPayload = {
   sourceFilePath: string;
   originalFileName: string;
   originalFilePath: string;
+  replacementSourcePath?: string;
+  replacementOriginalName?: string;
 };
 
 export type SaveExperimentSpectrumBlockPayload = {
+  blockId?: number;
   templateType: 'spectrum';
   blockTitle: string;
   blockOrder: number;
@@ -122,11 +148,66 @@ export type SaveExperimentSpectrumBlockPayload = {
   sourceFilePath: string;
   originalFileName: string;
   originalFilePath: string;
+  replacementSourcePath?: string;
+  replacementOriginalName?: string;
 };
 
 export type SaveExperimentTemplateBlockPayload =
   | SaveExperimentXYBlockPayload
   | SaveExperimentSpectrumBlockPayload;
+
+export type ImportPreviewPayload = {
+  filePaths: string[];
+};
+
+export type PreviewManualImportXYPayload = {
+  filePath: string;
+  delimiter: ImportManualDelimiter;
+  dataStartRow: number;
+  xColumnIndex: number;
+  yColumnIndex: number;
+  blockTitle: string;
+  xLabel: string;
+  xUnit: string;
+  yLabel: string;
+  yUnit: string;
+};
+
+export type PreviewManualImportXYResult = ActionResult & {
+  candidate?: ImportPreviewXYTemplateBlockCandidate;
+  manualReview?: ImportManualXYReviewSupport;
+};
+
+export type ImportPreviewXYTemplateBlockCandidate = {
+  candidateType: 'templateBlock';
+  parserId: string;
+  parserLabel: string;
+  detectionConfidence: 'high' | 'medium' | 'low';
+  warnings: string[];
+  sourceFile: {
+    filePath: string;
+    fileName: string;
+  };
+  templateBlock: SaveExperimentXYBlockPayload;
+};
+
+export type ImportPreviewCandidate = ImportPreviewXYTemplateBlockCandidate;
+
+export type ImportPreviewFileResult = {
+  filePath: string;
+  fileName: string;
+  matched: boolean;
+  parserId: string | null;
+  parserLabel: string | null;
+  warnings: string[];
+  error?: string;
+  manualReview?: ImportManualXYReviewSupport;
+  candidates: ImportPreviewCandidate[];
+};
+
+export type ImportPreviewResult = {
+  files: ImportPreviewFileResult[];
+};
 
 export type SaveExperimentPayload = {
   step1: {
@@ -209,8 +290,11 @@ export type ExperimentGroup = {
 };
 
 export type ExperimentListFilters = {
+  sampleCode?: string;
   testProject?: string;
+  instrument?: string;
   tester?: string;
+  sampleOwner?: string;
 };
 
 export type ListExperimentsPayload = {
@@ -419,6 +503,11 @@ export interface ElectronAPI {
     payload: DeactivateDictionaryItemPayload
   ) => Promise<ActionResult>;
   selectSourceFile: () => Promise<SelectSourceFileResult>;
+  selectImportFiles: () => Promise<SelectImportFilesResult>;
+  previewImportFiles: (payload: ImportPreviewPayload) => Promise<ImportPreviewResult>;
+  previewManualImportXY: (
+    payload: PreviewManualImportXYPayload
+  ) => Promise<PreviewManualImportXYResult>;
   copyFileToStorage: (
     payload: CopyFileToStoragePayload
   ) => Promise<CopyFileToStorageResult>;
