@@ -438,7 +438,7 @@ export async function exportFullExperiments(
 
     const detailWorkbookPath = path.join(
       experimentDir,
-      `${sanitizeFileNamePart(experiment.displayName)}_详情说明.xlsx`
+      `${sanitizeFileNamePart(experiment.displayName)}_详情说明表.xlsx`
     );
 
     await createExperimentDetailWorkbook(experiment, detailWorkbookPath);
@@ -697,8 +697,8 @@ export async function exportByItemNames(
 
     if (hasXYData) {
       const xyWorkbookBaseName = hasScalarData
-        ? `${safeItemFolderName}_XY数据`
-        : `${safeItemFolderName}_XY数据`;
+        ? `${safeItemFolderName}_结构化数据（XY）`
+        : `${safeItemFolderName}_结构化数据（XY）`;
       const xyWorkbookPath = buildUniqueFilePath(
         itemFolderPath,
         xyWorkbookBaseName,
@@ -729,7 +729,7 @@ export async function exportByItemNames(
     if (hasSpectrumData) {
       const spectrumWorkbookPath = buildUniqueFilePath(
         itemFolderPath,
-        `${safeItemFolderName}_光谱数据`,
+        `${safeItemFolderName}_结构化数据（光谱）`,
         '.xlsx'
       );
       const seriesHeaders = buildUniqueSeriesHeaders(

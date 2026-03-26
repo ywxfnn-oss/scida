@@ -3,18 +3,23 @@ import path from 'node:path';
 import type { PrismaClient } from '@prisma/client';
 import type {
   ActionResult,
+  ManagedSectionLabel,
   UpdateExperimentDataItemPayload,
-  UpdateExperimentPayload
+  UpdateExperimentPayload,
+  ScalarItemRole
 } from '../electron-api';
 import { getSettingValue } from './auth-settings';
 import {
-  buildManagedTargetPath,
   createManagedBackupPath,
   createManagedTempPath,
   ensureDir,
   fileExists
 } from './file-helpers';
-import { getManagedTargetConflictError } from './managed-file-conflicts';
+import {
+  formatIndexedManagedFileWarning,
+  parseManagedFileSlotIndex,
+  resolveManagedFileTarget
+} from './managed-file-naming';
 import { resolveManagedTemplateBlockFiles } from './template-block-file-helpers';
 import { serializeTemplateBlockMeta } from '../template-blocks';
 
@@ -26,7 +31,7 @@ type UpdateFilePlan = {
   targetFileName: string;
   replacementSourcePath: string;
   replacementOriginalName: string;
-  action: 'rename' | 'replace' | 'create';
+  action: 'replace' | 'create';
 };
 
 type UpdateExperimentFlowOptions = {
@@ -63,6 +68,14 @@ type OldExperimentRecord = {
 type OldDataItemRecord = {
   sourceFilePath: string | null;
 };
+
+function getScalarSectionLabel(role?: ScalarItemRole): ManagedSectionLabel {
+  return role === 'condition' ? '实验条件' : '结果指标';
+}
+
+function buildWarningMessage(warnings: Set<string>) {
+  return warnings.size ? Array.from(warnings).join('\n') : '';
+}
 
 function normalizeStep2Items(payload: UpdateExperimentPayload) {
   return payload.step2.map((item) => ({
@@ -148,8 +161,9 @@ async function buildUpdateFilePlans(
   storageRoot: string,
   oldDataItemMap: Map<number, OldDataItemRecord>
 ) {
-  const plannedTargetPaths = new Set<string>();
+  const plannedTargetSlots = new Set<string>();
   const filePlans: UpdateFilePlan[] = [];
+  const warnings = new Set<string>();
 
   for (const [index, item] of payload.step2.entries()) {
     const oldItem = item.dataItemId ? oldDataItemMap.get(item.dataItemId) : undefined;
@@ -163,75 +177,72 @@ async function buildUpdateFilePlans(
       continue;
     }
 
-    const namingSourcePath = hasReplacement ? replacementSourcePath : currentSourcePath;
-    const { fileName, fullPath } = buildManagedTargetPath(storageRoot, {
-      sourcePath: namingSourcePath,
-      testProject: payload.step1.testProject,
-      sampleCode: payload.step1.sampleCode,
-      tester: payload.step1.tester,
-      instrument: payload.step1.instrument,
-      testTime: payload.step1.testTime
-    });
-
-    if (plannedTargetPaths.has(fullPath)) {
-      return {
-        error: '保存文件名与当前编辑中的其他数据项冲突，请调整后重试',
-        filePlans: []
-      };
+    if (!hasReplacement) {
+      continue;
     }
 
-    plannedTargetPaths.add(fullPath);
-
-    const conflictError = await getManagedTargetConflictError(prisma, fullPath, {
-      excludeDataItemId: item.dataItemId,
-      currentSourcePath
-    });
-
-    if (conflictError) {
-      return {
-        error: conflictError,
-        filePlans: []
-      };
-    }
-
-    if (hasReplacement && !fileExists(replacementSourcePath)) {
+    if (!fileExists(replacementSourcePath)) {
       return {
         error: '新选择的原始文件不存在或路径无效',
-        filePlans: []
+        filePlans: [],
+        warning: buildWarningMessage(warnings)
       };
     }
 
-    if (hasReplacement) {
+    try {
+      const target = await resolveManagedFileTarget({
+        prisma,
+        storageRoot,
+        sourcePath: replacementSourcePath,
+        testProject: payload.step1.testProject,
+        sampleCode: payload.step1.sampleCode,
+        displayName: payload.displayName,
+        sectionLabel: getScalarSectionLabel(item.scalarRole),
+        secondaryItemName: item.itemName,
+        currentSourcePath,
+        excludeDataItemId: item.dataItemId,
+        preferredSlotIndex: hasManagedFile
+          ? parseManagedFileSlotIndex(currentSourcePath)
+          : 0,
+        preserveSlot: hasManagedFile,
+        reservedTargetSlots: plannedTargetSlots
+      });
+
+      if (!hasManagedFile && target.indexed) {
+        warnings.add(
+          formatIndexedManagedFileWarning(
+            getScalarSectionLabel(item.scalarRole),
+            item.itemName
+          )
+        );
+      }
+
       filePlans.push({
         index,
         dataItemId: item.dataItemId,
         currentSourcePath,
-        targetPath: fullPath,
-        targetFileName: fileName,
+        targetPath: target.fullPath,
+        targetFileName: target.fileName,
         replacementSourcePath,
         replacementOriginalName,
         action: hasManagedFile ? 'replace' : 'create'
       });
-      continue;
-    }
-
-    if (currentSourcePath && fullPath !== currentSourcePath) {
-      filePlans.push({
-        index,
-        dataItemId: item.dataItemId,
-        currentSourcePath,
-        targetPath: fullPath,
-        targetFileName: fileName,
-        replacementSourcePath: '',
-        replacementOriginalName: '',
-        action: 'rename'
-      });
+    } catch (error) {
+      return {
+        error:
+          error instanceof Error && error.message
+            ? error.message
+            : '处理二级数据项原始文件失败，请检查文件状态后重试',
+        filePlans: [],
+        warning: buildWarningMessage(warnings)
+      };
     }
   }
 
   return {
     error: '',
-    filePlans
+    filePlans,
+    warning: buildWarningMessage(warnings)
   };
 }
 
@@ -251,35 +262,6 @@ function applyFilePlans(
   const finalizeActions: Array<() => void> = [];
 
   for (const plan of filePlans) {
-    if (plan.action === 'rename') {
-      if (!plan.currentSourcePath || !fileExists(plan.currentSourcePath)) {
-        return {
-          error: '当前保存文件不存在，无法按新名称更新',
-          rollbackActions,
-          finalizeActions,
-          resolvedStep2
-        };
-      }
-
-      ensureDir(path.dirname(plan.targetPath));
-      fs.renameSync(plan.currentSourcePath, plan.targetPath);
-
-      rollbackActions.unshift(() => {
-        if (fileExists(plan.targetPath) && !fileExists(plan.currentSourcePath)) {
-          ensureDir(path.dirname(plan.currentSourcePath));
-          fs.renameSync(plan.targetPath, plan.currentSourcePath);
-        }
-      });
-
-      resolvedStep2[plan.index] = {
-        ...resolvedStep2[plan.index],
-        sourceFileName: plan.targetFileName,
-        sourceFilePath: plan.targetPath
-      };
-
-      continue;
-    }
-
     const tempPath = createManagedTempPath(plan.targetPath);
 
     if (plan.action === 'create') {
@@ -406,7 +388,11 @@ export async function updateExperimentWithManagedFiles(
   const oldDataItemMap = new Map(
     oldExperiment.dataItems.map((item) => [item.id, item])
   );
-  const { error: filePlanError, filePlans } = await buildUpdateFilePlans(
+  const {
+    error: filePlanError,
+    filePlans,
+    warning: filePlanWarning
+  } = await buildUpdateFilePlans(
     prisma,
     payload,
     storageRoot,
@@ -421,6 +407,7 @@ export async function updateExperimentWithManagedFiles(
   let resolvedTemplateBlocks = payload.templateBlocks.map((block) => ({ ...block }));
   let rollbackActions: Array<() => void> = [];
   let finalizeActions: Array<() => void> = [];
+  let templateBlockWarning = '';
 
   try {
     const filePlanResult = applyFilePlans(payload, filePlans, resolvedStep2);
@@ -435,7 +422,10 @@ export async function updateExperimentWithManagedFiles(
       {
         prisma,
         storageRoot,
-        step1: payload.step1,
+        step1: {
+          ...payload.step1,
+          displayName: payload.displayName
+        },
         templateBlocks: payload.templateBlocks
       },
       { experimentId: payload.experimentId }
@@ -444,6 +434,7 @@ export async function updateExperimentWithManagedFiles(
     rollbackActions = [...templateBlockResult.rollbackActions, ...rollbackActions];
     finalizeActions = [...finalizeActions, ...templateBlockResult.finalizeActions];
     resolvedTemplateBlocks = templateBlockResult.resolvedTemplateBlocks;
+    templateBlockWarning = templateBlockResult.warning || '';
 
     if (templateBlockResult.error) {
       for (const rollback of rollbackActions) {
@@ -596,5 +587,6 @@ export async function updateExperimentWithManagedFiles(
     };
   }
 
-  return { success: true };
+  const warning = [filePlanWarning, templateBlockWarning].filter(Boolean).join('\n');
+  return warning ? { success: true, warning } : { success: true };
 }

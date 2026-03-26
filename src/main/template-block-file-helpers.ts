@@ -1,15 +1,18 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { PrismaClient } from '@prisma/client';
-import type { SaveExperimentTemplateBlockPayload } from '../electron-api';
+import type { ManagedSectionLabel, SaveExperimentTemplateBlockPayload } from '../electron-api';
 import {
-  buildManagedTargetPath,
   createManagedBackupPath,
   createManagedTempPath,
   ensureDir,
   fileExists
 } from './file-helpers';
-import { getManagedTargetConflictError } from './managed-file-conflicts';
+import {
+  formatIndexedManagedFileWarning,
+  parseManagedFileSlotIndex,
+  resolveManagedFileTarget
+} from './managed-file-naming';
 
 type TemplateBlockStorageContext = {
   testProject: string;
@@ -17,6 +20,7 @@ type TemplateBlockStorageContext = {
   tester: string;
   instrument: string;
   testTime: string;
+  displayName: string;
 };
 
 type ResolveTemplateBlockManagedFilesOptions = {
@@ -31,6 +35,7 @@ type ResolveTemplateBlockManagedFilesResult = {
   resolvedTemplateBlocks: SaveExperimentTemplateBlockPayload[];
   rollbackActions: Array<() => void>;
   finalizeActions: Array<() => void>;
+  warning?: string;
 };
 
 function shouldCopyImportedTemplateBlockFile(block: SaveExperimentTemplateBlockPayload) {
@@ -41,18 +46,8 @@ function hasPendingTemplateBlockReplacement(block: SaveExperimentTemplateBlockPa
   return !!block.replacementSourcePath?.trim();
 }
 
-function buildTemplateBlockManagedTargetPath(
-  storageRoot: string,
-  step1: TemplateBlockStorageContext,
-  block: SaveExperimentTemplateBlockPayload,
-  index: number,
-  namingSourcePath: string
-) {
-  return buildManagedTargetPath(storageRoot, {
-    ...step1,
-    sourcePath: namingSourcePath,
-    nameSuffixParts: [block.templateType, block.blockTitle || 'block', String(index + 1)]
-  });
+function buildWarningMessage(warnings: Set<string>) {
+  return warnings.size ? Array.from(warnings).join('\n') : undefined;
 }
 
 function rollbackPreparedTemplateBlockFiles(
@@ -79,7 +74,9 @@ export async function resolveManagedTemplateBlockFiles(
   const resolvedTemplateBlocks = templateBlocks.map((block) => ({ ...block }));
   const rollbackActions: Array<() => void> = [];
   const finalizeActions: Array<() => void> = [];
-  const plannedTargetPaths = new Set<string>();
+  const plannedTargetSlots = new Set<string>();
+  const warnings = new Set<string>();
+  const sectionLabel: ManagedSectionLabel = '结构化数据块';
 
   try {
     for (const [index, block] of resolvedTemplateBlocks.entries()) {
@@ -106,29 +103,32 @@ export async function resolveManagedTemplateBlockFiles(
         continue;
       }
 
-      const { fileName, fullPath } = buildTemplateBlockManagedTargetPath(
-        storageRoot,
-        step1,
-        block,
-        index,
-        replacementSourcePath || originalFilePath
-      );
+      const nextSourcePath = replacementSourcePath || originalFilePath;
 
-      if (plannedTargetPaths.has(fullPath)) {
-        throw new Error('保存文件名与当前编辑中的其他模板块冲突，请调整后重试');
-      }
-      plannedTargetPaths.add(fullPath);
-
-      const conflictError = await getManagedTargetConflictError(prisma, fullPath, {
-        currentSourcePath,
-        excludeTemplateBlockId: block.blockId
-      });
-      if (conflictError) {
-        throw new Error(conflictError);
-      }
-
-      if (!fileExists(replacementSourcePath || originalFilePath)) {
+      if (!fileExists(nextSourcePath)) {
         throw new Error('导入原始文件不存在或路径无效');
+      }
+
+      const target = await resolveManagedFileTarget({
+        prisma,
+        storageRoot,
+        sourcePath: nextSourcePath,
+        testProject: step1.testProject,
+        sampleCode: step1.sampleCode,
+        displayName: step1.displayName,
+        sectionLabel,
+        secondaryItemName: block.blockTitle,
+        currentSourcePath,
+        excludeTemplateBlockId: block.blockId,
+        preferredSlotIndex: hasPendingReplacement
+          ? parseManagedFileSlotIndex(currentSourcePath)
+          : 0,
+        preserveSlot: hasPendingReplacement,
+        reservedTargetSlots: plannedTargetSlots
+      });
+
+      if (!hasPendingReplacement && target.indexed) {
+        warnings.add(formatIndexedManagedFileWarning(sectionLabel, block.blockTitle));
       }
 
       if (hasPendingReplacement && currentSourcePath) {
@@ -136,14 +136,14 @@ export async function resolveManagedTemplateBlockFiles(
           throw new Error('当前模板块保存文件不存在，无法替换为新文件');
         }
 
-        const tempPath = createManagedTempPath(fullPath);
+        const tempPath = createManagedTempPath(target.fullPath);
         const backupPath = createManagedBackupPath(currentSourcePath);
 
         try {
-          ensureDir(path.dirname(fullPath));
+          ensureDir(path.dirname(target.fullPath));
           fs.renameSync(currentSourcePath, backupPath);
           fs.copyFileSync(replacementSourcePath, tempPath);
-          fs.renameSync(tempPath, fullPath);
+          fs.renameSync(tempPath, target.fullPath);
         } catch (error) {
           if (fileExists(tempPath)) {
             fs.rmSync(tempPath, { force: true });
@@ -176,8 +176,8 @@ export async function resolveManagedTemplateBlockFiles(
         });
 
         rollbackActions.unshift(() => {
-          if (fileExists(fullPath)) {
-            fs.rmSync(fullPath, { force: true });
+          if (fileExists(target.fullPath)) {
+            fs.rmSync(target.fullPath, { force: true });
           }
 
           if (fileExists(backupPath) && !fileExists(currentSourcePath)) {
@@ -186,12 +186,12 @@ export async function resolveManagedTemplateBlockFiles(
           }
         });
       } else {
-        const tempPath = createManagedTempPath(fullPath);
+        const tempPath = createManagedTempPath(target.fullPath);
 
         try {
-          ensureDir(path.dirname(fullPath));
-          fs.copyFileSync(replacementSourcePath || originalFilePath, tempPath);
-          fs.renameSync(tempPath, fullPath);
+          ensureDir(path.dirname(target.fullPath));
+          fs.copyFileSync(nextSourcePath, tempPath);
+          fs.renameSync(tempPath, target.fullPath);
         } finally {
           if (fileExists(tempPath)) {
             fs.rmSync(tempPath, { force: true });
@@ -199,16 +199,16 @@ export async function resolveManagedTemplateBlockFiles(
         }
 
         rollbackActions.unshift(() => {
-          if (fileExists(fullPath)) {
-            fs.rmSync(fullPath, { force: true });
+          if (fileExists(target.fullPath)) {
+            fs.rmSync(target.fullPath, { force: true });
           }
         });
       }
 
       resolvedTemplateBlocks[index] = {
         ...block,
-        sourceFileName: fileName,
-        sourceFilePath: fullPath,
+        sourceFileName: target.fileName,
+        sourceFilePath: target.fullPath,
         originalFileName: nextOriginalFileName,
         originalFilePath: nextOriginalFilePath,
         replacementSourcePath: undefined,
@@ -217,14 +217,15 @@ export async function resolveManagedTemplateBlockFiles(
     }
   } catch (error) {
     rollbackPreparedTemplateBlockFiles(rollbackActions, context);
-    return {
-      error:
-        error instanceof Error && error.message
-          ? error.message
-          : '处理模板块原始文件失败，请检查文件状态后重试',
+      return {
+        error:
+          error instanceof Error && error.message
+            ? error.message
+            : '处理模板块原始文件失败，请检查文件状态后重试',
       resolvedTemplateBlocks: templateBlocks,
       rollbackActions: [],
-      finalizeActions: []
+      finalizeActions: [],
+      warning: buildWarningMessage(warnings)
     };
   }
 
@@ -232,6 +233,7 @@ export async function resolveManagedTemplateBlockFiles(
     error: '',
     resolvedTemplateBlocks,
     rollbackActions,
-    finalizeActions
+    finalizeActions,
+    warning: buildWarningMessage(warnings)
   };
 }

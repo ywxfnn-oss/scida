@@ -974,6 +974,22 @@ body {
   word-break: break-all;
 }
 
+.detail-derived-item {
+  background: #f7fbff;
+  border-color: #d6e8ff;
+}
+
+.detail-derived-value {
+  color: #1677ff;
+}
+
+.detail-derived-hint {
+  margin-top: 8px;
+  color: #666;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
 .detail-list {
   display: flex;
   flex-direction: column;

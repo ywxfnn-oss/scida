@@ -32,14 +32,20 @@ Current helper modules:
 - `record-file-update-helpers.ts`
   - managed-file-aware experiment update flow
   - update rollback and finalize ordering
+- `create-scalar-file-helpers.ts`
+  - create-save scalar managed-file resolution using the saved record display name
 - `export-helpers.ts`
   - full export
   - item-name export
   - workbook and ZIP helpers
 - `file-helpers.ts`
-  - managed file naming
   - path building
   - filesystem helper utilities
+- `managed-file-naming.ts`
+  - shared managed-file target resolution
+  - same-group slot/index handling for new imports and replacements
+- `edit-log.ts`
+  - edit-history summary wording and changed-field labeling
 - `runtime-db-helpers.ts`
   - runtime DB path resolution
   - migration discovery helpers
@@ -116,6 +122,7 @@ Current user-facing safety features:
 
 - Settings includes a file integrity scan report
 - create and update flows include duplicate warning prompts
+- edit-history wording now distinguishes derived record naming from editable business fields
 
 Current concentration risk:
 
@@ -155,7 +162,8 @@ Current runtime storage concerns:
 Key current behavior:
 
 - `storage/raw_files/` in the repository is data, not a reusable code module
-- managed file naming and path generation are centralized in `src/main/file-helpers.ts`
+- managed file naming and slot resolution are shared through `src/main/managed-file-naming.ts`
+- create-save scalar finalization is handled in `src/main/create-scalar-file-helpers.ts`
 - delete and update flows still coordinate database state with filesystem mutations in high-risk code paths
 
 ## Build and Packaging

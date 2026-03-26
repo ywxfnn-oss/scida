@@ -98,7 +98,7 @@ function renderCandidateCard(candidate: ImportReviewCandidateLike, loading: bool
 
       <div class="template-block-grid">
         <div class="form-group">
-          <label class="form-label">二级数据项名称</label>
+          <label class="form-label">数据块名称（二级数据项名称）</label>
           <input
             id="import-candidate-title-${candidate.id}"
             class="form-input"
@@ -211,7 +211,7 @@ function renderManualReviewPanel(file: ImportReviewFileLike, loading: boolean) {
         </div>
 
         <div class="form-group">
-          <label class="form-label">二级数据项名称</label>
+          <label class="form-label">数据块名称（二级数据项名称）</label>
           <input
             id="import-manual-title-${escapeHtml(file.filePath)}"
             class="form-input"

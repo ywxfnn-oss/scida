@@ -97,6 +97,10 @@ export type CopyFileToStorageResult = ActionResult & {
   savedPath?: string;
 };
 
+export type ScalarItemRole = 'condition' | 'metric';
+
+export type ManagedSectionLabel = '实验条件' | '结果指标' | '结构化数据块';
+
 export type CopyFileToStoragePayload = {
   sourcePath: string;
   testProject: string;
@@ -104,6 +108,9 @@ export type CopyFileToStoragePayload = {
   tester: string;
   instrument: string;
   testTime: string;
+  displayName?: string;
+  sectionLabel?: ManagedSectionLabel;
+  secondaryItemName?: string;
   templateType?: 'xy' | 'spectrum';
   blockTitle?: string;
   blockToken?: string;
@@ -220,6 +227,7 @@ export type SaveExperimentPayload = {
     dynamicFields: { name: string; value: string }[];
   };
   step2: {
+    scalarRole?: ScalarItemRole;
     itemName: string;
     itemValue: string;
     itemUnit: string;
@@ -234,6 +242,7 @@ export type SaveExperimentPayload = {
 
 export type UpdateExperimentDataItemPayload = {
   dataItemId?: number;
+  scalarRole?: ScalarItemRole;
   itemName: string;
   itemValue: string;
   itemUnit: string;

@@ -22,11 +22,11 @@ import type {
 import {
   buildDisplayName,
   escapeHtml,
-  formatTestTimeForDisplay,
   generateId,
   getErrorMessage,
   getPendingOriginalName,
   renderDeleteModal,
+  renderDetailDerivedPreview,
   renderDetailEditInput,
   renderDetailPair,
   renderDuplicateWarningModal,
@@ -219,18 +219,35 @@ const METRIC_NAME_KEYWORDS = [
 ];
 const SCALAR_ROLE_META: Record<
   ScalarItemRole,
-  { title: string; subtitle: string; addButtonLabel: string; emptyText: string }
+  {
+    title: string;
+    subtitle: string;
+    addButtonLabel: string;
+    recommendationLabel: string;
+    nameHeader: string;
+    valueHeader: string;
+    fileHeader: string;
+    emptyText: string;
+  }
 > = {
   condition: {
     title: '实验条件',
     subtitle: '记录实验是如何进行的，如温度、偏压、光功率、波长、频率和测试气氛等条件。',
-    addButtonLabel: '新增条件',
+    addButtonLabel: '新增实验条件',
+    recommendationLabel: '推荐实验条件',
+    nameHeader: '条件名称',
+    valueHeader: '条件值',
+    fileHeader: '来源文件（可选）',
     emptyText: '当前还没有实验条件'
   },
   metric: {
     title: '结果指标',
     subtitle: '记录最终标量结果和关键测量指标，如 Rise time、Responsivity、D*、EQE 等。',
     addButtonLabel: '新增结果指标',
+    recommendationLabel: '推荐结果指标',
+    nameHeader: '指标名称',
+    valueHeader: '指标值',
+    fileHeader: '来源文件（可选）',
     emptyText: '当前还没有结果指标'
   }
 };
@@ -294,6 +311,10 @@ function buildEmptyDataItem(role: ScalarItemRole = 'metric'): DataItem {
     originalFileName: '',
     originalFilePath: ''
   };
+}
+
+function getScalarSectionLabel(role?: ScalarItemRole) {
+  return role === 'condition' ? '实验条件' : '结果指标';
 }
 
 let currentView: ViewType = 'login';
@@ -554,6 +575,10 @@ async function performCreateSave(payload: SaveExperimentPayload) {
   lastSavedExperimentId = result.experimentId;
   currentView = 'save-success';
   void render();
+
+  if (result.warning) {
+    alert(result.warning);
+  }
 }
 
 async function performUpdateSave(payload: UpdateExperimentPayload) {
@@ -968,7 +993,9 @@ function renderScalarRecommendationButtons(
 
   return `
     <div class="step2-template-recommendation-row">
-      <div class="step2-template-recommendation-label">推荐起点</div>
+      <div class="step2-template-recommendation-label">${escapeHtml(
+        SCALAR_ROLE_META[role].recommendationLabel
+      )}</div>
       <div class="step2-template-recommendation-list">
         ${items
           .map((item) => {
@@ -1033,6 +1060,20 @@ function renderStructuredRecommendationButtons(
 
 function getDefaultStructuredRecommendation(context: TemplateBlockEditContext) {
   return getActiveStep2TemplateFamily(context)?.recommendedStructuredBlocks[0];
+}
+
+function renderEditableStructuredSectionContent(
+  context: TemplateBlockEditContext,
+  blocks: TemplateBlockFormData[],
+  addButtonId: string
+) {
+  return `
+    <div class="template-block-toolbar">
+      <button id="${addButtonId}" class="secondary-btn" type="button">添加结构化数据块</button>
+    </div>
+    ${renderStructuredRecommendationButtons(context, getActiveStep2TemplateFamily(context))}
+    ${renderTemplateBlockCards(blocks, context)}
+  `;
 }
 
 function resetTemplateBlockImportState(context: TemplateBlockEditContext) {
@@ -1552,6 +1593,118 @@ function bindTemplateBlockEditorEvents(params: {
   });
 }
 
+function refreshDetailEditTemplateRecommendations() {
+  if (!detailEditMode || !detailEditStep1) {
+    return;
+  }
+
+  const collected = collectDetailEditState();
+  if (!collected) {
+    return;
+  }
+
+  const scalarSectionsContainer = document.getElementById('detail-edit-scalar-sections');
+  const structuredSectionContainer = document.getElementById('detail-edit-structured-section-body');
+  if (!scalarSectionsContainer || !structuredSectionContainer) {
+    return;
+  }
+
+  scalarSectionsContainer.innerHTML = renderScalarSections('detail-edit', detailEditStep2);
+  structuredSectionContainer.innerHTML = renderEditableStructuredSectionContent(
+    'detail-edit',
+    detailEditTemplateBlocks,
+    'detail-add-template-block-btn'
+  );
+
+  bindScalarItemEditorEvents({
+    context: 'detail-edit',
+    addConditionButtonId: 'detail-add-condition-row-btn',
+    addMetricButtonId: 'detail-add-metric-row-btn'
+  });
+
+  bindTemplateBlockEditorEvents({
+    context: 'detail-edit',
+    addButtonId: 'detail-add-template-block-btn'
+  });
+}
+
+function syncDetailEditStep1InputsToState() {
+  if (!detailEditStep1) {
+    return null;
+  }
+
+  detailEditStep1.testProject =
+    (document.getElementById('edit-testProject') as HTMLInputElement)?.value.trim() || '';
+  detailEditStep1.sampleCode =
+    (document.getElementById('edit-sampleCode') as HTMLInputElement)?.value.trim() || '';
+  detailEditStep1.tester =
+    (document.getElementById('edit-tester') as HTMLInputElement)?.value.trim() || '';
+  detailEditStep1.instrument =
+    (document.getElementById('edit-instrument') as HTMLInputElement)?.value.trim() || '';
+  detailEditStep1.testTime =
+    (document.getElementById('edit-testTime') as HTMLInputElement)?.value || '';
+  detailEditStep1.sampleOwner =
+    (document.getElementById('edit-sampleOwner') as HTMLInputElement)?.value.trim() || '';
+
+  detailEditStep1.dynamicFields = detailEditStep1.dynamicFields.map((field, index) => ({
+    ...field,
+    name:
+      (document.getElementById(`edit-dynamic-name-${index}`) as HTMLInputElement)?.value.trim() ||
+      '',
+    value:
+      (document.getElementById(`edit-dynamic-value-${index}`) as HTMLInputElement)?.value.trim() ||
+      ''
+  }));
+
+  return detailEditStep1;
+}
+
+function refreshDetailEditDerivedNamePreview() {
+  const syncedStep1 = syncDetailEditStep1InputsToState();
+  if (!syncedStep1) {
+    return;
+  }
+
+  const derivedDisplayName = buildDisplayName(syncedStep1);
+  const heading = document.getElementById('detail-display-name-heading');
+  const preview = document.getElementById('detail-edit-display-name-preview');
+
+  if (heading) {
+    heading.textContent = derivedDisplayName;
+  }
+
+  if (preview) {
+    preview.textContent = derivedDisplayName;
+  }
+}
+
+function bindDetailEditTemplateContextReactivity() {
+  const testProjectInput = document.getElementById('edit-testProject') as HTMLInputElement | null;
+  const previewFieldIds = ['edit-sampleCode', 'edit-tester', 'edit-instrument', 'edit-testTime'];
+
+  previewFieldIds.forEach((fieldId) => {
+    const input = document.getElementById(fieldId) as HTMLInputElement | null;
+    if (!input) {
+      return;
+    }
+
+    input.addEventListener('input', refreshDetailEditDerivedNamePreview);
+    input.addEventListener('change', refreshDetailEditDerivedNamePreview);
+  });
+
+  if (testProjectInput) {
+    const refreshRecommendations = () => {
+      refreshDetailEditDerivedNamePreview();
+      refreshDetailEditTemplateRecommendations();
+    };
+
+    testProjectInput.addEventListener('input', refreshRecommendations);
+    testProjectInput.addEventListener('change', refreshRecommendations);
+  }
+
+  refreshDetailEditDerivedNamePreview();
+}
+
 function getScalarFileButtonLabel(item: DataItem) {
   if (item.sourceFileName || item.originalFileName || item.replacementOriginalName) {
     return '更换原始文件';
@@ -1600,10 +1753,10 @@ function renderEditableScalarSection(
               <table class="data-table">
                 <thead>
                   <tr>
-                    <th>名称</th>
-                    <th>数值</th>
+                    <th>${escapeHtml(meta.nameHeader)}</th>
+                    <th>${escapeHtml(meta.valueHeader)}</th>
                     <th>单位</th>
-                    <th>原始文件</th>
+                    <th>${escapeHtml(meta.fileHeader)}</th>
                     <th>操作</th>
                   </tr>
                 </thead>
@@ -1823,7 +1976,13 @@ async function handleScalarFileSelection(context: ScalarItemEditContext, rowId: 
       sampleCode: step1FormData.sampleCode,
       tester: step1FormData.tester,
       instrument: step1FormData.instrument,
-      testTime: step1FormData.testTime
+      testTime: step1FormData.testTime,
+      displayName: buildDisplayName(step1FormData),
+      sectionLabel: getScalarSectionLabel(
+        getScalarItemsForContext(context).find((row) => row.id === rowId)?.scalarRole
+      ),
+      secondaryItemName:
+        getScalarItemsForContext(context).find((row) => row.id === rowId)?.itemName || ''
     });
 
     if (!copied.success || !copied.savedFileName || !copied.savedPath) {
@@ -1847,6 +2006,10 @@ async function handleScalarFileSelection(context: ScalarItemEditContext, rowId: 
     );
 
     requestRender(true);
+
+    if (copied.warning) {
+      alert(copied.warning);
+    }
   } catch (error) {
     handleAsyncError(error, context === 'detail-edit' ? '选择替换文件失败' : '处理原始文件失败');
   }
@@ -2005,7 +2168,7 @@ function renderTemplateBlockImportPanel(block: TemplateBlockFormData) {
             <div class="import-manual-review-subtitle">识别或重新生成只更新预览，不会自动覆盖当前块。确认无误后，再写入当前块的主编辑字段。</div>
             <div class="template-block-grid">
               <div class="form-group">
-                <label class="form-label">预览二级数据项名称</label>
+                <label class="form-label">预览数据块名称（二级数据项名称）</label>
                 <div class="detail-list-value">${escapeHtml(importCandidate.templateBlock.blockTitle || '-')}</div>
               </div>
               <div class="form-group">
@@ -2241,7 +2404,7 @@ function renderTemplateBlockCards(
             </div>
 
             <div class="form-group">
-              <label class="form-label">二级数据项名称 <span class="required-star">*</span></label>
+              <label class="form-label">数据块名称（二级数据项名称） <span class="required-star">*</span></label>
               <input
                 id="template-block-title-${block.id}"
                 class="form-input"
@@ -3518,7 +3681,11 @@ async function render() {
 
           <section class="content-area">
             <div class="welcome-card">
-              <h2>${escapeHtml(currentDetail.displayName)}</h2>
+              <h2 id="detail-display-name-heading">${escapeHtml(
+                detailEditMode && detailEditStep1
+                  ? buildDisplayName(detailEditStep1)
+                  : currentDetail.displayName
+              )}</h2>
               <p class="subtitle">当前阶段支持详情只读查看和修改后留痕</p>
 
               <div class="detail-section">
@@ -3532,7 +3699,12 @@ async function render() {
                         ${renderDetailEditInput('edit-instrument', '测试仪器', detailEditStep1.instrument)}
                         ${renderDetailEditInput('edit-testTime', '测试时间', detailEditStep1.testTime, 'datetime-local')}
                         ${renderDetailEditInput('edit-sampleOwner', '样品所属人员', detailEditStep1.sampleOwner)}
-                        ${renderDetailEditInput('edit-displayName', '数据名称', currentDetail.displayName)}
+                        ${renderDetailDerivedPreview(
+                          'detail-edit-display-name-preview',
+                          '数据名称（自动生成）',
+                          buildDisplayName(detailEditStep1),
+                          '基于测试项目、样品编号、测试人、测试仪器和测试时间自动生成；请修改上述一级主信息来更新此名称。'
+                        )}
                       `
         : `
                         ${renderDetailPair('实验编号', String(currentDetail.id))}
@@ -3588,7 +3760,7 @@ async function render() {
               </div>
 
               ${detailEditMode
-        ? renderScalarSections('detail-edit', detailEditStep2)
+        ? `<div id="detail-edit-scalar-sections">${renderScalarSections('detail-edit', detailEditStep2)}</div>`
         : `
             ${renderStep2TemplateContextHint('detail-readonly')}
             ${renderReadonlyScalarSection(
@@ -3604,16 +3776,11 @@ async function render() {
               <div class="detail-section">
                 <div class="detail-section-title">结构化数据块</div>
                 ${detailEditMode
-        ? `
-            <div class="template-block-toolbar">
-              <button id="detail-add-template-block-btn" class="secondary-btn" type="button">添加结构化数据块</button>
-            </div>
-            ${renderStructuredRecommendationButtons(
-              'detail-edit',
-              getActiveStep2TemplateFamily('detail-edit')
-            )}
-            ${renderTemplateBlockCards(detailEditTemplateBlocks, 'detail-edit')}
-          `
+        ? `<div id="detail-edit-structured-section-body">${renderEditableStructuredSectionContent(
+          'detail-edit',
+          detailEditTemplateBlocks,
+          'detail-add-template-block-btn'
+        )}</div>`
         : currentDetail.templateBlocks.length
           ? renderReadonlyTemplateBlocks(
             currentDetail.templateBlocks.map((block) => ({
@@ -3769,6 +3936,8 @@ async function render() {
         context: 'detail-edit',
         addButtonId: 'detail-add-template-block-btn'
       });
+
+      bindDetailEditTemplateContextReactivity();
     }
 
     document.getElementById('detail-save-edit-btn')?.addEventListener('click', async () => {
@@ -3833,6 +4002,7 @@ async function render() {
             .filter((item) => item.itemName && item.itemValue)
             .map((item) => ({
               dataItemId: item.dataItemId,
+              scalarRole: item.scalarRole,
               itemName: item.itemName,
               itemValue: item.itemValue,
               itemUnit: item.itemUnit,
@@ -3844,15 +4014,7 @@ async function render() {
               replacementOriginalName: item.replacementOriginalName
             })),
           templateBlocks: templateBlocksResult.blocks,
-          displayName: [
-            collected.step1.testProject,
-            collected.step1.sampleCode,
-            collected.step1.tester,
-            collected.step1.instrument,
-            formatTestTimeForDisplay(collected.step1.testTime)
-          ]
-            .filter(Boolean)
-            .join('-'),
+          displayName: buildDisplayName(collected.step1),
           editReason: detailEditReason,
           editor: detailEditor
         };
@@ -4703,6 +4865,7 @@ function bindStep2Events() {
         step2: step2DataItems
           .filter((row) => row.itemName && row.itemValue)
           .map((row) => ({
+            scalarRole: row.scalarRole,
             itemName: row.itemName,
             itemValue: row.itemValue,
             itemUnit: row.itemUnit,
@@ -4877,28 +5040,7 @@ function prepareDetailEditState() {
 function collectDetailEditState() {
   if (!detailEditStep1) return null;
 
-  detailEditStep1.testProject =
-    (document.getElementById('edit-testProject') as HTMLInputElement)?.value.trim() || '';
-  detailEditStep1.sampleCode =
-    (document.getElementById('edit-sampleCode') as HTMLInputElement)?.value.trim() || '';
-  detailEditStep1.tester =
-    (document.getElementById('edit-tester') as HTMLInputElement)?.value.trim() || '';
-  detailEditStep1.instrument =
-    (document.getElementById('edit-instrument') as HTMLInputElement)?.value.trim() || '';
-  detailEditStep1.testTime =
-    (document.getElementById('edit-testTime') as HTMLInputElement)?.value || '';
-  detailEditStep1.sampleOwner =
-    (document.getElementById('edit-sampleOwner') as HTMLInputElement)?.value.trim() || '';
-
-  detailEditStep1.dynamicFields = detailEditStep1.dynamicFields.map((field, index) => ({
-    ...field,
-    name:
-      (document.getElementById(`edit-dynamic-name-${index}`) as HTMLInputElement)?.value.trim() ||
-      '',
-    value:
-      (document.getElementById(`edit-dynamic-value-${index}`) as HTMLInputElement)?.value.trim() ||
-      ''
-  }));
+  syncDetailEditStep1InputsToState();
 
   detailEditStep2 = detailEditStep2.map((item) => ({
     ...item,

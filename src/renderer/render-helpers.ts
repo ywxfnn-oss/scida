@@ -472,6 +472,21 @@ export function renderDetailEditInput(
   `;
 }
 
+export function renderDetailDerivedPreview(
+  valueId: string,
+  label: string,
+  value: string,
+  hint: string
+) {
+  return `
+    <div class="detail-item detail-derived-item">
+      <div class="detail-label">${escapeHtml(label)}</div>
+      <div id="${valueId}" class="detail-value detail-derived-value">${escapeHtml(value)}</div>
+      <div class="detail-derived-hint">${escapeHtml(hint)}</div>
+    </div>
+  `;
+}
+
 export function renderDynamicFields(fields: DynamicFieldLike[]) {
   if (!fields.length) {
     return `<div class="empty-tip">当前还没有新增字段</div>`;
