@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v1.1.0 - 2026-03-26
+
 ### Added
 
 - Added Step 1 dictionary management, quick-add, dictionary validation, and searchable suggestions for standardized fields.
@@ -26,6 +28,16 @@
   - `导出单个二级数据项`
   - `导出全部二级数据项`
 - Folded XY and spectrum export into the unified secondary-item export flow.
+- Made detail-edit `数据名称` an auto-generated preview derived from Step 1 fields instead of an independently editable input.
+- Updated edit-log wording for derived record-name changes to `记录名称（自动生成）`.
+- Unified full-export `详情说明表` wording between the export UI label and exported workbook filename.
+- Unified managed raw-file naming for new imports and replacements to:
+  - `<displayName>-实验条件-<secondaryItemName><ext>`
+  - `<displayName>-结果指标-<secondaryItemName><ext>`
+  - `<displayName>-结构化数据块-<secondaryItemName><ext>`
+- Made Step 2 scalar-section labels more explicit by using role-specific wording for recommendations, add actions, and editable table headers.
+- Aligned structured-block editor wording to `数据块名称（二级数据项名称）`.
+- Renamed structured-data secondary-item export workbook filenames to lead with `结构化数据`, keeping `XY` and `光谱` only as secondary qualifiers.
 
 ### Removed
 

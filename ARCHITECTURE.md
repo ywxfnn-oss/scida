@@ -29,9 +29,15 @@ Responsibilities:
   - ZIP creation
   - full export and item-name export flows
 - `src/main/file-helpers.ts`
-  - managed file naming
   - path building
   - filesystem helper utilities
+- `src/main/managed-file-naming.ts`
+  - managed raw-file naming resolution
+  - same-group slot/index handling for new imports and replacements
+- `src/main/create-scalar-file-helpers.ts`
+  - create-save scalar managed-file finalization against the saved display-name context
+- `src/main/edit-log.ts`
+  - edit-history summary wording and changed-field labeling
 - `src/main/runtime-db-helpers.ts`
   - runtime DB path resolution
   - migration discovery helpers
@@ -98,6 +104,13 @@ Prisma Client generation is part of repository setup through `npm run prisma:gen
 - `storage/raw_files/` in the repository is example/local data, not a source-code module.
 - The real runtime raw-file storage root defaults to `app.getPath('userData')/storage/raw_files`.
 - Users can change the storage root in app settings.
+
+Current managed raw-file naming behavior:
+
+- naming authority for records stays in the Step 1-derived `displayName`
+- new imports and replacements use `<displayName>-<sectionLabel>-<secondaryItemName><ext>`
+- section labels are limited to `实验条件`, `结果指标`, and `结构化数据块`
+- unchanged historical managed files are not batch-renamed automatically
 
 ## Build and Packaging
 

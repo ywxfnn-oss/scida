@@ -2,13 +2,15 @@
 
 ## Current Status
 
-Scidata Manager is currently in a stable local-desktop state for core lab data workflows:
+Scidata Manager is currently in a stable local-desktop state for the `v1.1.0` release baseline:
 
 - login and settings management work
 - experiment search, detail view, edit, and save work
 - full export and item-name export flows work
 - managed file integrity scanning is available from Settings
 - duplicate-record warnings run before create and update saves
+- record naming is treated as a derived Step 1 result, not an independent editable business field
+- managed raw-file naming for new imports and replacements is unified across scalar and structured data flows
 
 ## Current Technical Debt / Limitations
 
@@ -20,6 +22,7 @@ Scidata Manager is currently in a stable local-desktop state for core lab data w
 
 ## Recommended Next Priorities
 
+- add repeatable smoke automation around the live create, detail-edit, replacement, and export paths
 - continue safe, low-risk structural cleanup of `src/renderer.ts`
 - continue reducing `src/main.ts` only in low-coupling areas, without changing startup or file-mutation behavior
 - improve documentation so module boundaries and current capabilities stay aligned with the code

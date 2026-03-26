@@ -1,13 +1,13 @@
 # PROJECT_STRUCTURE.md
 
 > Auto-generated project structure document.  
-> Generated at: `2026-03-15T06:51:19.470Z`
+> Generated at: `2026-03-26T03:09:35.562Z`
 
 ## Project Summary
 
 - Project name: `Scidata Manager`
 - Package name: `scidata-manager`
-- Version: `1.0.0`
+- Version: `1.1.0`
 - Main entry: `.vite/build/main.js`
 
 ## Detected Tech Stack
@@ -22,6 +22,8 @@
 
 ## Detected Key Paths
 
+- `src/main`
+- `src/renderer`
 - `src`
 - `prisma`
 - `prisma/schema.prisma`
@@ -38,6 +40,8 @@
 - `CODEX.md`
 ## Available npm Scripts
 
+- `prisma:generate`
+- `postinstall`
 - `start`
 - `package`
 - `make`
@@ -50,9 +54,10 @@
 ```text
 scidata-manager/
 ├── docs/
-│   ├── AI_GUIDE.md
 │   ├── DATABASE.md
+│   ├── DEFAULT_TEMPLATES.md
 │   ├── EXPORT_FLOW.md
+│   ├── HANDOFF.md
 │   └── MODULE_GUIDE.md
 ├── prisma/
 │   ├── migrations/
@@ -64,29 +69,53 @@ scidata-manager/
 │   │   │   └── migration.sql
 │   │   ├── 20260314043854_add_app_settings/
 │   │   │   └── migration.sql
+│   │   ├── 20260322103000_add_operation_logs/
+│   │   │   └── migration.sql
+│   │   ├── 20260323170000_add_experiment_template_blocks/
+│   │   │   └── migration.sql
 │   │   └── migration_lock.toml
 │   └── schema.prisma
 ├── scripts/
 │   └── generate-project-structure.mjs
+├── skills/
+│   └── scidata-manager-safe-changes/
+│       ├── agents/
+│       │   └── openai.yaml
+│       └── SKILL.md
 ├── src/
+│   ├── main/
+│   │   ├── auth-settings.ts
+│   │   ├── create-scalar-file-helpers.ts
+│   │   ├── delete-helpers.ts
+│   │   ├── dictionary-settings.ts
+│   │   ├── duplicate-check.ts
+│   │   ├── edit-log.ts
+│   │   ├── export-helpers.ts
+│   │   ├── file-helpers.ts
+│   │   ├── file-integrity.ts
+│   │   ├── import-format-registry.ts
+│   │   ├── import-parsers.ts
+│   │   ├── import-preview-service.ts
+│   │   ├── managed-file-conflicts.ts
+│   │   ├── managed-file-naming.ts
+│   │   ├── operation-log.ts
+│   │   ├── record-file-update-helpers.ts
+│   │   ├── runtime-db-helpers.ts
+│   │   └── template-block-file-helpers.ts
+│   ├── renderer/
+│   │   ├── import-review-helpers.ts
+│   │   ├── render-helpers.ts
+│   │   └── step2-template-registry.ts
 │   ├── better-sqlite3.d.ts
 │   ├── electron-api.ts
 │   ├── global.d.ts
 │   ├── index.css
 │   ├── main.ts
 │   ├── preload.ts
-│   └── renderer.ts
+│   ├── renderer.ts
+│   └── template-blocks.ts
 ├── storage/
 │   └── raw_files/
-│       ├── 1/
-│       │   └── 1/
-│       │       └── 1-1-1-1-2026-03-14-11-27.pdf
-│       ├── neng/
-│       │   └── 1/
-│       │       └── neng-1-1-1-2026-03-14-11-24.pdf
-│       ├── xrd/
-│       │   └── 20250719/
-│       │       └── xrd-20250719-ywx-xrd系统-2026-03-14-13-06.pdf
 │       └── 能谱/
 │           └── 1/
 │               ├── 能谱-1-杨文轩-能谱测试仪-2026-03-14-10-46.pdf
@@ -98,16 +127,20 @@ scidata-manager/
 ├── .eslintrc.json
 ├── .gitignore
 ├── ARCHITECTURE.md
+├── CHANGELOG.md
 ├── CODEX.md
 ├── dev.db
 ├── forge.config.ts
 ├── forge.env.d.ts
 ├── index.html
+├── LICENSE
 ├── package-lock.json
 ├── package.json
 ├── prisma.config.ts
+├── PROJECT_STATUS.md
 ├── PROJECT_STRUCTURE.md
 ├── README.md
+├── ROADMAP.md
 ├── tsconfig.json
 ├── vite.main.config.ts
 ├── vite.preload.config.ts
@@ -120,8 +153,6 @@ scidata-manager/
 - 默认忽略了 `node_modules`、`.git`、`.vite`、`dist`、`out` 等构建或缓存目录。
 - 如需查看更多层级，可修改脚本中的 `MAX_DEPTH`。
 - 如需排除更多目录，可修改 `IGNORE_DIRS`。
-- `storage/raw_files/` 是数据目录，不是 `src/storage/` 代码模块。
-- 运行时数据库默认位于 `app.getPath('userData')/scidata.db`，不是仓库根目录下的 `dev.db`。
 
 ## Recommended Maintenance
 

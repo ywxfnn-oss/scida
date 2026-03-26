@@ -43,7 +43,7 @@ Output structure:
 - one export root folder
 - inside it, one folder per experiment
 - inside each experiment folder:
-  - one detail workbook
+  - one `详情说明表` workbook named `<displayName>_详情说明表.xlsx`
   - one `原始文件/<sampleCode>/` directory
   - copied managed/source files referenced by scalar data items
 
@@ -79,8 +79,8 @@ Folder layout:
 
   二级数据项B/
     二级数据项B_标量数据.xlsx
-    二级数据项B_XY数据.xlsx
-    二级数据项B_光谱数据.xlsx
+    二级数据项B_结构化数据（XY）.xlsx
+    二级数据项B_结构化数据（光谱）.xlsx
     样品C/
       raw-file-3.ext
 ```
@@ -99,7 +99,7 @@ Rows:
 
 - one row per matching scalar item across the selected experiments
 
-### XY Workbook Structure
+### 结构化数据（XY）Workbook Structure
 
 XY export is folded into secondary-item export but keeps its existing writer logic.
 
@@ -116,7 +116,7 @@ Behavior:
 
 This is not point-by-point comparison export.
 
-### Spectrum Workbook Structure
+### 结构化数据（光谱）Workbook Structure
 
 Spectrum export follows the same grouped structured-data model as XY.
 
@@ -142,8 +142,8 @@ If scalar, XY, and spectrum data share the same `二级数据项名称`:
 File naming rule:
 
 - scalar workbook: `<name>_标量数据.xlsx`
-- XY workbook: `<name>_XY数据.xlsx`
-- spectrum workbook: `<name>_光谱数据.xlsx`
+- XY workbook: `<name>_结构化数据（XY）.xlsx`
+- spectrum workbook: `<name>_结构化数据（光谱）.xlsx`
 
 If only scalar data exists for that name, the scalar workbook keeps the plain item workbook shape.
 

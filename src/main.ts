@@ -25,6 +25,7 @@ import {
   fileExists,
   formatExportTimestamp
 } from './main/file-helpers';
+import { resolveManagedCreateScalarFiles } from './main/create-scalar-file-helpers';
 import {
   exportByItemNames,
   exportFullExperiments,
@@ -42,6 +43,10 @@ import {
   updateExperimentWithManagedFiles
 } from './main/record-file-update-helpers';
 import { getManagedTargetConflictError } from './main/managed-file-conflicts';
+import {
+  formatIndexedManagedFileWarning,
+  resolveManagedFileTarget
+} from './main/managed-file-naming';
 import { resolveManagedTemplateBlockFiles } from './main/template-block-file-helpers';
 import {
   getBundledDbPath,
@@ -593,34 +598,58 @@ app.whenReady().then(async () => {
           getDefaultStorageRoot()
         );
 
-        const { targetDir, fileName, fullPath } = buildManagedTargetPath(
-          storageRoot,
-          {
-            ...payload,
-            nameSuffixParts:
-              payload.templateType
-                ? [
-                    payload.templateType,
-                    payload.blockTitle || 'block',
-                    payload.blockToken || ''
-                  ]
-                : []
-          }
-        );
-        const conflictError = await getManagedTargetConflictError(prisma, fullPath);
+        const target =
+          payload.displayName && payload.sectionLabel && payload.secondaryItemName
+            ? await resolveManagedFileTarget({
+                prisma,
+                storageRoot,
+                sourcePath: payload.sourcePath,
+                testProject: payload.testProject,
+                sampleCode: payload.sampleCode,
+                displayName: payload.displayName,
+                sectionLabel: payload.sectionLabel,
+                secondaryItemName: payload.secondaryItemName
+              })
+            : (() => {
+                const legacyTarget = buildManagedTargetPath(storageRoot, {
+                  ...payload,
+                  nameSuffixParts:
+                    payload.templateType
+                      ? [
+                          payload.templateType,
+                          payload.blockTitle || 'block',
+                          payload.blockToken || ''
+                        ]
+                      : []
+                });
+
+                return {
+                  ...legacyTarget,
+                  indexed: false
+                };
+              })();
+
+        const conflictError =
+          payload.displayName && payload.sectionLabel && payload.secondaryItemName
+            ? ''
+            : await getManagedTargetConflictError(prisma, target.fullPath);
 
         if (conflictError) {
           return { success: false, error: conflictError };
         }
 
-        ensureDir(targetDir);
+        ensureDir(target.targetDir);
 
-        fs.copyFileSync(payload.sourcePath, fullPath);
+        fs.copyFileSync(payload.sourcePath, target.fullPath);
 
         return {
           success: true,
-          savedFileName: fileName,
-          savedPath: fullPath
+          savedFileName: target.fileName,
+          savedPath: target.fullPath,
+          warning:
+            payload.displayName && payload.sectionLabel && payload.secondaryItemName && target.indexed
+              ? formatIndexedManagedFileWarning(payload.sectionLabel, payload.secondaryItemName)
+              : undefined
         };
       } catch (error) {
         console.error('copyToStorage failed:', error);
@@ -667,14 +696,40 @@ app.whenReady().then(async () => {
           'storageRoot',
           getDefaultStorageRoot()
         );
+        const scalarFileResult = await resolveManagedCreateScalarFiles({
+          prisma,
+          storageRoot,
+          payload
+        });
+
+        if (scalarFileResult.error) {
+          return {
+            success: false,
+            error: scalarFileResult.error
+          };
+        }
+
         const templateBlockResult = await resolveManagedTemplateBlockFiles({
           prisma,
           storageRoot,
-          step1: payload.step1,
+          step1: {
+            ...payload.step1,
+            displayName: payload.displayName
+          },
           templateBlocks: normalizedTemplateBlocks
         });
 
         if (templateBlockResult.error) {
+          for (const rollback of scalarFileResult.rollbackActions) {
+            try {
+              rollback();
+            } catch (rollbackError) {
+              console.error('rollbackPreparedScalarFileAfterTemplateBlockFailure failed:', {
+                rollbackError
+              });
+            }
+          }
+
           return {
             success: false,
             error: templateBlockResult.error
@@ -700,7 +755,7 @@ app.whenReady().then(async () => {
                 }))
               },
               dataItems: {
-                create: payload.step2.map((item, index) => ({
+                create: scalarFileResult.resolvedStep2.map((item, index) => ({
                   itemName: item.itemName,
                   itemValue: item.itemValue,
                   itemUnit: item.itemUnit || null,
@@ -727,6 +782,16 @@ app.whenReady().then(async () => {
             }
           });
         } catch (error) {
+          for (const rollback of scalarFileResult.rollbackActions) {
+            try {
+              rollback();
+            } catch (rollbackError) {
+              console.error('rollbackPreparedScalarFileAfterSaveFailure failed:', {
+                rollbackError
+              });
+            }
+          }
+
           for (const rollback of templateBlockResult.rollbackActions) {
             try {
               rollback();
@@ -757,7 +822,10 @@ app.whenReady().then(async () => {
 
         return {
           success: true,
-          experimentId: experiment.id
+          experimentId: experiment.id,
+          warning: [scalarFileResult.warning, templateBlockResult.warning]
+            .filter(Boolean)
+            .join('\n') || undefined
         };
       } catch (error) {
         console.error('saveExperiment failed:', error);

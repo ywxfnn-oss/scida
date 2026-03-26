@@ -14,7 +14,7 @@ const EDIT_FIELD_LABELS: Record<string, string> = {
   instrument: '测试仪器',
   testTime: '测试时间',
   sampleOwner: '样品所属人员',
-  displayName: '数据名称',
+  displayName: '记录名称（自动生成）',
   customFields: '动态字段',
   dataItems: '二级数据项',
   templateBlocks: '模板块'

@@ -1,6 +1,6 @@
 # CODEX.md
 
-AI Guide for Scidata Manager
+Workflow Guide for Scidata Manager
 
 ## Project Baseline
 
@@ -11,6 +11,22 @@ Scidata Manager is a local Electron + TypeScript scientific data manager with:
 - full export and item-name export
 - managed raw-file storage
 - Settings-based file integrity scan and duplicate-record warning support
+
+Current `v1.1.0` baseline details that should be treated as stable unless a task explicitly changes them:
+
+- record-level `displayName` is derived from Step 1 fields and is not an independent business field
+- detail-edit shows record naming as `数据名称（自动生成）`
+- Step 2 uses three semantic sections:
+  - `实验条件`
+  - `结果指标`
+  - `结构化数据块`
+- new or replaced managed raw/source files use `<displayName>-<sectionLabel>-<secondaryItemName><ext>`
+- same-group indexing only applies within the same `displayName + sectionLabel + secondaryItemName`
+- full export writes `<displayName>_详情说明表.xlsx`
+- structured-data secondary-item export writes:
+  - `<name>_结构化数据（XY）.xlsx`
+  - `<name>_结构化数据（光谱）.xlsx`
+- edit-log summaries describe derived record-name changes as `记录名称（自动生成）`
 
 ## Development Rules
 
@@ -37,6 +53,7 @@ Execution rules:
 - work in small safe steps only
 - avoid scope creep
 - update docs when product semantics change
+- keep `CODEX.md` as the single active workflow-guide document
 - keep `docs/DEFAULT_TEMPLATES.md` aligned when Step 1-driven Step 2 template guidance changes
 - validate with the narrowest relevant checks
 - do not auto-commit unless explicitly asked

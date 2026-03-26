@@ -2,7 +2,7 @@
 
 ## Release Baseline
 
-Scidata Manager is now at the point of a first complete usable release candidate.
+Scidata Manager is now prepared for the `v1.1.0` naming-consolidation release.
 
 ## Current State
 
@@ -19,6 +19,12 @@ Current release-level capabilities:
 - detail view, detail edit, duplicate warning, and edit history are operational
 - export remains available from selected experiments in the database list
 - Step 1 `testProject` can guide Step 2 through default template recommendations
+- record naming is explicitly derived from Step 1 rather than treated as an independent editable field
+- managed raw/source naming for new imports and replacements is unified across create and update
+- export-facing workbook naming now aligns with:
+  - `详情说明表`
+  - `结构化数据（XY）`
+  - `结构化数据（光谱）`
 
 Current direction should stay narrow:
 
@@ -35,6 +41,13 @@ Current direction should stay narrow:
 - aligned create Step 2 and detail-edit around the same block-centered structured-data workflow
 - simplified database list search/filter controls and clarified export-from-selection workflow
 - added Step 1-driven Step 2 default template guidance and documentation
+- completed the naming-consolidation round for:
+  - derived record naming in detail-edit
+  - full-export `详情说明表` naming
+  - managed raw-file naming for new imports and replacements
+  - Step 2 scalar-section wording
+  - structured-data export naming
+  - edit-log wording for derived record-name changes
 
 ## Current Product Capabilities
 
@@ -47,6 +60,7 @@ Current direction should stay narrow:
 - duplicate warning before create/update save
 - detail edit with edit-history visibility
 - Step 1-driven Step 2 default template guidance for first-release photodetector workflows
+- consistent naming behavior across detail-edit, managed file storage, full export, secondary-item export, and edit history
 
 ## Documentation Pointers
 
@@ -65,6 +79,21 @@ Primary docs for the current release baseline:
 - do not change Prisma schema lightly
 - do not break export semantics
 - do not expand scope without a capability audit first
+
+## Intentionally Not Included In v1.1.0
+
+- no schema changes
+- no database-table redesign
+- no historical managed-file batch rename migration
+- no broad structured-data internal refactor
+- no template-semantic persistence redesign
+- no export-builder redesign
+
+## Next Recommended Direction
+
+- add repeatable smoke-test automation around create, detail-edit, managed-file replacement, and export flows
+- continue low-risk extraction from `src/renderer.ts` and `src/main.ts` only where behavior stays unchanged
+- keep future work narrow and evidence-based rather than reopening the completed naming decisions
 
 ## Recommended Working Style
 

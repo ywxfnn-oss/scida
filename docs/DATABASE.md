@@ -10,6 +10,12 @@ Database guide for the current Scidata Manager main branch.
 
 This file is limited to current main-branch runtime database behavior and safety rules.
 
+Current `v1.1.0` release boundary:
+
+- no schema changes were introduced for the naming-consolidation work
+- derived record naming, export naming, Step 2 wording, and managed-file naming changes were implemented without DB-table changes
+- there is no historical managed-file batch rename migration in this release
+
 ## Key Files
 
 - `prisma/schema.prisma`
