@@ -11,6 +11,11 @@ const electronAPI: ElectronAPI = {
 
     saveAppSettings: (payload) => ipcRenderer.invoke('settings:saveAppSettings', payload),
 
+    getPersistedAnalysisUIState: () => ipcRenderer.invoke('ui:getPersistedAnalysisUIState'),
+
+    savePersistedAnalysisUIState: (payload) =>
+        ipcRenderer.invoke('ui:savePersistedAnalysisUIState', payload),
+
     listDictionaryItems: (payload) => ipcRenderer.invoke('dictionary:list', payload),
 
     addDictionaryItem: (payload) => ipcRenderer.invoke('dictionary:add', payload),
@@ -61,6 +66,8 @@ const electronAPI: ElectronAPI = {
     quarantineOrphanFiles: (payload) => ipcRenderer.invoke('file:quarantineOrphans', payload),
 
     listRecentOperationLogs: (payload) => ipcRenderer.invoke('log:listRecentOperations', payload),
+
+    saveGeneratedFile: (payload) => ipcRenderer.invoke('file:saveGeneratedFile', payload),
 
     openPathLocation: (payload) => ipcRenderer.invoke('file:openPathLocation', payload),
 

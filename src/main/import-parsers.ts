@@ -1,13 +1,17 @@
 import path from 'node:path';
 import type {
   ImportManualDelimiter,
+  ImportManualXAxisSourceMode,
   ImportManualPreviewRow,
   ImportManualXYReviewSupport,
   ImportPreviewXYTemplateBlockCandidate,
   PreviewManualImportXYPayload,
   SaveExperimentXYBlockPayload
 } from '../electron-api';
-import { XY_TEMPLATE_TYPE } from '../template-blocks';
+import {
+  XY_TEMPLATE_TYPE,
+  type StructuredBlockPurpose
+} from '../template-blocks';
 import type {
   ImportFormatParser,
   ImportParserContext,
@@ -77,6 +81,63 @@ function buildXRDTitleFromFileName(fileName: string) {
   }
 
   return /xrd|x-ray diffraction/i.test(baseName) ? baseName : `${baseName}-XRD`;
+}
+
+function inferStructuredBlockPurpose(params: {
+  fileName: string;
+  xLabel: string;
+  yLabel: string;
+}): StructuredBlockPurpose {
+  const detectionText = `${params.fileName} ${params.xLabel} ${params.yLabel}`.toLowerCase();
+
+  if (
+    detectionText.includes('xrd') ||
+    detectionText.includes('x-ray diffraction') ||
+    detectionText.includes('2theta') ||
+    detectionText.includes('2θ')
+  ) {
+    return 'xrd';
+  }
+
+  if (detectionText.includes('eqe')) {
+    return 'eqe';
+  }
+
+  if (detectionText.includes('responsivity')) {
+    return 'responsivity';
+  }
+
+  if (
+    detectionText.includes('i-v') ||
+    detectionText.includes(' i v ') ||
+    detectionText.includes(' iv ') ||
+    detectionText.includes('current-voltage') ||
+    detectionText.includes('voltage-current') ||
+    (detectionText.includes('voltage') && detectionText.includes('current'))
+  ) {
+    return 'iv';
+  }
+
+  if (
+    detectionText.includes('spectrum') ||
+    detectionText.includes('pl') ||
+    detectionText.includes('photoluminescence') ||
+    detectionText.includes('raman') ||
+    detectionText.includes('absorption') ||
+    detectionText.includes('transmission')
+  ) {
+    return 'spectrum';
+  }
+
+  return '';
+}
+
+function buildAxisUnitWarnings(xUnit: string, yUnit: string) {
+  if (xUnit.trim() && yUnit.trim()) {
+    return [];
+  }
+
+  return ['坐标单位未填写完整，后续分析比较可能受限'];
 }
 
 function splitLineByDelimiter(line: string, delimiter: ImportManualDelimiter) {
@@ -255,6 +316,7 @@ function buildXYTemplateBlockCandidate(params: {
   warnings: string[];
   filePath: string;
   fileName: string;
+  purposeType: StructuredBlockPurpose;
   blockTitle: string;
   xLabel: string;
   xUnit: string;
@@ -264,6 +326,7 @@ function buildXYTemplateBlockCandidate(params: {
 }): ImportPreviewXYTemplateBlockCandidate {
   const templateBlock: SaveExperimentXYBlockPayload = {
     templateType: XY_TEMPLATE_TYPE,
+    purposeType: params.purposeType,
     blockTitle: params.blockTitle.trim() || buildBlockTitleFromFileName(params.fileName),
     blockOrder: 1,
     xLabel: params.xLabel.trim() || 'X',
@@ -357,7 +420,10 @@ export function previewManualXYCandidate(params: {
     };
   }
 
-  if (params.payload.xColumnIndex === params.payload.yColumnIndex) {
+  if (
+    params.payload.xSourceMode === 'column' &&
+    params.payload.xColumnIndex === params.payload.yColumnIndex
+  ) {
     return {
       success: false,
       error: 'X 列和 Y 列不能相同'
@@ -373,27 +439,51 @@ export function previewManualXYCandidate(params: {
   }
 
   const points: Array<{ x: number; y: number }> = [];
+  const xSourceMode: ImportManualXAxisSourceMode = params.payload.xSourceMode || 'column';
+  const generatedXStart = Number(params.payload.generatedXStart ?? 0);
+  const generatedXStep = Number(params.payload.generatedXStep ?? 1);
+
+  if (xSourceMode === 'generated') {
+    if (!Number.isFinite(generatedXStart)) {
+      return {
+        success: false,
+        error: '生成 X 轴的起点不是有效数值'
+      };
+    }
+
+    if (!Number.isFinite(generatedXStep) || generatedXStep === 0) {
+      return {
+        success: false,
+        error: '生成 X 轴的步长必须是非零有效数值'
+      };
+    }
+  }
 
   for (let index = dataStartIndex; index < rows.length; index += 1) {
     const row = rows[index];
     const columns = splitLineByDelimiter(row.rawLine, params.payload.delimiter);
-    const xRaw = columns[params.payload.xColumnIndex];
     const yRaw = columns[params.payload.yColumnIndex];
 
-    if (typeof xRaw !== 'string' || typeof yRaw !== 'string') {
+    if (typeof yRaw !== 'string') {
       return {
         success: false,
-        error: `第 ${row.rowNumber} 行缺少所选列，请调整分隔符、起始行或列号`
+        error: `第 ${row.rowNumber} 行缺少所选 Y 列，请调整分隔符、起始行或列号`
       };
     }
 
-    const x = Number(xRaw);
     const y = Number(yRaw);
+    const x =
+      xSourceMode === 'generated'
+        ? generatedXStart + points.length * generatedXStep
+        : Number(columns[params.payload.xColumnIndex]);
 
     if (!Number.isFinite(x) || !Number.isFinite(y)) {
       return {
         success: false,
-        error: `第 ${row.rowNumber} 行的所选 X/Y 列不是有效数值`
+        error:
+          xSourceMode === 'generated'
+            ? `第 ${row.rowNumber} 行的所选 Y 列不是有效数值`
+            : `第 ${row.rowNumber} 行的所选 X/Y 列不是有效数值`
       };
     }
 
@@ -413,9 +503,16 @@ export function previewManualXYCandidate(params: {
       parserId: 'manual_xy_mapping',
       parserLabel: '手动 XY 映射',
       detectionConfidence: 'low',
-      warnings: ['该预览来自手动映射，请确认列选择和起始行'],
+      warnings: [
+        '该预览来自手动映射，请确认列选择和起始行',
+        ...(xSourceMode === 'generated'
+          ? ['X 轴由手动生成，请确认起点、步长和单位']
+          : []),
+        ...buildAxisUnitWarnings(params.payload.xUnit, params.payload.yUnit)
+      ],
       filePath: params.filePath,
       fileName: params.fileName,
+      purposeType: params.payload.purposeType || '',
       blockTitle: params.payload.blockTitle,
       xLabel: params.payload.xLabel,
       xUnit: params.payload.xUnit,
@@ -500,9 +597,10 @@ export const xrdTextParser: ImportFormatParser = {
       parserId: this.id,
       parserLabel: this.label,
       detectionConfidence: 'high',
-      warnings: parsed.warnings,
+      warnings: [...parsed.warnings, ...buildAxisUnitWarnings('degree', 'a.u.')],
       filePath: context.file.filePath,
       fileName: context.file.fileName,
+      purposeType: 'xrd',
       blockTitle: buildXRDTitleFromFileName(context.file.fileName),
       xLabel: '2θ',
       xUnit: 'degree',
@@ -516,7 +614,7 @@ export const xrdTextParser: ImportFormatParser = {
       parserId: this.id,
       parserLabel: this.label,
       detectionConfidence: candidate.detectionConfidence,
-      warnings: parsed.warnings,
+      warnings: candidate.warnings,
       candidates: [candidate]
     };
   }
@@ -543,13 +641,19 @@ export const genericTwoColumnXYParser: ImportFormatParser = {
 
     const xHeader = parsed.header?.[0] || { label: 'X', unit: '' };
     const yHeader = parsed.header?.[1] || { label: 'Y', unit: '' };
+    const purposeType = inferStructuredBlockPurpose({
+      fileName: context.file.fileName,
+      xLabel: xHeader.label,
+      yLabel: yHeader.label
+    });
     const candidate = buildXYTemplateBlockCandidate({
       parserId: this.id,
       parserLabel: this.label,
       detectionConfidence: parsed.header ? 'high' : 'medium',
-      warnings: parsed.warnings,
+      warnings: [...parsed.warnings, ...buildAxisUnitWarnings(xHeader.unit, yHeader.unit)],
       filePath: context.file.filePath,
       fileName: context.file.fileName,
+      purposeType,
       blockTitle: buildBlockTitleFromFileName(context.file.fileName),
       xLabel: xHeader.label,
       xUnit: xHeader.unit,
@@ -563,7 +667,7 @@ export const genericTwoColumnXYParser: ImportFormatParser = {
       parserId: this.id,
       parserLabel: this.label,
       detectionConfidence: candidate.detectionConfidence,
-      warnings: parsed.warnings,
+      warnings: candidate.warnings,
       candidates: [candidate]
     };
   }

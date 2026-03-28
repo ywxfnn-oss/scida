@@ -58,6 +58,9 @@ Current helper modules:
 - `import-preview-service.ts`
   - import file preview orchestration
   - parser selection and preview result generation
+- `ui-state-settings.ts`
+  - lightweight persistence of global shell UI state
+  - lightweight persistence of analysis workspace chart configuration
 - `managed-file-conflicts.ts`
   - collision checks for managed-file save/update paths
 - `template-block-file-helpers.ts`
@@ -84,6 +87,7 @@ Current additive safety-related APIs include:
 - duplicate check before save/update warning
 - file integrity scan report
 - structured-block import preview and manual remap preview
+- analysis UI state load/save for chart-configuration persistence
 
 ## Shared IPC Contract
 
@@ -111,6 +115,8 @@ Current renderer responsibilities:
 - surface user-visible success and error states
 - apply Step 1 `testProject`-driven default template guidance in Step 2 for recommended conditions, metrics, and structured data starting points
 - keep create Step 2 and detail-edit aligned around the same secondary-item editing model
+- host the read-only `数据分析` workspace for scalar and structured comparison charts
+- keep analysis interactions chart-config-only, without modifying experiment source records
 
 Current renderer helper responsibilities:
 
@@ -127,6 +133,21 @@ Current user-facing safety features:
 Current concentration risk:
 
 - `src/renderer.ts` still owns most orchestration, event binding, and DOM/state collection
+
+## Product Boundary Notes
+
+Current user-facing areas should be treated as separate responsibilities:
+
+- `数据`
+  - source-of-truth workflow for record creation, edit, delete, and managed-file lifecycle
+- `数据分析`
+  - read-only comparison layer for existing records
+  - persists lightweight UI/chart config only
+  - does not own source data and does not replace the database workflow
+- `导出`
+  - still follows the existing export model from record data and selected analysis-visible series where applicable
+
+When extending analysis behavior, keep database mutation logic, managed-file naming, and export-system semantics unchanged unless the change explicitly targets those areas.
 
 ## Database and Runtime DB Layer
 

@@ -1,5 +1,6 @@
 import './index.css';
 import type {
+  AnalysisStep1FieldKey,
   AppSettings,
   DictionaryItemsByType,
   DictionaryType,
@@ -7,12 +8,16 @@ import type {
   ExperimentEditHistoryEntry,
   ExperimentDetail,
   ExperimentGroup,
+  ExperimentListItem,
   ImportManualDelimiter,
+  ImportManualXAxisSourceMode,
   ImportPreviewFileResult,
   ExperimentListSortOrder,
   FileIntegrityReport,
   GroupByType,
   OperationLogFilter,
+  PersistedAnalysisUIState,
+  PersistedAnalysisUIStateChartConfig,
   PreviewManualImportXYResult,
   RecentOperationLogEntry,
   SaveExperimentPayload,
@@ -66,6 +71,7 @@ let appSettings: AppSettings = {
 type ViewType =
   | 'login'
   | 'home'
+  | 'analysis'
   | 'add-step1'
   | 'add-step2'
   | 'save-success'
@@ -149,8 +155,11 @@ type ImportReviewManualState = {
   }>;
   maxColumnCount: number;
   dataStartRow: number;
+  xSourceMode: ImportManualXAxisSourceMode;
   xColumnIndex: number;
   yColumnIndex: number;
+  generatedXStart: number;
+  generatedXStep: number;
   previewLoading: boolean;
   previewError: string;
 };
@@ -177,8 +186,175 @@ type DuplicateWarningState =
 
 type SettingsSubView = 'general' | 'dictionary';
 
+type AnalysisChartType = 'scalar' | 'structured';
+type AnalysisScalarAxisMode = 'numeric' | 'categorical';
+
+type AnalysisRecordCatalogEntry = {
+  listItem: ExperimentListItem;
+  detail: ExperimentDetail;
+};
+
+type AnalysisScalarPoint = {
+  recordId: number;
+  recordDisplayName: string;
+  xNumeric: number;
+  xLabel: string;
+  xRaw: string;
+  yValue: number;
+};
+
+type AnalysisScalarSeries = {
+  id: string;
+  name: string;
+  color: string;
+  hidden: boolean;
+  recordIds: number[];
+  xSourceLabel: string;
+  xSourceValue: string;
+  xMode: AnalysisScalarAxisMode;
+  xUnit: string;
+  yItemName: string;
+  yUnit: string;
+  points: AnalysisScalarPoint[];
+  skippedRecordIds: number[];
+};
+
+type AnalysisStructuredSeries = {
+  id: string;
+  name: string;
+  color: string;
+  hidden: boolean;
+  sourceBlockDisplayName: string;
+  experimentId: number;
+  recordDisplayName: string;
+  blockId: number;
+  blockTitle: string;
+  purposeType: StructuredBlockPurpose;
+  templateType: TemplateBlockType;
+  xLabel: string;
+  xUnit: string;
+  yLabel: string;
+  yUnit: string;
+  note: string;
+  points: Array<{ x: number; y: number }>;
+};
+
+type AnalysisViewport = {
+  xMin: number;
+  xMax: number;
+  yMin: number;
+  yMax: number;
+};
+
+type AnalysisChartCard = {
+  id: string;
+  chartType: AnalysisChartType;
+  title: string;
+  scalarSeries: AnalysisScalarSeries[];
+  structuredSeries: AnalysisStructuredSeries[];
+  viewport: AnalysisViewport | null;
+  selectionNotice: string;
+  statusMessages: string[];
+};
+
+type AnalysisInspectorState =
+  | {
+      kind: 'scalar-point';
+      chartId: string;
+      chartTitle: string;
+      seriesName: string;
+      xLabel: string;
+      xValue: string;
+      xUnit: string;
+      yLabel: string;
+      yValue: string;
+      yUnit: string;
+      recordId: number;
+      recordDisplayName: string;
+      metricName: string;
+    }
+  | {
+      kind: 'structured-series';
+      chartId: string;
+      chartTitle: string;
+      seriesName: string;
+      purposeType: StructuredBlockPurpose;
+      pointCount: number;
+      xLabel: string;
+      xUnit: string;
+      yLabel: string;
+      yUnit: string;
+      note: string;
+      recordId: number;
+      recordDisplayName: string;
+      blockTitle: string;
+      blockId: number;
+    };
+
+type AnalysisComposerState =
+  | {
+      chartId: string;
+      chartType: 'scalar';
+      searchQuery: string;
+      appliedSearchQuery: string;
+      resultScrollTop: number;
+      selectedRecordIds: number[];
+      step1FieldKey: AnalysisStep1FieldKey;
+      yItemName: string;
+      pending: boolean;
+      error: string;
+    }
+  | {
+      chartId: string;
+      chartType: 'structured';
+      searchQuery: string;
+      appliedSearchQuery: string;
+      resultScrollTop: number;
+      selectedRecordIds: number[];
+      selectedBlockName: string;
+      pending: boolean;
+      error: string;
+    };
+
+type AppSidebarItem = {
+  id?: string;
+  label: string;
+  icon: string;
+  active?: boolean;
+};
+
+type AnalysisChartDragState = {
+  chartId: string;
+  startClientX: number;
+  startClientY: number;
+  originViewport: AnalysisViewport;
+  plotWidth: number;
+  plotHeight: number;
+};
+
 const DICTIONARY_TYPES: DictionaryType[] = ['testProject', 'tester', 'instrument'];
 const STEP1_SUGGESTION_LIMIT = 8;
+const ANALYSIS_CHART_COLORS = [
+  '#1d4ed8',
+  '#b91c1c',
+  '#047857',
+  '#a16207',
+  '#7c3aed',
+  '#0f766e',
+  '#c2410c',
+  '#be185d'
+];
+const ANALYSIS_STEP1_FIELD_OPTIONS: Array<{
+  key: AnalysisStep1FieldKey;
+  label: string;
+}> = [
+  { key: 'testProject', label: '测试项目' },
+  { key: 'sampleCode', label: '样品编号' },
+  { key: 'tester', label: '测试人' },
+  { key: 'instrument', label: '测试仪器' },
+  { key: 'testTime', label: '测试时间' },
+  { key: 'sampleOwner', label: '样品所属人员' }
+];
 const CONDITION_NAME_KEYWORDS = [
   '温度',
   '偏压',
@@ -299,6 +475,88 @@ function inferScalarItemRole(itemName: string): ScalarItemRole {
   return 'metric';
 }
 
+function isScalarValueLikelyNumeric(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return false;
+  }
+
+  return Number.isFinite(Number(trimmed));
+}
+
+function buildAnalysisPreparationWarnings(
+  rows: Array<{
+    itemName: string;
+    itemValue: string;
+    itemUnit: string;
+  }>,
+  templateBlocks: SaveExperimentTemplateBlockPayload[]
+) {
+  const warnings = new Set<string>();
+  const unitsByItem = new Map<string, Set<string>>();
+
+  rows
+    .filter((row) => row.itemName.trim() && row.itemValue.trim())
+    .forEach((row) => {
+      const itemName = row.itemName.trim();
+      const itemUnit = row.itemUnit.trim();
+
+      if (isScalarValueLikelyNumeric(row.itemValue) && !itemUnit) {
+        warnings.add(`标量数据“${itemName}”为数值，但未填写单位；后续分析比较可能受限。`);
+      }
+
+      if (!isScalarValueLikelyNumeric(row.itemValue) && itemUnit) {
+        warnings.add(`标量数据“${itemName}”更像文本值，但填写了单位；后续分析会将其视为不可绘制文本。`);
+      }
+
+      if (!itemUnit) {
+        return;
+      }
+
+      const existingUnits = unitsByItem.get(itemName) || new Set<string>();
+      existingUnits.add(itemUnit);
+      unitsByItem.set(itemName, existingUnits);
+    });
+
+  unitsByItem.forEach((units, itemName) => {
+    if (units.size > 1) {
+      warnings.add(
+        `标量数据“${itemName}”在当前记录内存在多个单位（${Array.from(units).join(' / ')}）；后续分析需谨慎。`
+      );
+    }
+  });
+
+  templateBlocks.forEach((block) => {
+    const purposeType = block.purposeType || '';
+    if (!purposeType) {
+      return;
+    }
+
+    const primaryUnit =
+      block.templateType === XY_TEMPLATE_TYPE ? block.xUnit.trim() : block.spectrumAxisUnit.trim();
+    const secondaryUnit =
+      block.templateType === XY_TEMPLATE_TYPE ? block.yUnit.trim() : block.signalUnit.trim();
+
+    if (!primaryUnit || !secondaryUnit) {
+      warnings.add(
+        `结构化数据块“${block.blockTitle}”已指定数据用途，但坐标单位不完整；后续分析比较可能受限。`
+      );
+    }
+  });
+
+  return Array.from(warnings);
+}
+
+function confirmAnalysisPreparationWarnings(warnings: string[]) {
+  if (!warnings.length) {
+    return true;
+  }
+
+  return window.confirm(
+    `检测到以下分析准备提醒：\n\n${warnings.join('\n')}\n\n是否继续保存？`
+  );
+}
+
 function buildEmptyDataItem(role: ScalarItemRole = 'metric'): DataItem {
   return {
     id: generateId(),
@@ -372,6 +630,29 @@ let operationLogFilter: OperationLogFilter = 'all';
 let recentOperationLogs: RecentOperationLogEntry[] | null = null;
 let duplicateWarningState: DuplicateWarningState | null = null;
 let duplicateWarningSubmitting = false;
+let analysisLoading = false;
+let analysisLoadError = '';
+let analysisRecords: AnalysisRecordCatalogEntry[] = [];
+let analysisCharts: AnalysisChartCard[] = [];
+let analysisInspector: AnalysisInspectorState | null = null;
+let analysisComposer: AnalysisComposerState | null = null;
+let analysisExportMenuChartId: string | null = null;
+let analysisChartDragState: AnalysisChartDragState | null = null;
+let analysisInspectorCollapsed = false;
+let analysisExpandedChartId: string | null = null;
+let analysisSeriesRenameState: {
+  chartId: string;
+  seriesId: string;
+  value: string;
+} | null = null;
+let sidebarCollapsed = false;
+let persistedAnalysisUiStateLoaded = false;
+let persistedAnalysisUiStateLoadPromise: Promise<void> | null = null;
+let persistedAnalysisUiSaveTimer: number | null = null;
+let lastPersistedAnalysisUiStateSerialized = '';
+let pendingPersistedAnalysisUiStateSerialized: string | null = null;
+let persistedAnalysisChartConfigs: PersistedAnalysisUIStateChartConfig[] = [];
+let analysisChartsRestoredFromPersistence = false;
 
 let step1FormData: Step1FormData = {
   testProject: '',
@@ -397,6 +678,125 @@ async function ensureAppSettingsLoaded() {
   if (!appSettings.storageRoot) {
     appSettings = await window.electronAPI.getAppSettings();
   }
+}
+
+function buildPersistedAnalysisUIStateSnapshot(): PersistedAnalysisUIState {
+  return {
+    sidebarCollapsed,
+    analysisDetailCollapsed: analysisInspectorCollapsed,
+    analysisCharts: analysisCharts.map((chart) => {
+      if (chart.chartType === 'scalar') {
+        return {
+          chartType: 'scalar',
+          semanticTitle: chart.title,
+          scalarSeries: chart.scalarSeries.map((series) => ({
+            xFieldKey: series.xSourceValue.replace('step1:', '') as AnalysisStep1FieldKey,
+            yMetricName: series.yItemName,
+            selectedRecordIds: [...series.recordIds],
+            hidden: series.hidden,
+            displayName: series.name,
+            color: series.color
+          }))
+        };
+      }
+
+      return {
+        chartType: 'structured',
+        semanticTitle: chart.title,
+        structuredSeries: chart.structuredSeries.map((series) => ({
+          blockDisplayName: series.sourceBlockDisplayName,
+          selectedRecordIds: [series.experimentId],
+          hidden: series.hidden,
+          displayName: series.name,
+          color: series.color
+        }))
+      };
+    })
+  };
+}
+
+async function persistAnalysisUIState(serialized: string) {
+  try {
+    const result = await window.electronAPI.savePersistedAnalysisUIState(
+      JSON.parse(serialized) as PersistedAnalysisUIState
+    );
+
+    if (!result.success) {
+      console.error(result.error || '保存分析界面状态失败');
+      return;
+    }
+
+    lastPersistedAnalysisUiStateSerialized = serialized;
+  } catch (error) {
+    console.error('persistAnalysisUIState failed:', error);
+  }
+}
+
+function schedulePersistedAnalysisUIStateSave() {
+  if (!persistedAnalysisUiStateLoaded) {
+    return;
+  }
+
+  const serialized = JSON.stringify(buildPersistedAnalysisUIStateSnapshot());
+
+  if (
+    serialized === lastPersistedAnalysisUiStateSerialized ||
+    serialized === pendingPersistedAnalysisUiStateSerialized
+  ) {
+    return;
+  }
+
+  pendingPersistedAnalysisUiStateSerialized = serialized;
+
+  if (persistedAnalysisUiSaveTimer) {
+    window.clearTimeout(persistedAnalysisUiSaveTimer);
+  }
+
+  persistedAnalysisUiSaveTimer = window.setTimeout(() => {
+    const nextSerialized = pendingPersistedAnalysisUiStateSerialized;
+    pendingPersistedAnalysisUiStateSerialized = null;
+    persistedAnalysisUiSaveTimer = null;
+
+    if (!nextSerialized) {
+      return;
+    }
+
+    void persistAnalysisUIState(nextSerialized);
+  }, 180);
+}
+
+async function ensurePersistedAnalysisUIStateLoaded() {
+  if (persistedAnalysisUiStateLoaded) {
+    return;
+  }
+
+  if (!persistedAnalysisUiStateLoadPromise) {
+    persistedAnalysisUiStateLoadPromise = (async () => {
+      let loadedState: PersistedAnalysisUIState = {
+        sidebarCollapsed: false,
+        analysisDetailCollapsed: false,
+        analysisCharts: []
+      };
+
+      try {
+        const state = await window.electronAPI.getPersistedAnalysisUIState();
+        loadedState = state;
+        sidebarCollapsed = state.sidebarCollapsed;
+        analysisInspectorCollapsed = state.analysisDetailCollapsed;
+        persistedAnalysisChartConfigs = Array.isArray(state.analysisCharts)
+          ? state.analysisCharts
+          : [];
+      } catch (error) {
+        console.error('load persisted analysis ui state failed:', error);
+        persistedAnalysisChartConfigs = [];
+      } finally {
+        persistedAnalysisUiStateLoaded = true;
+        lastPersistedAnalysisUiStateSerialized = JSON.stringify(loadedState);
+      }
+    })();
+  }
+
+  await persistedAnalysisUiStateLoadPromise;
 }
 
 async function reloadFileIntegrityReport() {
@@ -551,6 +951,3183 @@ async function openExperimentDetail(experimentId: number) {
   resetTemplateBlockImportState('detail-edit');
   currentView = 'database-detail';
   void render();
+}
+
+function getAnalysisChartColor(index: number) {
+  return ANALYSIS_CHART_COLORS[index % ANALYSIS_CHART_COLORS.length];
+}
+
+function normalizeAnalysisUnit(unit: string) {
+  return unit.trim().toLowerCase();
+}
+
+function getAnalysisStep1FieldLabel(fieldKey: AnalysisStep1FieldKey) {
+  return (
+    ANALYSIS_STEP1_FIELD_OPTIONS.find((option) => option.key === fieldKey)?.label || fieldKey
+  );
+}
+
+function getAnalysisStructuredBlockDisplayName(block: ExperimentDetail['templateBlocks'][number]) {
+  const purposeLabel = getStructuredBlockPurposeLabel(block.purposeType || '');
+  const hasKnownPurpose = purposeLabel && purposeLabel !== '未指定';
+  const trimmedTitle = trimBlockTitle(block.blockTitle);
+  const hasSpecificTitle = trimmedTitle && trimmedTitle !== '结构化数据块';
+  const xLabel = block.templateType === XY_TEMPLATE_TYPE ? block.xLabel : block.spectrumAxisLabel;
+  const yLabel = block.templateType === XY_TEMPLATE_TYPE ? block.yLabel : block.signalLabel;
+  const axisSummary = [yLabel.trim(), xLabel.trim()].filter(Boolean).join(' - ') || '结构化数据';
+
+  if (hasKnownPurpose && hasSpecificTitle) {
+    return trimmedTitle === purposeLabel ? trimmedTitle : `${trimmedTitle} · ${purposeLabel}`;
+  }
+
+  if (hasSpecificTitle) {
+    return trimmedTitle;
+  }
+
+  if (hasKnownPurpose) {
+    return purposeLabel;
+  }
+
+  return axisSummary;
+}
+
+function getAnalysisStructuredBlockNameOptions(recordIds: number[]) {
+  if (!recordIds.length) {
+    return [];
+  }
+
+  const nameSet = new Set<string>();
+  analysisRecords
+    .filter((entry) => recordIds.includes(entry.listItem.id))
+    .forEach((entry) => {
+      entry.detail.templateBlocks.forEach((block) => {
+        nameSet.add(getAnalysisStructuredBlockDisplayName(block));
+      });
+    });
+
+  return Array.from(nameSet).sort((left, right) => left.localeCompare(right, 'zh-CN'));
+}
+
+function getVisibleAnalysisScalarSeries(chart: AnalysisChartCard) {
+  return chart.scalarSeries.filter((series) => !series.hidden);
+}
+
+function getVisibleAnalysisStructuredSeries(chart: AnalysisChartCard) {
+  return chart.structuredSeries.filter((series) => !series.hidden);
+}
+
+function isAnalysisSeriesRenameActive(chartId: string, seriesId: string) {
+  return (
+    analysisSeriesRenameState?.chartId === chartId &&
+    analysisSeriesRenameState?.seriesId === seriesId
+  );
+}
+
+function renderAppSidebar(appName: string, items: AppSidebarItem[]) {
+  return `
+    <aside class="sidebar ${sidebarCollapsed ? 'collapsed' : ''}">
+      <button id="app-sidebar-toggle" class="sidebar-toggle-btn" type="button" aria-label="切换侧边栏">
+        ${sidebarCollapsed ? '»' : '«'}
+      </button>
+      <div class="sidebar-title">${sidebarCollapsed ? 'SD' : escapeHtml(appName)}</div>
+      <div class="sidebar-menu">
+        ${items
+          .map(
+            (item) => `
+              <div
+                ${item.id ? `id="${item.id}"` : ''}
+                class="menu-item ${item.active ? 'active' : ''}"
+                title="${escapeHtml(item.label)}"
+              >
+                <span class="menu-item-icon">${item.icon}</span>
+                <span class="menu-item-label">${escapeHtml(item.label)}</span>
+              </div>
+            `
+          )
+          .join('')}
+      </div>
+    </aside>
+  `;
+}
+
+function bindAppSidebarEvents() {
+  document.getElementById('app-sidebar-toggle')?.addEventListener('click', () => {
+    sidebarCollapsed = !sidebarCollapsed;
+    schedulePersistedAnalysisUIStateSave();
+    void render();
+  });
+}
+
+function buildAnalysisChartTitle(chartType: AnalysisChartType) {
+  return chartType === 'scalar' ? '标量分析' : '结构化分析';
+}
+
+function composeAnalysisChartTitle(chart: AnalysisChartCard) {
+  if (chart.chartType === 'scalar') {
+    const visibleScalarSeries = getVisibleAnalysisScalarSeries(chart);
+    const referenceSeries = visibleScalarSeries[0] || chart.scalarSeries[0];
+    const xLabel = referenceSeries?.xSourceLabel || '横轴字段';
+    const yLabels = Array.from(
+      new Set((visibleScalarSeries.length ? visibleScalarSeries : chart.scalarSeries).map((series) => series.yItemName))
+    );
+
+    if (!yLabels.length) {
+      return `数值指标 - ${xLabel}`;
+    }
+
+    return `${yLabels.join(' / ')} - ${xLabel}`;
+  }
+
+  const visibleStructuredSeries = getVisibleAnalysisStructuredSeries(chart);
+  const firstSeries = visibleStructuredSeries[0] || chart.structuredSeries[0];
+  if (!firstSeries) {
+    return '结构化数据比较';
+  }
+
+  const knownPurposeLabels = Array.from(
+    new Set(
+      (visibleStructuredSeries.length ? visibleStructuredSeries : chart.structuredSeries)
+        .map((series) => getStructuredBlockPurposeLabel(series.purposeType))
+        .filter((label) => label && label !== '未指定')
+    )
+  );
+
+  if (knownPurposeLabels.length === 1) {
+    return `${knownPurposeLabels[0]} 数据比较`;
+  }
+
+  return `${firstSeries.yLabel} - ${firstSeries.xLabel}`;
+}
+
+function buildAnalysisChart(chartType: AnalysisChartType): AnalysisChartCard {
+  return {
+    id: generateId(),
+    chartType,
+    title: buildAnalysisChartTitle(chartType),
+    scalarSeries: [],
+    structuredSeries: [],
+    viewport: null,
+    selectionNotice: '',
+    statusMessages: []
+  };
+}
+
+function getAnalysisRecordEntry(experimentId: number) {
+  return analysisRecords.find((entry) => entry.listItem.id === experimentId) || null;
+}
+
+function getAnalysisScalarMetricOptions(recordIds: number[]) {
+  if (!recordIds.length) {
+    return [];
+  }
+
+  const nameSet = new Set<string>();
+
+  analysisRecords
+    .filter((entry) => recordIds.includes(entry.listItem.id))
+    .forEach((entry) => {
+      entry.detail.dataItems.forEach((item) => {
+        if (!item.itemName.trim()) return;
+        if (inferScalarItemRole(item.itemName) !== 'metric') return;
+        if (!isScalarValueLikelyNumeric(item.itemValue)) return;
+        nameSet.add(item.itemName.trim());
+      });
+    });
+
+  return Array.from(nameSet).sort((left, right) => left.localeCompare(right, 'zh-CN'));
+}
+
+function buildAnalysisStep1Value(
+  detail: ExperimentDetail,
+  fieldKey: AnalysisStep1FieldKey
+): {
+  mode: AnalysisScalarAxisMode;
+  xNumeric: number;
+  xLabel: string;
+  xRaw: string;
+  xUnit: string;
+} | null {
+  const rawValueMap: Record<AnalysisStep1FieldKey, string> = {
+    testProject: detail.testProject,
+    sampleCode: detail.sampleCode,
+    tester: detail.tester,
+    instrument: detail.instrument,
+    testTime: detail.testTime,
+    sampleOwner: detail.sampleOwner || '未填写'
+  };
+
+  const rawValue = rawValueMap[fieldKey] || '';
+
+  if (fieldKey === 'testTime') {
+    const timestamp = Date.parse(rawValue);
+
+    if (!Number.isFinite(timestamp)) {
+      return null;
+    }
+
+    return {
+      mode: 'numeric',
+      xNumeric: timestamp,
+      xLabel: rawValue,
+      xRaw: rawValue,
+      xUnit: 'datetime'
+    };
+  }
+
+  return {
+    mode: 'categorical',
+    xNumeric: 0,
+    xLabel: rawValue || '未填写',
+    xRaw: rawValue || '未填写',
+    xUnit: ''
+  };
+}
+
+function buildAnalysisScalarSeries(
+  chart: AnalysisChartCard,
+  composer: Extract<AnalysisComposerState, { chartType: 'scalar' }>
+): { series?: AnalysisScalarSeries; error?: string } {
+  if (!composer.selectedRecordIds.length) {
+    return { error: '请至少勾选一条来源记录' };
+  }
+
+  if (!composer.yItemName.trim()) {
+    return { error: '请选择 Y 轴结果指标' };
+  }
+
+  const points: AnalysisScalarPoint[] = [];
+  const skippedRecordIds: number[] = [];
+  const xUnits = new Set<string>();
+  const yUnits = new Set<string>();
+  let xMode: AnalysisScalarAxisMode = 'categorical';
+
+  composer.selectedRecordIds.forEach((recordId) => {
+    const entry = getAnalysisRecordEntry(recordId);
+    if (!entry?.detail) {
+      skippedRecordIds.push(recordId);
+      return;
+    }
+
+    let xValue:
+      | {
+          mode: AnalysisScalarAxisMode;
+          xNumeric: number;
+          xLabel: string;
+          xRaw: string;
+          xUnit: string;
+        }
+      | null = null;
+
+    xValue = buildAnalysisStep1Value(entry.detail, composer.step1FieldKey);
+
+    const yItem = entry.detail.dataItems.find(
+      (item) =>
+        item.itemName.trim() === composer.yItemName.trim() &&
+        inferScalarItemRole(item.itemName) === 'metric' &&
+        isScalarValueLikelyNumeric(item.itemValue)
+    );
+
+    if (!xValue || !yItem) {
+      skippedRecordIds.push(recordId);
+      return;
+    }
+
+    xMode = xValue.mode;
+    xUnits.add(xValue.xUnit);
+    yUnits.add(yItem.itemUnit || '');
+
+    points.push({
+      recordId,
+      recordDisplayName: entry.detail.displayName,
+      xNumeric: xValue.xNumeric,
+      xLabel: xValue.xLabel,
+      xRaw: xValue.xRaw,
+      yValue: Number(yItem.itemValue)
+    });
+  });
+
+  if (!points.length) {
+    return { error: '所选记录中没有可用于该标量图的有效数据点' };
+  }
+
+  if (xUnits.size > 1 || yUnits.size > 1) {
+    return { error: '所选记录中的轴单位不一致，当前标量图不会自动混合不兼容单位' };
+  }
+
+  const xUnit = Array.from(xUnits)[0] || '';
+  const yUnit = Array.from(yUnits)[0] || '';
+  const xSourceLabel = getAnalysisStep1FieldLabel(composer.step1FieldKey);
+  const xSourceValue = `step1:${composer.step1FieldKey}`;
+
+  if (chart.scalarSeries.length) {
+    const firstSeries = chart.scalarSeries[0];
+
+    if (firstSeries.xMode !== xMode || firstSeries.xSourceValue !== xSourceValue) {
+      return { error: '同一张标量图中的多条序列必须共享相同的 X 轴来源' };
+    }
+
+    if (
+      normalizeAnalysisUnit(firstSeries.xUnit) !== normalizeAnalysisUnit(xUnit) ||
+      normalizeAnalysisUnit(firstSeries.yUnit) !== normalizeAnalysisUnit(yUnit)
+    ) {
+      return { error: '同一张标量图中的多条序列不能静默混用不同单位' };
+    }
+  }
+
+  const sortedPoints = [...points].sort((left, right) => {
+    if (xMode === 'numeric') {
+      return left.xNumeric - right.xNumeric;
+    }
+
+    return left.xLabel.localeCompare(right.xLabel, 'zh-CN');
+  });
+
+  return {
+    series: {
+      id: generateId(),
+      name: composer.yItemName.trim(),
+      color: getAnalysisChartColor(chart.scalarSeries.length),
+      hidden: false,
+      recordIds: [...composer.selectedRecordIds],
+      xSourceLabel,
+      xSourceValue,
+      xMode,
+      xUnit,
+      yItemName: composer.yItemName.trim(),
+      yUnit,
+      points: sortedPoints,
+      skippedRecordIds
+    }
+  };
+}
+
+function buildAnalysisStructuredSeriesFromBlock(
+  chart: AnalysisChartCard,
+  recordId: number,
+  blockId: number
+): { series?: AnalysisStructuredSeries; error?: string } {
+  const entry = getAnalysisRecordEntry(recordId);
+  if (!entry?.detail) {
+    return { error: '未找到所选来源记录' };
+  }
+
+  const block = entry.detail.templateBlocks.find((item) => item.id === blockId);
+  if (!block) {
+    return { error: '未找到所选结构化数据块' };
+  }
+
+  const xLabel = block.templateType === XY_TEMPLATE_TYPE ? block.xLabel : block.spectrumAxisLabel;
+  const xUnit = block.templateType === XY_TEMPLATE_TYPE ? block.xUnit : block.spectrumAxisUnit;
+  const yLabel = block.templateType === XY_TEMPLATE_TYPE ? block.yLabel : block.signalLabel;
+  const yUnit = block.templateType === XY_TEMPLATE_TYPE ? block.yUnit : block.signalUnit;
+
+  return {
+    series: {
+      id: generateId(),
+      name: getAnalysisStructuredBlockDisplayName(block),
+      color: getAnalysisChartColor(chart.structuredSeries.length),
+      hidden: false,
+      sourceBlockDisplayName: getAnalysisStructuredBlockDisplayName(block),
+      experimentId: entry.detail.id,
+      recordDisplayName: entry.detail.displayName,
+      blockId: block.id,
+      blockTitle: block.blockTitle,
+      purposeType: block.purposeType || '',
+      templateType: block.templateType,
+      xLabel,
+      xUnit,
+      yLabel,
+      yUnit,
+      note: block.note,
+      points: [...block.points]
+    }
+  };
+}
+
+function buildAnalysisStructuredSeries(
+  chart: AnalysisChartCard,
+  composer: Extract<AnalysisComposerState, { chartType: 'structured' }>
+): { seriesList?: AnalysisStructuredSeries[]; error?: string; skippedRecordIds: number[] } {
+  if (!composer.selectedRecordIds.length || !composer.selectedBlockName.trim()) {
+    return { error: '请选择来源记录和结构化数据块', skippedRecordIds: [] };
+  }
+
+  const seriesList: AnalysisStructuredSeries[] = [];
+  const skippedRecordIds: number[] = [];
+
+  composer.selectedRecordIds.forEach((recordId) => {
+    const entry = getAnalysisRecordEntry(recordId);
+    const matchedBlock = entry?.detail.templateBlocks.find(
+      (block) => getAnalysisStructuredBlockDisplayName(block) === composer.selectedBlockName
+    );
+
+    if (!matchedBlock) {
+      skippedRecordIds.push(recordId);
+      return;
+    }
+
+    const buildResult = buildAnalysisStructuredSeriesFromBlock(
+      {
+        ...chart,
+        structuredSeries: [...chart.structuredSeries, ...seriesList]
+      },
+      recordId,
+      matchedBlock.id
+    );
+
+    if (buildResult.series) {
+      seriesList.push(buildResult.series);
+      return;
+    }
+
+    skippedRecordIds.push(recordId);
+  });
+
+  if (!seriesList.length) {
+    return { error: '所选记录中没有可用于该结构化图的有效数据块', skippedRecordIds };
+  }
+
+  return { seriesList, skippedRecordIds };
+}
+
+function buildAnalysisChartStatusMessages(chart: AnalysisChartCard) {
+  const messages: string[] = [];
+  const hiddenSeriesCount =
+    chart.chartType === 'scalar'
+      ? chart.scalarSeries.filter((series) => series.hidden).length
+      : chart.structuredSeries.filter((series) => series.hidden).length;
+
+  if (chart.chartType === 'scalar') {
+    chart.scalarSeries.forEach((series) => {
+      if (series.skippedRecordIds.length) {
+        messages.push(`序列“${series.name}”跳过了 ${series.skippedRecordIds.length} 条缺少有效数值的记录`);
+      }
+    });
+
+    if (hiddenSeriesCount === chart.scalarSeries.length && chart.scalarSeries.length) {
+      messages.push('当前图表的所有序列均已隐藏');
+    }
+
+    return messages;
+  }
+
+  if (chart.selectionNotice.trim()) {
+    messages.push(chart.selectionNotice.trim());
+  }
+
+  const purposeSet = new Set(
+    chart.structuredSeries.map((series) => series.purposeType).filter(Boolean)
+  );
+  const unknownPurposeCount = chart.structuredSeries.filter((series) => !series.purposeType).length;
+  const xMetaSet = new Set(
+    chart.structuredSeries.map((series) => `${series.xLabel}||${series.xUnit}`)
+  );
+  const yMetaSet = new Set(
+    chart.structuredSeries.map((series) => `${series.yLabel}||${series.yUnit}`)
+  );
+
+  if (unknownPurposeCount) {
+    messages.push('包含未指定数据用途的结构化块，请谨慎解释叠加结果');
+  }
+
+  if (purposeSet.size > 1) {
+    messages.push('当前结构化图混合了多种 purposeType，v1 仅提供并列可视化，不做自动语义对齐');
+  }
+
+  if (xMetaSet.size > 1 || yMetaSet.size > 1) {
+    messages.push('当前结构化图的坐标标签或单位不完全一致，图中仍按各序列原始元数据显示');
+  }
+
+  if (hiddenSeriesCount === chart.structuredSeries.length && chart.structuredSeries.length) {
+    messages.push('当前图表的所有序列均已隐藏');
+  }
+
+  return messages;
+}
+
+function restoreAnalysisChartFromPersistedConfig(
+  config: PersistedAnalysisUIStateChartConfig
+): AnalysisChartCard {
+  let chart = buildAnalysisChart(config.chartType);
+  const fallbackTitle = config.semanticTitle.trim() || chart.title;
+
+  if (config.chartType === 'scalar') {
+    config.scalarSeries.forEach((seriesConfig) => {
+      const buildResult = buildAnalysisScalarSeries(chart, {
+        chartId: chart.id,
+        chartType: 'scalar',
+        searchQuery: '',
+        appliedSearchQuery: '',
+        resultScrollTop: 0,
+        selectedRecordIds: [...seriesConfig.selectedRecordIds],
+        step1FieldKey: seriesConfig.xFieldKey,
+        yItemName: seriesConfig.yMetricName,
+        pending: false,
+        error: ''
+      });
+
+      if (!buildResult.series) {
+        return;
+      }
+
+      chart = {
+        ...chart,
+        scalarSeries: [
+          ...chart.scalarSeries,
+          {
+            ...buildResult.series,
+            hidden: Boolean(seriesConfig.hidden),
+            name: seriesConfig.displayName?.trim() || buildResult.series.name,
+            color: seriesConfig.color || buildResult.series.color
+          }
+        ],
+        selectionNotice: ''
+      };
+    });
+  } else {
+    const selectionNotices: string[] = [];
+
+    config.structuredSeries.forEach((seriesConfig) => {
+      const buildResult = buildAnalysisStructuredSeries(chart, {
+        chartId: chart.id,
+        chartType: 'structured',
+        searchQuery: '',
+        appliedSearchQuery: '',
+        resultScrollTop: 0,
+        selectedRecordIds: [...seriesConfig.selectedRecordIds],
+        selectedBlockName: seriesConfig.blockDisplayName,
+        pending: false,
+        error: ''
+      });
+
+      if (!buildResult.seriesList?.length) {
+        return;
+      }
+
+      if (buildResult.skippedRecordIds.length) {
+        selectionNotices.push(
+          `当前结构化图跳过了 ${buildResult.skippedRecordIds.length} 条缺少所选结构化数据块的记录`
+        );
+      }
+
+      chart = {
+        ...chart,
+        structuredSeries: [
+          ...chart.structuredSeries,
+          ...buildResult.seriesList.map((series) => ({
+            ...series,
+            hidden: Boolean(seriesConfig.hidden),
+            name: seriesConfig.displayName?.trim() || series.name,
+            color: seriesConfig.color || series.color
+          }))
+        ]
+      };
+    });
+
+    chart = {
+      ...chart,
+      selectionNotice: Array.from(new Set(selectionNotices)).join('；')
+    };
+  }
+
+  const nextChart = {
+    ...chart,
+    title:
+      chart.chartType === 'scalar'
+        ? chart.scalarSeries.length
+          ? composeAnalysisChartTitle(chart)
+          : fallbackTitle
+        : chart.structuredSeries.length
+          ? composeAnalysisChartTitle(chart)
+          : fallbackTitle,
+    statusMessages: [] as string[]
+  };
+
+  return {
+    ...nextChart,
+    statusMessages: buildAnalysisChartStatusMessages(nextChart)
+  };
+}
+
+function refreshAnalysisChartsFromCatalog() {
+  analysisCharts = analysisCharts.map((chart) => {
+    if (chart.chartType === 'scalar') {
+      const rebuiltSeries: AnalysisScalarSeries[] = [];
+
+      chart.scalarSeries.forEach((series) => {
+        const buildResult = buildAnalysisScalarSeries(
+          {
+            ...chart,
+            scalarSeries: rebuiltSeries
+          },
+          {
+            chartId: chart.id,
+            chartType: 'scalar',
+            searchQuery: '',
+            appliedSearchQuery: '',
+            resultScrollTop: 0,
+            selectedRecordIds: [...series.recordIds],
+            step1FieldKey: series.xSourceValue.startsWith('step1:')
+              ? (series.xSourceValue.replace('step1:', '') as AnalysisStep1FieldKey)
+              : 'testTime',
+            yItemName: series.yItemName,
+            pending: false,
+            error: ''
+          }
+        );
+
+        if (buildResult.series) {
+          rebuiltSeries.push({
+            ...buildResult.series,
+            hidden: series.hidden,
+            name: series.name,
+            color: series.color
+          });
+        }
+      });
+
+      const nextChart: AnalysisChartCard = {
+        ...chart,
+        scalarSeries: rebuiltSeries,
+        viewport: null
+      };
+
+      return {
+        ...nextChart,
+        title: composeAnalysisChartTitle(nextChart),
+        statusMessages: buildAnalysisChartStatusMessages(nextChart)
+      };
+    }
+
+    const rebuiltSeries: AnalysisStructuredSeries[] = [];
+
+    chart.structuredSeries.forEach((series) => {
+      const buildResult = buildAnalysisStructuredSeriesFromBlock(
+        {
+          ...chart,
+            structuredSeries: rebuiltSeries
+        },
+        series.experimentId,
+        series.blockId
+      );
+
+      if (buildResult.series) {
+        rebuiltSeries.push({
+          ...buildResult.series,
+          hidden: series.hidden,
+          name: series.name,
+          color: series.color,
+          sourceBlockDisplayName: series.sourceBlockDisplayName
+        });
+      }
+    });
+
+    const nextChart: AnalysisChartCard = {
+      ...chart,
+      structuredSeries: rebuiltSeries,
+      viewport: null
+    };
+
+    return {
+      ...nextChart,
+      title: composeAnalysisChartTitle(nextChart),
+      statusMessages: buildAnalysisChartStatusMessages(nextChart)
+    };
+  });
+}
+
+function restoreAnalysisChartsFromPersistence() {
+  analysisCharts = persistedAnalysisChartConfigs.map((config) =>
+    restoreAnalysisChartFromPersistedConfig(config)
+  );
+  analysisChartsRestoredFromPersistence = true;
+}
+
+function updateAnalysisChart(
+  chartId: string,
+  updater: (chart: AnalysisChartCard) => AnalysisChartCard
+) {
+  analysisCharts = analysisCharts.map((chart) => {
+    if (chart.id !== chartId) {
+      return chart;
+    }
+
+    const nextChart = updater(chart);
+    return {
+      ...nextChart,
+      title: composeAnalysisChartTitle(nextChart),
+      statusMessages: buildAnalysisChartStatusMessages(nextChart)
+    };
+  });
+}
+
+async function loadAnalysisWorkspaceData() {
+  const groups = await window.electronAPI.listExperiments({
+    groupBy: 'sampleCode',
+    sortOrder: 'newest'
+  });
+  const items = groups.flatMap((group) => group.items);
+  const details = await Promise.all(
+    items.map((item) => window.electronAPI.getExperimentDetail(item.id))
+  );
+
+  analysisRecords = items
+    .map((item, index) => ({
+      listItem: item,
+      detail: details[index]
+    }))
+    .filter(
+      (entry): entry is AnalysisRecordCatalogEntry =>
+        Boolean(entry.detail)
+    );
+  analysisLoadError = '';
+}
+
+async function openAnalysisWorkspace() {
+  currentView = 'analysis';
+  analysisChartDragState = null;
+  analysisExportMenuChartId = null;
+  analysisExpandedChartId = null;
+
+  await ensurePersistedAnalysisUIStateLoaded();
+
+  if (!analysisLoading) {
+    analysisLoading = true;
+    analysisLoadError = '';
+    requestRender(true);
+
+    try {
+      await loadAnalysisWorkspaceData();
+      if (!analysisChartsRestoredFromPersistence) {
+        restoreAnalysisChartsFromPersistence();
+      } else {
+        refreshAnalysisChartsFromCatalog();
+      }
+    } catch (error) {
+      analysisLoadError = getErrorMessage(error) || '加载分析工作区失败';
+    } finally {
+      analysisLoading = false;
+    }
+  }
+
+  void render();
+}
+
+function closeAnalysisComposer() {
+  analysisComposer = null;
+}
+
+function openAnalysisComposer(chartId: string, chartType: AnalysisChartType) {
+  analysisComposer =
+    chartType === 'scalar'
+      ? {
+          chartId,
+          chartType,
+          searchQuery: '',
+          appliedSearchQuery: '',
+          resultScrollTop: 0,
+          selectedRecordIds: [],
+          step1FieldKey: 'testTime',
+          yItemName: '',
+          pending: false,
+          error: ''
+        }
+      : {
+          chartId,
+          chartType,
+          searchQuery: '',
+          appliedSearchQuery: '',
+          resultScrollTop: 0,
+          selectedRecordIds: [],
+          selectedBlockName: '',
+          pending: false,
+          error: ''
+        };
+}
+
+function removeAnalysisChart(chartId: string) {
+  analysisCharts = analysisCharts.filter((chart) => chart.id !== chartId);
+
+  if (analysisInspector?.chartId === chartId) {
+    analysisInspector = null;
+  }
+
+  if (analysisComposer?.chartId === chartId) {
+    analysisComposer = null;
+  }
+
+  if (analysisExportMenuChartId === chartId) {
+    analysisExportMenuChartId = null;
+  }
+
+  if (analysisExpandedChartId === chartId) {
+    analysisExpandedChartId = null;
+  }
+
+  if (analysisSeriesRenameState?.chartId === chartId) {
+    analysisSeriesRenameState = null;
+  }
+
+  schedulePersistedAnalysisUIStateSave();
+}
+
+function toggleAnalysisSeriesVisibility(chartId: string, seriesId: string) {
+  const chart = getAnalysisChart(chartId);
+  if (!chart) {
+    return;
+  }
+
+  if (chart.chartType === 'scalar') {
+    updateAnalysisChart(chartId, (currentChart) => ({
+      ...currentChart,
+      scalarSeries: currentChart.scalarSeries.map((series) =>
+        series.id === seriesId ? { ...series, hidden: !series.hidden } : series
+      ),
+      viewport: null
+    }));
+  } else {
+    updateAnalysisChart(chartId, (currentChart) => ({
+      ...currentChart,
+      structuredSeries: currentChart.structuredSeries.map((series) =>
+        series.id === seriesId ? { ...series, hidden: !series.hidden } : series
+      ),
+      viewport: null
+    }));
+  }
+
+  if (analysisInspector?.chartId === chartId) {
+    analysisInspector = null;
+  }
+
+  if (
+    analysisSeriesRenameState?.chartId === chartId &&
+    analysisSeriesRenameState.seriesId === seriesId
+  ) {
+    analysisSeriesRenameState = null;
+  }
+
+  schedulePersistedAnalysisUIStateSave();
+  requestRender(true);
+}
+
+function removeAnalysisSeries(chartId: string, seriesId: string) {
+  const chart = getAnalysisChart(chartId);
+  if (!chart) {
+    return;
+  }
+
+  if (chart.chartType === 'scalar') {
+    const remainingSeries = chart.scalarSeries.filter((series) => series.id !== seriesId);
+
+    if (!remainingSeries.length) {
+      removeAnalysisChart(chartId);
+      requestRender(true);
+      return;
+    }
+
+    updateAnalysisChart(chartId, (currentChart) => ({
+      ...currentChart,
+      scalarSeries: currentChart.scalarSeries.filter((series) => series.id !== seriesId),
+      viewport: null
+    }));
+  } else {
+    const remainingSeries = chart.structuredSeries.filter((series) => series.id !== seriesId);
+
+    if (!remainingSeries.length) {
+      removeAnalysisChart(chartId);
+      requestRender(true);
+      return;
+    }
+
+    updateAnalysisChart(chartId, (currentChart) => ({
+      ...currentChart,
+      structuredSeries: currentChart.structuredSeries.filter((series) => series.id !== seriesId),
+      viewport: null,
+      selectionNotice: currentChart.selectionNotice
+    }));
+  }
+
+  if (analysisInspector?.chartId === chartId) {
+    analysisInspector = null;
+  }
+
+  schedulePersistedAnalysisUIStateSave();
+  requestRender(true);
+}
+
+function renameAnalysisSeries(chartId: string, seriesId: string, nextName: string) {
+  const trimmedName = nextName.trim();
+  if (!trimmedName) {
+    return;
+  }
+
+  const chart = getAnalysisChart(chartId);
+  if (!chart) {
+    return;
+  }
+
+  if (chart.chartType === 'scalar') {
+    updateAnalysisChart(chartId, (currentChart) => ({
+      ...currentChart,
+      scalarSeries: currentChart.scalarSeries.map((series) =>
+        series.id === seriesId ? { ...series, name: trimmedName } : series
+      )
+    }));
+  } else {
+    updateAnalysisChart(chartId, (currentChart) => ({
+      ...currentChart,
+      structuredSeries: currentChart.structuredSeries.map((series) =>
+        series.id === seriesId ? { ...series, name: trimmedName } : series
+      )
+    }));
+  }
+
+  analysisSeriesRenameState = null;
+  schedulePersistedAnalysisUIStateSave();
+  requestRender(true);
+}
+
+function updateAnalysisSeriesColor(chartId: string, seriesId: string, color: string) {
+  const normalizedColor = color.trim().toLowerCase();
+  if (!/^#[0-9a-f]{6}$/.test(normalizedColor)) {
+    return;
+  }
+
+  const chart = getAnalysisChart(chartId);
+  if (!chart) {
+    return;
+  }
+
+  if (chart.chartType === 'scalar') {
+    updateAnalysisChart(chartId, (currentChart) => ({
+      ...currentChart,
+      scalarSeries: currentChart.scalarSeries.map((series) =>
+        series.id === seriesId ? { ...series, color: normalizedColor } : series
+      )
+    }));
+  } else {
+    updateAnalysisChart(chartId, (currentChart) => ({
+      ...currentChart,
+      structuredSeries: currentChart.structuredSeries.map((series) =>
+        series.id === seriesId ? { ...series, color: normalizedColor } : series
+      )
+    }));
+  }
+
+  schedulePersistedAnalysisUIStateSave();
+  requestRender(true);
+}
+
+function moveAnalysisSeries(chartId: string, seriesId: string, direction: 'up' | 'down') {
+  const chart = getAnalysisChart(chartId);
+  if (!chart) {
+    return;
+  }
+
+  const moveSeriesInList = <T extends { id: string }>(items: T[]) => {
+    const index = items.findIndex((item) => item.id === seriesId);
+    if (index < 0) {
+      return items;
+    }
+
+    const targetIndex = direction === 'up' ? index - 1 : index + 1;
+    if (targetIndex < 0 || targetIndex >= items.length) {
+      return items;
+    }
+
+    const nextItems = [...items];
+    const [moved] = nextItems.splice(index, 1);
+    nextItems.splice(targetIndex, 0, moved);
+    return nextItems;
+  };
+
+  if (chart.chartType === 'scalar') {
+    updateAnalysisChart(chartId, (currentChart) => ({
+      ...currentChart,
+      scalarSeries: moveSeriesInList(currentChart.scalarSeries)
+    }));
+  } else {
+    updateAnalysisChart(chartId, (currentChart) => ({
+      ...currentChart,
+      structuredSeries: moveSeriesInList(currentChart.structuredSeries)
+    }));
+  }
+
+  schedulePersistedAnalysisUIStateSave();
+  requestRender(true);
+}
+
+async function addAnalysisChart(chartType: AnalysisChartType) {
+  if (!analysisRecords.length && !analysisLoading) {
+    analysisLoading = true;
+    analysisLoadError = '';
+    requestRender(true);
+
+    try {
+      await loadAnalysisWorkspaceData();
+    } catch (error) {
+      analysisLoadError = getErrorMessage(error) || '加载分析工作区失败';
+    } finally {
+      analysisLoading = false;
+    }
+  }
+
+  const chart = buildAnalysisChart(chartType);
+  analysisCharts = [...analysisCharts, chart];
+  openAnalysisComposer(chart.id, chartType);
+  schedulePersistedAnalysisUIStateSave();
+  requestRender(true);
+}
+
+function getAnalysisChart(chartId: string) {
+  return analysisCharts.find((chart) => chart.id === chartId) || null;
+}
+
+async function confirmAddAnalysisSeries() {
+  if (!analysisComposer) {
+    return;
+  }
+
+  const composer = analysisComposer;
+
+  const chart = getAnalysisChart(composer.chartId);
+  if (!chart) {
+    analysisComposer = null;
+    requestRender(true);
+    return;
+  }
+
+  analysisComposer = {
+    ...composer,
+    pending: true,
+    error: ''
+  };
+  requestRender(true);
+
+  if (composer.chartType === 'scalar') {
+    const buildResult = buildAnalysisScalarSeries(chart, composer);
+    if (buildResult.error || !buildResult.series) {
+      analysisComposer = {
+        ...composer,
+        pending: false,
+        error: buildResult.error || '添加序列失败'
+      };
+      requestRender(true);
+      return;
+    }
+
+    updateAnalysisChart(chart.id, (currentChart) => ({
+      ...currentChart,
+      scalarSeries: [...currentChart.scalarSeries, buildResult.series],
+      viewport: null,
+      selectionNotice: ''
+    }));
+  } else {
+    const buildResult = buildAnalysisStructuredSeries(chart, composer);
+    if (buildResult.error || !buildResult.seriesList?.length) {
+      analysisComposer = {
+        ...composer,
+        pending: false,
+        error: buildResult.error || '添加序列失败'
+      };
+      requestRender(true);
+      return;
+    }
+
+    updateAnalysisChart(chart.id, (currentChart) => ({
+      ...currentChart,
+      structuredSeries: [...currentChart.structuredSeries, ...buildResult.seriesList],
+      viewport: null,
+      selectionNotice: buildResult.skippedRecordIds.length
+        ? `当前结构化图跳过了 ${buildResult.skippedRecordIds.length} 条缺少所选结构化数据块的记录`
+        : ''
+    }));
+  }
+
+  analysisComposer = null;
+  schedulePersistedAnalysisUIStateSave();
+  requestRender(true);
+}
+
+function formatAnalysisNumber(value: number, forceScientific = false) {
+  if (!Number.isFinite(value)) {
+    return '-';
+  }
+
+  if (forceScientific || Math.abs(value) >= 1000 || (Math.abs(value) > 0 && Math.abs(value) < 0.01)) {
+    return value.toExponential(2);
+  }
+
+  return value.toFixed(3).replace(/\.?0+$/, '');
+}
+
+function formatAnalysisAxisValue(value: number, unit: string, span = 0, forceScientific = false) {
+  if (unit === 'datetime') {
+    const date = new Date(value);
+    if (span <= 60 * 60 * 1000) {
+      return date.toLocaleTimeString('zh-CN', { hour12: false });
+    }
+    if (span <= 3 * 24 * 60 * 60 * 1000) {
+      return date.toLocaleString('zh-CN', {
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false
+      });
+    }
+    if (span <= 120 * 24 * 60 * 60 * 1000) {
+      return date.toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' });
+    }
+    return date.toLocaleDateString('zh-CN', {
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit'
+    });
+  }
+
+  return formatAnalysisNumber(value, forceScientific);
+}
+
+function escapeCsvCell(value: string | number) {
+  const text = String(value ?? '');
+  if (!/[",\n]/.test(text)) {
+    return text;
+  }
+
+  return `"${text.replace(/"/g, '""')}"`;
+}
+
+function getAnalysisChartGeometry() {
+  return {
+    width: 760,
+    height: 340,
+    marginLeft: 82,
+    marginRight: 22,
+    marginTop: 22,
+    marginBottom: 64
+  };
+}
+
+function buildAnalysisBaseViewport(chart: AnalysisChartCard) {
+  if (chart.chartType === 'scalar') {
+    const visibleScalarSeries = getVisibleAnalysisScalarSeries(chart);
+    const sourceSeries = visibleScalarSeries.length ? visibleScalarSeries : [];
+    const categories: string[] = [];
+    const categoryIndexMap = new Map<string, number>();
+    const xValues: number[] = [];
+    const yValues: number[] = [];
+
+    sourceSeries.forEach((series) => {
+      series.points.forEach((point) => {
+        const xValue =
+          series.xMode === 'numeric'
+            ? point.xNumeric
+            : (() => {
+                if (!categoryIndexMap.has(point.xLabel)) {
+                  categoryIndexMap.set(point.xLabel, categories.length);
+                  categories.push(point.xLabel);
+                }
+                return categoryIndexMap.get(point.xLabel) || 0;
+              })();
+
+        xValues.push(xValue);
+        yValues.push(point.yValue);
+      });
+    });
+
+    if (!xValues.length || !yValues.length) {
+      return null;
+    }
+
+    const xMin = Math.min(...xValues);
+    const xMax = Math.max(...xValues);
+    const yMin = Math.min(...yValues);
+    const yMax = Math.max(...yValues);
+    const xPadding = sourceSeries[0]?.xMode === 'categorical' ? 0.5 : (xMax - xMin || 1) * 0.08;
+    const yPadding = (yMax - yMin || 1) * 0.12;
+
+    return {
+      viewport: {
+        xMin: xMin - xPadding,
+        xMax: xMax + xPadding,
+        yMin: yMin - yPadding,
+        yMax: yMax + yPadding
+      },
+      categories
+    };
+  }
+
+  const xValues: number[] = [];
+  const yValues: number[] = [];
+  const visibleStructuredSeries = getVisibleAnalysisStructuredSeries(chart);
+
+  visibleStructuredSeries.forEach((series) => {
+    series.points.forEach((point) => {
+      xValues.push(point.x);
+      yValues.push(point.y);
+    });
+  });
+
+  if (!xValues.length || !yValues.length) {
+    return null;
+  }
+
+  const xMin = Math.min(...xValues);
+  const xMax = Math.max(...xValues);
+  const yMin = Math.min(...yValues);
+  const yMax = Math.max(...yValues);
+  const xPadding = (xMax - xMin || 1) * 0.08;
+  const yPadding = (yMax - yMin || 1) * 0.12;
+
+  return {
+    viewport: {
+      xMin: xMin - xPadding,
+      xMax: xMax + xPadding,
+      yMin: yMin - yPadding,
+      yMax: yMax + yPadding
+    },
+    categories: [] as string[]
+  };
+}
+
+function getActiveAnalysisViewport(chart: AnalysisChartCard) {
+  const base = buildAnalysisBaseViewport(chart);
+
+  if (!base) {
+    return null;
+  }
+
+  return {
+    fullViewport: base.viewport,
+    viewport: chart.viewport || base.viewport,
+    categories: base.categories
+  };
+}
+
+function clampAnalysisViewport(chart: AnalysisChartCard, viewport: AnalysisViewport) {
+  const active = getActiveAnalysisViewport(chart);
+  if (!active) {
+    return viewport;
+  }
+
+  const full = active.fullViewport;
+  const xSpan = Math.min(viewport.xMax - viewport.xMin, full.xMax - full.xMin);
+  const ySpan = Math.min(viewport.yMax - viewport.yMin, full.yMax - full.yMin);
+
+  let xMin = viewport.xMin;
+  let xMax = viewport.xMax;
+  let yMin = viewport.yMin;
+  let yMax = viewport.yMax;
+
+  if (xMin < full.xMin) {
+    xMin = full.xMin;
+    xMax = xMin + xSpan;
+  }
+  if (xMax > full.xMax) {
+    xMax = full.xMax;
+    xMin = xMax - xSpan;
+  }
+  if (yMin < full.yMin) {
+    yMin = full.yMin;
+    yMax = yMin + ySpan;
+  }
+  if (yMax > full.yMax) {
+    yMax = full.yMax;
+    yMin = yMax - ySpan;
+  }
+
+  return { xMin, xMax, yMin, yMax };
+}
+
+function setAnalysisChartVisibleRatio(chartId: string, axis: 'x' | 'y', coveragePercent: number) {
+  updateAnalysisChart(chartId, (chart) => {
+    const active = getActiveAnalysisViewport(chart);
+    if (!active) {
+      return chart;
+    }
+
+    const clampedPercent = Math.max(5, Math.min(100, coveragePercent));
+    const { fullViewport, viewport } = active;
+    const centerX = (viewport.xMin + viewport.xMax) / 2;
+    const centerY = (viewport.yMin + viewport.yMax) / 2;
+    const fullXSpan = fullViewport.xMax - fullViewport.xMin || 1;
+    const fullYSpan = fullViewport.yMax - fullViewport.yMin || 1;
+    const nextXSpan = axis === 'x' ? fullXSpan * (clampedPercent / 100) : viewport.xMax - viewport.xMin;
+    const nextYSpan = axis === 'y' ? fullYSpan * (clampedPercent / 100) : viewport.yMax - viewport.yMin;
+
+    return {
+      ...chart,
+      viewport: clampAnalysisViewport(chart, {
+        xMin: centerX - nextXSpan / 2,
+        xMax: centerX + nextXSpan / 2,
+        yMin: centerY - nextYSpan / 2,
+        yMax: centerY + nextYSpan / 2
+      })
+    };
+  });
+  requestRender(true);
+}
+
+function scaleAnalysisValue(
+  value: number,
+  domainMin: number,
+  domainMax: number,
+  rangeMin: number,
+  rangeMax: number
+) {
+  if (domainMax === domainMin) {
+    return (rangeMin + rangeMax) / 2;
+  }
+
+  const ratio = (value - domainMin) / (domainMax - domainMin);
+  return rangeMin + ratio * (rangeMax - rangeMin);
+}
+
+function buildAnalysisTickValues(
+  min: number,
+  max: number,
+  pixelLength: number,
+  targetPixelGap = 96,
+  minTickCount = 2,
+  maxTickCount = 8
+) {
+  if (!Number.isFinite(min) || !Number.isFinite(max)) {
+    return [];
+  }
+
+  if (min === max) {
+    return [min];
+  }
+
+  const span = max - min;
+  const desiredTickCount = Math.min(
+    maxTickCount,
+    Math.max(minTickCount, Math.round(pixelLength / targetPixelGap) + 1)
+  );
+  const roughStep = span / Math.max(1, desiredTickCount - 1);
+  let step = roughStep;
+
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const magnitude = 10 ** Math.floor(Math.log10(Math.abs(step) || 1));
+    const normalized = step / magnitude;
+    const niceBase = normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 2.5 ? 2.5 : normalized <= 5 ? 5 : 10;
+    const niceStep = niceBase * magnitude;
+    const start = Math.ceil(min / niceStep) * niceStep;
+    const end = Math.floor(max / niceStep) * niceStep;
+    const values: number[] = [];
+
+    for (let value = start; value <= end + niceStep * 0.25; value += niceStep) {
+      values.push(Number(value.toFixed(12)));
+    }
+
+    if (values.length >= minTickCount && values.length <= maxTickCount) {
+      return values;
+    }
+
+    step = values.length < minTickCount ? niceStep / 2 : niceStep * 1.25;
+  }
+
+  return [min, max];
+}
+
+function buildAnalysisCategoryTicks(categories: string[], viewport: AnalysisViewport, maxTickCount: number) {
+  const visible = categories
+    .map((label, index) => ({ label, value: index }))
+    .filter((item) => item.value >= viewport.xMin && item.value <= viewport.xMax);
+
+  if (visible.length <= maxTickCount) {
+    return visible;
+  }
+
+  const step = Math.max(1, Math.ceil(visible.length / maxTickCount));
+  return visible.filter((item, index) => index % step === 0 || index === visible.length - 1);
+}
+
+function buildAnalysisChartSvg(chart: AnalysisChartCard, exportMode = false) {
+  const geometry = getAnalysisChartGeometry();
+  const plotWidth = geometry.width - geometry.marginLeft - geometry.marginRight;
+  const plotHeight = geometry.height - geometry.marginTop - geometry.marginBottom;
+  const active = getActiveAnalysisViewport(chart);
+
+  if (!active) {
+    return `
+      <svg viewBox="0 0 ${geometry.width} ${geometry.height}" class="analysis-chart-svg" ${
+        exportMode ? 'xmlns="http://www.w3.org/2000/svg"' : ''
+      }>
+        <rect x="0" y="0" width="${geometry.width}" height="${geometry.height}" fill="#ffffff" />
+        <text x="${geometry.width / 2}" y="${geometry.height / 2}" text-anchor="middle" fill="#64748b" font-size="14">
+          ${
+            chart.chartType === 'scalar'
+              ? chart.scalarSeries.length
+                ? '当前图表的序列已隐藏，恢复显示后即可查看'
+                : '当前图表尚未添加可显示的数据'
+              : chart.structuredSeries.length
+                ? '当前图表的序列已隐藏，恢复显示后即可查看'
+                : '当前图表尚未添加可显示的数据'
+          }
+        </text>
+      </svg>
+    `;
+  }
+
+  const { viewport, categories } = active;
+  const xAxisTitle =
+    chart.chartType === 'scalar'
+      ? chart.scalarSeries[0]
+        ? `${chart.scalarSeries[0].xSourceLabel}${chart.scalarSeries[0].xUnit ? ` (${chart.scalarSeries[0].xUnit})` : ''}`
+        : '横轴'
+      : chart.structuredSeries[0]
+        ? `${chart.structuredSeries[0].xLabel}${chart.structuredSeries[0].xUnit ? ` (${chart.structuredSeries[0].xUnit})` : ''}`
+        : '横轴';
+  const yAxisTitle =
+    chart.chartType === 'scalar'
+      ? chart.scalarSeries[0]
+        ? `${chart.scalarSeries[0].yItemName}${chart.scalarSeries[0].yUnit ? ` (${chart.scalarSeries[0].yUnit})` : ''}`
+        : '纵轴'
+      : chart.structuredSeries[0]
+        ? `${chart.structuredSeries[0].yLabel}${chart.structuredSeries[0].yUnit ? ` (${chart.structuredSeries[0].yUnit})` : ''}`
+        : '纵轴';
+  const xTickMaxCount = Math.max(2, Math.floor(plotWidth / 96));
+  const yTickTargetGap = 54;
+  const xAxisUnit =
+    chart.chartType === 'scalar' && chart.scalarSeries[0]?.xUnit
+      ? chart.scalarSeries[0].xUnit
+      : chart.chartType === 'structured' && chart.structuredSeries[0]?.xUnit
+        ? chart.structuredSeries[0].xUnit
+        : '';
+  const xTicks =
+    chart.chartType === 'scalar' && chart.scalarSeries[0]?.xMode === 'categorical'
+      ? buildAnalysisCategoryTicks(categories, viewport, xTickMaxCount)
+      : buildAnalysisTickValues(viewport.xMin, viewport.xMax, plotWidth, xAxisUnit === 'datetime' ? 120 : 96);
+  const yTicks = buildAnalysisTickValues(viewport.yMin, viewport.yMax, plotHeight, yTickTargetGap, 4, 6);
+  const useScientificYTicks = yTicks.some(
+    (tick) => Math.abs(tick) >= 1000 || (Math.abs(tick) > 0 && Math.abs(tick) < 0.01)
+  );
+  const shouldRotateXLabels = xTicks.length > 6 || xTicks.some((tick) => {
+    const label =
+      typeof tick === 'number'
+        ? formatAnalysisAxisValue(tick, xAxisUnit, viewport.xMax - viewport.xMin)
+        : tick.label;
+    return label.length > 10;
+  });
+
+  const xScale = (value: number) =>
+    scaleAnalysisValue(
+      value,
+      viewport.xMin,
+      viewport.xMax,
+      geometry.marginLeft,
+      geometry.marginLeft + plotWidth
+    );
+  const yScale = (value: number) =>
+    scaleAnalysisValue(
+      value,
+      viewport.yMin,
+      viewport.yMax,
+      geometry.marginTop + plotHeight,
+      geometry.marginTop
+    );
+
+  const seriesMarkup =
+    chart.chartType === 'scalar'
+      ? getVisibleAnalysisScalarSeries(chart)
+          .map((series) => {
+            const categoryIndexMap = new Map(categories.map((label, index) => [label, index]));
+            const plotPoints = series.points
+              .map((point) => ({
+                ...point,
+                plotX:
+                  series.xMode === 'numeric'
+                    ? point.xNumeric
+                    : categoryIndexMap.get(point.xLabel) || 0
+              }))
+              .filter(
+                (point) =>
+                  point.plotX >= viewport.xMin &&
+                  point.plotX <= viewport.xMax &&
+                  point.yValue >= viewport.yMin &&
+                  point.yValue <= viewport.yMax
+              );
+
+            const polylinePoints = plotPoints
+              .map((point) => `${xScale(point.plotX)},${yScale(point.yValue)}`)
+              .join(' ');
+
+            return `
+              ${plotPoints.length > 1
+                ? `<polyline points="${polylinePoints}" fill="none" stroke="${series.color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" />`
+                : ''}
+              ${plotPoints
+                .map(
+                  (point) => `
+                    <circle
+                      cx="${xScale(point.plotX)}"
+                      cy="${yScale(point.yValue)}"
+                      r="4.5"
+                      fill="${series.color}"
+                      stroke="#ffffff"
+                      stroke-width="1.5"
+                      ${exportMode ? '' : `data-analysis-scalar-point="${chart.id}::${series.id}::${point.recordId}"`}
+                    />
+                  `
+                )
+                .join('')}
+            `;
+          })
+          .join('')
+      : getVisibleAnalysisStructuredSeries(chart)
+          .map((series) => {
+            const plotPoints = series.points.filter(
+              (point) =>
+                point.x >= viewport.xMin &&
+                point.x <= viewport.xMax &&
+                point.y >= viewport.yMin &&
+                point.y <= viewport.yMax
+            );
+            const polylinePoints = plotPoints
+              .map((point) => `${xScale(point.x)},${yScale(point.y)}`)
+              .join(' ');
+
+            return `
+              <polyline
+                points="${polylinePoints}"
+                fill="none"
+                stroke="${series.color}"
+                stroke-width="2"
+                stroke-linejoin="round"
+                stroke-linecap="round"
+              />
+              ${exportMode
+                ? ''
+                : `
+                    <polyline
+                      points="${polylinePoints}"
+                      fill="none"
+                      stroke="transparent"
+                      stroke-width="14"
+                      stroke-linejoin="round"
+                      stroke-linecap="round"
+                      pointer-events="stroke"
+                      data-analysis-structured-series="${chart.id}::${series.id}"
+                    />
+                  `}
+              ${plotPoints
+                .map(
+                  (point) => `
+                    <circle
+                      cx="${xScale(point.x)}"
+                      cy="${yScale(point.y)}"
+                      r="2.2"
+                      fill="${series.color}"
+                      opacity="0.75"
+                    />
+                  `
+                )
+                .join('')}
+            `;
+          })
+          .join('');
+
+  return `
+    <svg
+      viewBox="0 0 ${geometry.width} ${geometry.height}"
+      class="analysis-chart-svg"
+      ${exportMode ? 'xmlns="http://www.w3.org/2000/svg"' : ''}
+    >
+      <rect x="0" y="0" width="${geometry.width}" height="${geometry.height}" fill="#ffffff" />
+      <rect
+        x="${geometry.marginLeft}"
+        y="${geometry.marginTop}"
+        width="${plotWidth}"
+        height="${plotHeight}"
+        fill="#fbfcfe"
+        stroke="#cfd8e3"
+      />
+      ${yTicks
+        .map((tick) => {
+          const y = yScale(tick);
+          return `
+            <line x1="${geometry.marginLeft}" y1="${y}" x2="${geometry.marginLeft + plotWidth}" y2="${y}" stroke="#d7dee8" stroke-dasharray="3 4" />
+            <line x1="${geometry.marginLeft - 6}" y1="${y}" x2="${geometry.marginLeft}" y2="${y}" stroke="#4b5c71" />
+            <text x="${geometry.marginLeft - 10}" y="${y + 4}" text-anchor="end" fill="#344256" font-size="11">
+              ${escapeHtml(formatAnalysisAxisValue(tick, '', 0, useScientificYTicks))}
+            </text>
+          `;
+        })
+        .join('')}
+      ${xTicks
+        .map((tick) => {
+          const tickValue = typeof tick === 'number' ? tick : tick.value;
+          const tickLabel =
+            typeof tick === 'number'
+              ? formatAnalysisAxisValue(tick, xAxisUnit, viewport.xMax - viewport.xMin)
+              : tick.label;
+          const x = xScale(tickValue);
+          const tickTextY = geometry.marginTop + plotHeight + (shouldRotateXLabels ? 28 : 20);
+
+          return `
+            <line x1="${x}" y1="${geometry.marginTop}" x2="${x}" y2="${geometry.marginTop + plotHeight}" stroke="#e0e6ee" />
+            <line x1="${x}" y1="${geometry.marginTop + plotHeight}" x2="${x}" y2="${geometry.marginTop + plotHeight + 6}" stroke="#4b5c71" />
+            <text
+              x="${x}"
+              y="${tickTextY}"
+              text-anchor="${shouldRotateXLabels ? 'end' : 'middle'}"
+              fill="#344256"
+              font-size="11"
+              ${shouldRotateXLabels ? `transform="rotate(-28 ${x} ${tickTextY})"` : ''}
+            >
+              ${escapeHtml(tickLabel)}
+            </text>
+          `;
+        })
+        .join('')}
+      <line
+        x1="${geometry.marginLeft}"
+        y1="${geometry.marginTop + plotHeight}"
+        x2="${geometry.marginLeft + plotWidth}"
+        y2="${geometry.marginTop + plotHeight}"
+        stroke="#3f5269"
+        stroke-width="1.25"
+      />
+      <line
+        x1="${geometry.marginLeft}"
+        y1="${geometry.marginTop}"
+        x2="${geometry.marginLeft}"
+        y2="${geometry.marginTop + plotHeight}"
+        stroke="#3f5269"
+        stroke-width="1.25"
+      />
+      ${seriesMarkup}
+      <text
+        x="${geometry.marginLeft + plotWidth / 2}"
+        y="${geometry.height - 8}"
+        text-anchor="middle"
+        fill="#233246"
+        font-size="12"
+        font-weight="600"
+      >
+        ${escapeHtml(xAxisTitle)}
+      </text>
+      <text
+        x="18"
+        y="${geometry.marginTop + plotHeight / 2}"
+        text-anchor="middle"
+        fill="#233246"
+        font-size="12"
+        font-weight="600"
+        transform="rotate(-90 18 ${geometry.marginTop + plotHeight / 2})"
+      >
+        ${escapeHtml(yAxisTitle)}
+      </text>
+    </svg>
+  `;
+}
+
+function buildAnalysisChartDataCsv(chart: AnalysisChartCard) {
+  if (chart.chartType === 'scalar') {
+    const rows = [
+      ['seriesName', 'recordId', 'recordDisplayName', 'xSource', 'xValue', 'xUnit', 'yName', 'yValue', 'yUnit']
+    ];
+
+    getVisibleAnalysisScalarSeries(chart).forEach((series) => {
+      series.points.forEach((point) => {
+        rows.push([
+          series.name,
+          String(point.recordId),
+          point.recordDisplayName,
+          series.xSourceLabel,
+          point.xRaw,
+          series.xUnit,
+          series.yItemName,
+          String(point.yValue),
+          series.yUnit
+        ]);
+      });
+    });
+
+    return rows.map((row) => row.map((cell) => escapeCsvCell(cell)).join(',')).join('\n');
+  }
+
+  const rows = [
+    ['seriesName', 'recordId', 'recordDisplayName', 'blockTitle', 'purposeType', 'xLabel', 'xUnit', 'yLabel', 'yUnit', 'x', 'y']
+  ];
+
+  getVisibleAnalysisStructuredSeries(chart).forEach((series) => {
+    series.points.forEach((point) => {
+      rows.push([
+        series.name,
+        String(series.experimentId),
+        series.recordDisplayName,
+        series.blockTitle,
+        series.purposeType || '',
+        series.xLabel,
+        series.xUnit,
+        series.yLabel,
+        series.yUnit,
+        String(point.x),
+        String(point.y)
+      ]);
+    });
+  });
+
+  return rows.map((row) => row.map((cell) => escapeCsvCell(cell)).join(',')).join('\n');
+}
+
+function buildAnalysisExportBaseName(chart: AnalysisChartCard) {
+  const safeTitle = chart.title.replace(/[\\/:*?"<>|]/g, '-');
+  return `${safeTitle || 'analysis-chart'}-${chart.id.slice(0, 8)}`;
+}
+
+async function exportAnalysisChartImage(chartId: string) {
+  const chart = getAnalysisChart(chartId);
+  if (!chart) {
+    return;
+  }
+
+  const result = await window.electronAPI.saveGeneratedFile({
+    title: '导出图像',
+    defaultFileName: `${buildAnalysisExportBaseName(chart)}.svg`,
+    filters: [{ name: 'SVG Image', extensions: ['svg'] }],
+    textContent: buildAnalysisChartSvg(chart, true)
+  });
+
+  if (!result.success && !result.canceled) {
+    alert(result.error || '导出图像失败');
+  }
+}
+
+async function exportAnalysisChartData(chartId: string) {
+  const chart = getAnalysisChart(chartId);
+  if (!chart) {
+    return;
+  }
+
+  const result = await window.electronAPI.saveGeneratedFile({
+    title: '导出当前图表数据',
+    defaultFileName: `${buildAnalysisExportBaseName(chart)}.csv`,
+    filters: [{ name: 'CSV', extensions: ['csv'] }],
+    textContent: buildAnalysisChartDataCsv(chart)
+  });
+
+  if (!result.success && !result.canceled) {
+    alert(result.error || '导出图表数据失败');
+  }
+}
+
+function zoomAnalysisChart(chartId: string, factor: number) {
+  updateAnalysisChart(chartId, (chart) => {
+    const active = getActiveAnalysisViewport(chart);
+    if (!active) {
+      return chart;
+    }
+
+    const { viewport } = active;
+    const centerX = (viewport.xMin + viewport.xMax) / 2;
+    const centerY = (viewport.yMin + viewport.yMax) / 2;
+    const nextWidth = Math.max((viewport.xMax - viewport.xMin) * factor, 0.0001);
+    const nextHeight = Math.max((viewport.yMax - viewport.yMin) * factor, 0.0001);
+
+    return {
+      ...chart,
+      viewport: clampAnalysisViewport(chart, {
+        xMin: centerX - nextWidth / 2,
+        xMax: centerX + nextWidth / 2,
+        yMin: centerY - nextHeight / 2,
+        yMax: centerY + nextHeight / 2
+      })
+    };
+  });
+  requestRender(true);
+}
+
+function zoomAnalysisChartAt(chartId: string, factor: number, xRatio: number, yRatio: number) {
+  updateAnalysisChart(chartId, (chart) => {
+    const active = getActiveAnalysisViewport(chart);
+    if (!active) {
+      return chart;
+    }
+
+    const { viewport } = active;
+    const width = viewport.xMax - viewport.xMin;
+    const height = viewport.yMax - viewport.yMin;
+    const anchorX = viewport.xMin + width * xRatio;
+    const anchorY = viewport.yMax - height * yRatio;
+    const nextWidth = Math.max(width * factor, 0.0001);
+    const nextHeight = Math.max(height * factor, 0.0001);
+
+    return {
+      ...chart,
+      viewport: clampAnalysisViewport(chart, {
+        xMin: anchorX - nextWidth * xRatio,
+        xMax: anchorX + nextWidth * (1 - xRatio),
+        yMin: anchorY - nextHeight * (1 - yRatio),
+        yMax: anchorY + nextHeight * yRatio
+      })
+    };
+  });
+  requestRender(true);
+}
+
+function panAnalysisChart(chartId: string, xRatio: number, yRatio: number) {
+  updateAnalysisChart(chartId, (chart) => {
+    const active = getActiveAnalysisViewport(chart);
+    if (!active) {
+      return chart;
+    }
+
+    const { viewport } = active;
+    const xShift = (viewport.xMax - viewport.xMin) * xRatio;
+    const yShift = (viewport.yMax - viewport.yMin) * yRatio;
+
+    return {
+      ...chart,
+      viewport: clampAnalysisViewport(chart, {
+        xMin: viewport.xMin + xShift,
+        xMax: viewport.xMax + xShift,
+        yMin: viewport.yMin + yShift,
+        yMax: viewport.yMax + yShift
+      })
+    };
+  });
+  requestRender(true);
+}
+
+function resetAnalysisChartViewport(chartId: string) {
+  updateAnalysisChart(chartId, (chart) => ({
+    ...chart,
+    viewport: null
+  }));
+  requestRender(true);
+}
+
+function renderAnalysisDataList(
+  items: Array<{ label: string; value: string }>,
+  emptyText = '暂无'
+) {
+  if (!items.length) {
+    return `<div class="empty-tip">${emptyText}</div>`;
+  }
+
+  return `
+    <div class="detail-list analysis-detail-list">
+      ${items.map((item) => renderDetailPair(item.label, item.value || '-')).join('')}
+    </div>
+  `;
+}
+
+function renderAnalysisSection(title: string, body: string) {
+  return `
+    <section class="analysis-detail-section">
+      <div class="analysis-detail-section-title">${escapeHtml(title)}</div>
+      ${body}
+    </section>
+  `;
+}
+
+function renderAnalysisScalarSummaryList(
+  items: ExperimentDetail['dataItems'],
+  activeName?: string
+) {
+  const metrics = items.filter((item) => inferScalarItemRole(item.itemName) === 'metric');
+
+  if (!metrics.length) {
+    return '<div class="empty-tip">暂无结果指标</div>';
+  }
+
+  return `
+    <div class="analysis-summary-list">
+      ${metrics
+        .map((item) => {
+          const isActive = item.itemName.trim() === (activeName || '').trim();
+          return `
+            <div class="analysis-summary-item ${isActive ? 'active' : ''}">
+              <div class="analysis-summary-key">${escapeHtml(item.itemName)}</div>
+              <div class="analysis-summary-value">
+                ${escapeHtml(item.itemValue)}${item.itemUnit ? ` ${escapeHtml(item.itemUnit)}` : ''}
+              </div>
+            </div>
+          `;
+        })
+        .join('')}
+    </div>
+  `;
+}
+
+function renderAnalysisBlockSummaryList(
+  blocks: ExperimentDetail['templateBlocks'],
+  activeBlockId?: number
+) {
+  if (!blocks.length) {
+    return '<div class="empty-tip">暂无结构化数据块</div>';
+  }
+
+  return `
+    <div class="analysis-summary-list">
+      ${blocks
+        .map((block) => {
+          const xLabel = block.templateType === XY_TEMPLATE_TYPE ? block.xLabel : block.spectrumAxisLabel;
+          const xUnit = block.templateType === XY_TEMPLATE_TYPE ? block.xUnit : block.spectrumAxisUnit;
+          const yLabel = block.templateType === XY_TEMPLATE_TYPE ? block.yLabel : block.signalLabel;
+          const yUnit = block.templateType === XY_TEMPLATE_TYPE ? block.yUnit : block.signalUnit;
+
+          return `
+            <div class="analysis-summary-item ${block.id === activeBlockId ? 'active' : ''}">
+              <div class="analysis-summary-key">${escapeHtml(getAnalysisStructuredBlockDisplayName(block))}</div>
+              <div class="analysis-summary-value">
+                ${escapeHtml(getStructuredBlockPurposeLabel(block.purposeType || ''))}
+                · ${escapeHtml(xLabel)}${xUnit ? ` (${escapeHtml(xUnit)})` : ''}
+                → ${escapeHtml(yLabel)}${yUnit ? ` (${escapeHtml(yUnit)})` : ''}
+                · ${block.points.length} 点
+              </div>
+            </div>
+          `;
+        })
+        .join('')}
+    </div>
+  `;
+}
+
+function renderAnalysisSourceInfo(pairs: Array<{ label: string; value: string }>) {
+  return renderAnalysisDataList(
+    pairs.filter((pair) => pair.value.trim()),
+    '当前数据未附带源文件信息'
+  );
+}
+
+function getAnalysisViewportCoverage(chart: AnalysisChartCard, axis: 'x' | 'y') {
+  const active = getActiveAnalysisViewport(chart);
+  if (!active) {
+    return 100;
+  }
+
+  const fullMin = axis === 'x' ? active.fullViewport.xMin : active.fullViewport.yMin;
+  const fullMax = axis === 'x' ? active.fullViewport.xMax : active.fullViewport.yMax;
+  const currentMin = axis === 'x' ? active.viewport.xMin : active.viewport.yMin;
+  const currentMax = axis === 'x' ? active.viewport.xMax : active.viewport.yMax;
+  const fullSpan = fullMax - fullMin || 1;
+  const currentSpan = currentMax - currentMin || 1;
+
+  return Math.max(5, Math.min(100, Math.round((currentSpan / fullSpan) * 100)));
+}
+
+function renderAnalysisChartCard(chart: AnalysisChartCard, expanded = false) {
+  const legendItems =
+    chart.chartType === 'scalar'
+      ? chart.scalarSeries
+      : chart.structuredSeries;
+  const primaryScalarSeries = getVisibleAnalysisScalarSeries(chart)[0] || chart.scalarSeries[0];
+  const primaryStructuredSeries =
+    getVisibleAnalysisStructuredSeries(chart)[0] || chart.structuredSeries[0];
+  const axisSummary =
+    chart.chartType === 'scalar'
+      ? primaryScalarSeries
+        ? `横轴：${escapeHtml(primaryScalarSeries.xSourceLabel)}${
+            primaryScalarSeries.xUnit ? ` (${escapeHtml(primaryScalarSeries.xUnit)})` : ''
+          } · 纵轴：数值结果${
+            primaryScalarSeries.yUnit ? ` (${escapeHtml(primaryScalarSeries.yUnit)})` : ''
+          }`
+        : '添加数据后显示横纵轴定义'
+      : primaryStructuredSeries
+        ? `横轴：${escapeHtml(primaryStructuredSeries.xLabel)}${
+            primaryStructuredSeries.xUnit ? ` (${escapeHtml(primaryStructuredSeries.xUnit)})` : ''
+          } · 纵轴：${escapeHtml(primaryStructuredSeries.yLabel)}${
+            primaryStructuredSeries.yUnit ? ` (${escapeHtml(primaryStructuredSeries.yUnit)})` : ''
+          }`
+        : '添加数据后显示结构化坐标元数据';
+
+  return `
+    <section class="analysis-chart-card ${expanded ? 'expanded' : ''}">
+      <div class="analysis-card-header">
+        <div class="analysis-card-heading">
+          <div class="analysis-card-eyebrow">${chart.chartType === 'scalar' ? '标量' : '结构化'}</div>
+          <div class="analysis-card-title">${escapeHtml(chart.title)}</div>
+          <div class="analysis-card-meta">${axisSummary}</div>
+        </div>
+        <div class="analysis-card-actions">
+          <button class="analysis-icon-btn" type="button" title="添加数据" data-analysis-add-series="${chart.id}">＋</button>
+          <button class="analysis-icon-btn" type="button" title="重置视图" data-analysis-reset="${chart.id}">↺</button>
+          <div class="analysis-export-menu-shell">
+            <button
+              class="analysis-icon-btn"
+              type="button"
+              title="导出"
+              data-analysis-export-toggle="${chart.id}"
+            >
+              ⤓
+            </button>
+            ${analysisExportMenuChartId === chart.id
+              ? `
+                  <div class="analysis-export-menu">
+                    <button class="analysis-export-menu-item" type="button" data-analysis-export-image="${chart.id}">导出图</button>
+                    <button class="analysis-export-menu-item" type="button" data-analysis-export-data="${chart.id}">导出数据</button>
+                  </div>
+                `
+              : ''}
+          </div>
+          <button
+            class="analysis-icon-btn danger"
+            type="button"
+            title="删除图表"
+            data-analysis-remove-chart="${chart.id}"
+          >
+            ×
+          </button>
+        </div>
+      </div>
+
+      ${chart.statusMessages.length
+        ? `
+            <div class="analysis-status-list">
+              ${chart.statusMessages
+                .map((message) => `<div class="analysis-status-item">${escapeHtml(message)}</div>`)
+                .join('')}
+            </div>
+          `
+        : ''}
+
+      <div class="analysis-plot-layout">
+        <div class="analysis-chart-shell" data-analysis-chart-shell="${chart.id}">
+          <button
+            class="analysis-icon-btn analysis-expand-btn"
+            type="button"
+            title="${expanded ? '退出单图展开' : '展开单图'}"
+            data-analysis-expand="${chart.id}"
+          >
+            ${expanded ? '⤡' : '⤢'}
+          </button>
+          ${buildAnalysisChartSvg(chart)}
+        </div>
+      </div>
+
+      <div class="analysis-legend-list">
+        ${legendItems.length
+          ? legendItems
+              .map(
+                (series, index) => `
+                  <div class="analysis-legend-item ${series.hidden ? 'hidden-series' : ''}">
+                    <div class="analysis-legend-primary-row">
+                      <button
+                        class="analysis-legend-main"
+                        type="button"
+                        title="${series.hidden ? '显示该序列' : '隐藏该序列'}"
+                        data-analysis-legend-toggle="${chart.id}::${series.id}"
+                      >
+                        <span class="analysis-legend-swatch" style="background:${series.color}"></span>
+                        <span>${escapeHtml(series.name)}</span>
+                      </button>
+                      <div class="analysis-legend-actions">
+                        <label class="analysis-legend-color-label" title="调整系列颜色">
+                          <input
+                            class="analysis-legend-color-input"
+                            type="color"
+                            value="${escapeHtml(series.color)}"
+                            data-analysis-series-color="${chart.id}::${series.id}"
+                          />
+                        </label>
+                        <button
+                          class="analysis-legend-icon-btn"
+                          type="button"
+                          title="上移"
+                          aria-label="上移"
+                          data-analysis-series-move-up="${chart.id}::${series.id}"
+                          ${index === 0 ? 'disabled' : ''}
+                        >
+                          ↑
+                        </button>
+                        <button
+                          class="analysis-legend-icon-btn"
+                          type="button"
+                          title="下移"
+                          aria-label="下移"
+                          data-analysis-series-move-down="${chart.id}::${series.id}"
+                          ${index === legendItems.length - 1 ? 'disabled' : ''}
+                        >
+                          ↓
+                        </button>
+                        <button
+                          class="analysis-legend-icon-btn"
+                          type="button"
+                          title="重命名"
+                          aria-label="重命名"
+                          data-analysis-series-rename-start="${chart.id}::${series.id}"
+                        >
+                          ✎
+                        </button>
+                        <button
+                          class="analysis-legend-remove"
+                          type="button"
+                          title="移除该序列"
+                          aria-label="移除该序列"
+                          data-analysis-series-remove="${chart.id}::${series.id}"
+                        >
+                          ×
+                        </button>
+                      </div>
+                    </div>
+                    ${isAnalysisSeriesRenameActive(chart.id, series.id)
+                      ? `
+                          <div class="analysis-legend-edit-row">
+                            <input
+                              class="form-input analysis-legend-edit-input"
+                              value="${escapeHtml(analysisSeriesRenameState?.value || series.name)}"
+                              data-analysis-series-rename-input="${chart.id}::${series.id}"
+                            />
+                            <button
+                              class="analysis-legend-save-btn"
+                              type="button"
+                              data-analysis-series-rename-save="${chart.id}::${series.id}"
+                            >
+                              保存
+                            </button>
+                            <button
+                              class="analysis-legend-cancel-btn"
+                              type="button"
+                              data-analysis-series-rename-cancel="${chart.id}::${series.id}"
+                            >
+                              取消
+                            </button>
+                          </div>
+                        `
+                      : ''}
+                  </div>
+                `
+              )
+              .join('')
+          : '<div class="empty-tip">当前图表尚未添加数据</div>'}
+      </div>
+    </section>
+  `;
+}
+
+function renderAnalysisExpandedOverlay() {
+  if (!analysisExpandedChartId) {
+    return '';
+  }
+
+  const chart = getAnalysisChart(analysisExpandedChartId);
+  if (!chart) {
+    return '';
+  }
+
+  return `
+    <div class="analysis-expanded-overlay">
+      <div class="analysis-expanded-stage">
+        ${renderAnalysisChartCard(chart, true)}
+      </div>
+    </div>
+  `;
+}
+
+function renderAnalysisInspector() {
+  if (!analysisInspector) {
+    return `
+      <div class="analysis-inspector-empty">
+        点击图中的标量点或结构化曲线后，这里会显示对应记录的详细信息。
+      </div>
+    `;
+  }
+
+  const entry = getAnalysisRecordEntry(analysisInspector.recordId);
+  if (!entry?.detail) {
+    return `
+      <div class="analysis-inspector-empty">
+        未找到当前选中记录的详细信息。
+      </div>
+    `;
+  }
+
+  const detail = entry.detail;
+  const inspector = analysisInspector;
+  const conditionItems = detail.dataItems
+    .filter((item) => inferScalarItemRole(item.itemName) === 'condition')
+    .map((item) => ({
+      label: item.itemName,
+      value: `${item.itemValue}${item.itemUnit ? ` ${item.itemUnit}` : ''}`
+    }));
+
+  const metadataSection = renderAnalysisDataList([
+    { label: '实验编号', value: String(detail.id) },
+    { label: '数据名称', value: detail.displayName },
+    { label: '创建时间', value: detail.createdAt },
+    { label: '更新时间', value: detail.updatedAt }
+  ]);
+
+  const step1Section = renderAnalysisDataList([
+    { label: '测试项目', value: detail.testProject },
+    { label: '样品编号', value: detail.sampleCode },
+    { label: '测试人', value: detail.tester },
+    { label: '测试仪器', value: detail.instrument },
+    { label: '测试时间', value: detail.testTime },
+    { label: '样品所属人员', value: detail.sampleOwner || '-' },
+    ...detail.customFields.map((field) => ({
+      label: field.fieldName,
+      value: field.fieldValue
+    }))
+  ]);
+
+  if (inspector.kind === 'scalar-point') {
+    const currentMetric = detail.dataItems.find(
+      (item) => item.itemName.trim() === inspector.metricName.trim()
+    );
+
+    return `
+      <div class="analysis-inspector-title">当前标量点</div>
+      ${renderAnalysisSection('记录概览', metadataSection)}
+      ${renderAnalysisSection('一级信息', step1Section)}
+      ${renderAnalysisSection('实验条件', renderAnalysisDataList(conditionItems, '暂无实验条件'))}
+      ${renderAnalysisSection(
+        '当前结果指标',
+        renderAnalysisDataList([
+          {
+            label: '图表',
+            value: inspector.chartTitle
+          },
+          {
+            label: '横轴字段',
+            value: `${inspector.xLabel}${inspector.xUnit ? ` (${inspector.xUnit})` : ''}`
+          },
+          {
+            label: '横轴取值',
+            value: inspector.xValue
+          },
+          {
+            label: currentMetric?.itemName || inspector.metricName,
+            value: `${currentMetric?.itemValue || inspector.yValue}${currentMetric?.itemUnit ? ` ${currentMetric.itemUnit}` : inspector.yUnit ? ` ${inspector.yUnit}` : ''}`
+          }
+        ])
+      )}
+      ${renderAnalysisSection(
+        '其他结果指标',
+        renderAnalysisScalarSummaryList(detail.dataItems, inspector.metricName)
+      )}
+      ${renderAnalysisSection(
+        '相关结构化数据块',
+        renderAnalysisBlockSummaryList(detail.templateBlocks)
+      )}
+      ${renderAnalysisSection(
+        '源文件信息',
+        renderAnalysisSourceInfo([
+          { label: '保存文件', value: currentMetric?.sourceFileName || '' },
+          { label: '保存路径', value: currentMetric?.sourceFilePath || '' },
+          { label: '原始文件', value: currentMetric?.originalFileName || '' },
+          { label: '原始路径', value: currentMetric?.originalFilePath || '' }
+        ])
+      )}
+      <div class="analysis-detail-footer">
+        <button class="secondary-btn" type="button" data-analysis-open-record="${inspector.recordId}">
+          打开原始记录
+        </button>
+      </div>
+    `;
+  }
+
+  const currentBlock = detail.templateBlocks.find((block) => block.id === inspector.blockId);
+  const xLabel = currentBlock
+    ? currentBlock.templateType === XY_TEMPLATE_TYPE
+      ? currentBlock.xLabel
+      : currentBlock.spectrumAxisLabel
+    : inspector.xLabel;
+  const xUnit = currentBlock
+    ? currentBlock.templateType === XY_TEMPLATE_TYPE
+      ? currentBlock.xUnit
+      : currentBlock.spectrumAxisUnit
+    : inspector.xUnit;
+  const yLabel = currentBlock
+    ? currentBlock.templateType === XY_TEMPLATE_TYPE
+      ? currentBlock.yLabel
+      : currentBlock.signalLabel
+    : inspector.yLabel;
+  const yUnit = currentBlock
+    ? currentBlock.templateType === XY_TEMPLATE_TYPE
+      ? currentBlock.yUnit
+      : currentBlock.signalUnit
+    : inspector.yUnit;
+
+  return `
+    <div class="analysis-inspector-title">当前结构化数据</div>
+    ${renderAnalysisSection('记录概览', metadataSection)}
+    ${renderAnalysisSection('一级信息', step1Section)}
+    ${renderAnalysisSection('实验条件', renderAnalysisDataList(conditionItems, '暂无实验条件'))}
+    ${renderAnalysisSection(
+      '当前结构化数据',
+      renderAnalysisDataList([
+        { label: '图表', value: inspector.chartTitle },
+        { label: '数据块', value: currentBlock?.blockTitle || inspector.blockTitle },
+        {
+          label: '数据用途',
+          value: getStructuredBlockPurposeLabel(currentBlock?.purposeType || inspector.purposeType)
+        },
+        { label: '横轴', value: `${xLabel}${xUnit ? ` (${xUnit})` : ''}` },
+        { label: '纵轴', value: `${yLabel}${yUnit ? ` (${yUnit})` : ''}` },
+        { label: '点数', value: String(currentBlock?.points.length || inspector.pointCount) },
+        { label: '备注', value: currentBlock?.note || inspector.note || '-' }
+      ])
+    )}
+    ${renderAnalysisSection(
+      '其他结构化数据块',
+      renderAnalysisBlockSummaryList(detail.templateBlocks, inspector.blockId)
+    )}
+    ${renderAnalysisSection(
+      '结果指标概览',
+      renderAnalysisScalarSummaryList(detail.dataItems)
+    )}
+    ${renderAnalysisSection(
+      '源文件信息',
+      renderAnalysisSourceInfo([
+        { label: '保存文件', value: currentBlock?.sourceFileName || '' },
+        { label: '保存路径', value: currentBlock?.sourceFilePath || '' },
+        { label: '原始文件', value: currentBlock?.originalFileName || '' },
+        { label: '原始路径', value: currentBlock?.originalFilePath || '' }
+      ])
+    )}
+    <div class="analysis-detail-footer">
+      <button class="secondary-btn" type="button" data-analysis-open-record="${inspector.recordId}">
+        打开原始记录
+      </button>
+    </div>
+  `;
+}
+
+function renderAnalysisComposerModal() {
+  if (!analysisComposer) {
+    return '';
+  }
+
+  const filteredRecords = analysisRecords.filter((entry) => {
+    if (!analysisComposer.appliedSearchQuery.trim()) {
+      return true;
+    }
+
+    const searchText = [
+      entry.listItem.displayName,
+      entry.listItem.sampleCode,
+      entry.listItem.testProject,
+      entry.listItem.tester,
+      entry.listItem.instrument
+    ]
+      .join(' ')
+      .toLowerCase();
+
+    return searchText.includes(analysisComposer.appliedSearchQuery.trim().toLowerCase());
+  });
+
+  if (analysisComposer.chartType === 'scalar') {
+    const composer = analysisComposer;
+    const scalarMetricOptions = getAnalysisScalarMetricOptions(composer.selectedRecordIds);
+    const scalarMetricPrompt = !composer.selectedRecordIds.length
+      ? '请先勾选来源记录'
+      : scalarMetricOptions.length
+        ? ''
+        : '当前所选记录没有可用的数值结果指标';
+    const canConfirm =
+      !composer.pending &&
+      composer.selectedRecordIds.length > 0 &&
+      scalarMetricOptions.length > 0 &&
+      Boolean(composer.yItemName.trim());
+
+    return `
+      <div class="analysis-modal-backdrop">
+        <div class="analysis-modal-card">
+          <div class="analysis-modal-title">添加标量数据</div>
+          <div class="search-row analysis-search-row">
+            <input
+              id="analysis-composer-search"
+              class="form-input"
+              placeholder="输入记录名称 / 样品编号 / 测试项目"
+              value="${escapeHtml(composer.searchQuery)}"
+            />
+            <button id="analysis-composer-search-btn" class="primary-btn search-btn" type="button">搜索</button>
+          </div>
+          <div class="analysis-modal-toolbar">
+            <button
+              id="analysis-composer-toggle-select-btn"
+              class="secondary-btn analysis-compact-toggle-btn"
+              type="button"
+              ${filteredRecords.length ? '' : 'disabled'}
+            >
+              ${
+                filteredRecords.length &&
+                filteredRecords.every((entry) => composer.selectedRecordIds.includes(entry.listItem.id))
+                  ? '清除当前结果'
+                  : '全选当前结果'
+              }
+            </button>
+          </div>
+          <div id="analysis-record-picker" class="analysis-record-picker">
+            ${filteredRecords
+              .map(
+                (entry) => `
+                  <label class="analysis-record-option">
+                    <input
+                      type="checkbox"
+                      data-analysis-composer-record-id="${entry.listItem.id}"
+                      ${composer.selectedRecordIds.includes(entry.listItem.id) ? 'checked' : ''}
+                    />
+                    <span>${escapeHtml(entry.listItem.displayName)}</span>
+                  </label>
+                `
+              )
+              .join('')}
+          </div>
+          <div class="template-block-grid">
+            <div class="form-group">
+              <label class="form-label">横轴字段</label>
+              <select id="analysis-composer-step1-field" class="form-input">
+                ${ANALYSIS_STEP1_FIELD_OPTIONS.map(
+                  (option) => `
+                    <option value="${option.key}" ${composer.step1FieldKey === option.key ? 'selected' : ''}>
+                      ${option.label}
+                    </option>
+                  `
+                ).join('')}
+              </select>
+            </div>
+            <div class="form-group">
+              <label class="form-label">纵轴结果指标</label>
+              <select id="analysis-composer-y-item" class="form-input" ${scalarMetricOptions.length ? '' : 'disabled'}>
+                <option value="">${scalarMetricOptions.length ? '请选择结果指标' : '暂无可用结果指标'}</option>
+                ${scalarMetricOptions
+                  .map(
+                    (name) => `
+                      <option value="${escapeHtml(name)}" ${composer.yItemName === name ? 'selected' : ''}>
+                        ${escapeHtml(name)}
+                      </option>
+                    `
+                  )
+                  .join('')}
+              </select>
+              ${scalarMetricPrompt ? `<div class="field-feedback-message">${escapeHtml(scalarMetricPrompt)}</div>` : ''}
+            </div>
+          </div>
+          ${composer.error ? `<div class="error-message">${escapeHtml(composer.error)}</div>` : ''}
+          <div class="form-action-row">
+            <button id="analysis-composer-cancel-btn" class="secondary-btn" type="button">取消</button>
+            <button id="analysis-composer-confirm-btn" class="primary-btn action-btn" type="button" ${canConfirm ? '' : 'disabled'}>
+              ${composer.pending ? '添加中...' : '添加序列'}
+            </button>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  const composer = analysisComposer;
+  const structuredBlockOptions = getAnalysisStructuredBlockNameOptions(composer.selectedRecordIds);
+  const structuredBlockPrompt = !composer.selectedRecordIds.length
+    ? '请先勾选来源记录'
+    : structuredBlockOptions.length
+      ? ''
+      : '当前所选记录没有可用的结构化数据块';
+  const canConfirm =
+    !composer.pending &&
+    composer.selectedRecordIds.length > 0 &&
+    structuredBlockOptions.length > 0 &&
+    Boolean(composer.selectedBlockName.trim());
+
+  return `
+    <div class="analysis-modal-backdrop">
+      <div class="analysis-modal-card">
+        <div class="analysis-modal-title">添加结构化数据</div>
+        <div class="search-row analysis-search-row">
+          <input
+            id="analysis-composer-search"
+            class="form-input"
+            placeholder="输入记录名称 / 样品编号 / 测试项目"
+            value="${escapeHtml(composer.searchQuery)}"
+          />
+          <button id="analysis-composer-search-btn" class="primary-btn search-btn" type="button">搜索</button>
+        </div>
+        <div class="analysis-modal-toolbar">
+          <button
+            id="analysis-composer-toggle-select-btn"
+            class="secondary-btn analysis-compact-toggle-btn"
+            type="button"
+            ${filteredRecords.length ? '' : 'disabled'}
+          >
+            ${
+              filteredRecords.length &&
+              filteredRecords.every((entry) => composer.selectedRecordIds.includes(entry.listItem.id))
+                ? '清除当前结果'
+                : '全选当前结果'
+            }
+          </button>
+        </div>
+        <div id="analysis-record-picker" class="analysis-record-picker">
+          ${filteredRecords
+            .map(
+              (entry) => `
+                <label class="analysis-record-option">
+                  <input
+                    type="checkbox"
+                    data-analysis-composer-structured-record-id="${entry.listItem.id}"
+                    ${composer.selectedRecordIds.includes(entry.listItem.id) ? 'checked' : ''}
+                  />
+                  <span>${escapeHtml(entry.listItem.displayName)}</span>
+                </label>
+              `
+            )
+            .join('')}
+        </div>
+        <div class="form-group">
+          <label class="form-label">结构化数据块</label>
+          <select id="analysis-composer-structured-block" class="form-input" ${structuredBlockOptions.length ? '' : 'disabled'}>
+            <option value="">${structuredBlockOptions.length ? '请选择结构化数据块' : '暂无可用结构化数据块'}</option>
+            ${structuredBlockOptions
+              .map(
+                (blockName) => `
+                  <option value="${escapeHtml(blockName)}" ${composer.selectedBlockName === blockName ? 'selected' : ''}>
+                    ${escapeHtml(blockName)}
+                  </option>
+                `
+              )
+              .join('')}
+          </select>
+          ${structuredBlockPrompt ? `<div class="field-feedback-message">${escapeHtml(structuredBlockPrompt)}</div>` : ''}
+        </div>
+        ${composer.error ? `<div class="error-message">${escapeHtml(composer.error)}</div>` : ''}
+        <div class="form-action-row">
+          <button id="analysis-composer-cancel-btn" class="secondary-btn" type="button">取消</button>
+          <button id="analysis-composer-confirm-btn" class="primary-btn action-btn" type="button" ${canConfirm ? '' : 'disabled'}>
+            ${composer.pending ? '添加中...' : '添加序列'}
+          </button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function bindAnalysisWorkspaceEvents() {
+  document.getElementById('analysis-add-scalar-chart-btn')?.addEventListener('click', async () => {
+    await addAnalysisChart('scalar');
+  });
+
+  document.getElementById('analysis-add-structured-chart-btn')?.addEventListener('click', async () => {
+    await addAnalysisChart('structured');
+  });
+
+  document.getElementById('analysis-menu-home')?.addEventListener('click', () => {
+    currentView = 'home';
+    void render();
+  });
+
+  document.getElementById('analysis-menu-data')?.addEventListener('click', async () => {
+    await loadDatabaseListView();
+    currentView = 'database-list';
+    void render();
+  });
+
+  document.getElementById('analysis-menu-settings')?.addEventListener('click', () => {
+    void openSettingsView();
+  });
+
+  document.querySelectorAll('[data-analysis-add-series]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const target = button as HTMLElement;
+      const chartId = target.dataset.analysisAddSeries;
+      const chart = chartId ? getAnalysisChart(chartId) : null;
+      if (!chart) return;
+
+      openAnalysisComposer(chart.id, chart.chartType);
+      requestRender(true);
+    });
+  });
+
+  document.querySelectorAll('[data-analysis-remove-chart]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const target = button as HTMLElement;
+      const chartId = target.dataset.analysisRemoveChart;
+      if (!chartId) return;
+
+      removeAnalysisChart(chartId);
+      if (analysisExportMenuChartId === chartId) {
+        analysisExportMenuChartId = null;
+      }
+      requestRender(true);
+    });
+  });
+
+  document.querySelectorAll('[data-analysis-export-toggle]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const chartId = (button as HTMLElement).dataset.analysisExportToggle;
+      if (!chartId) return;
+
+      analysisExportMenuChartId = analysisExportMenuChartId === chartId ? null : chartId;
+      requestRender(true);
+    });
+  });
+
+  document.querySelectorAll('[data-analysis-export-image]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const target = button as HTMLElement;
+      const chartId = target.dataset.analysisExportImage;
+      if (!chartId) return;
+
+      analysisExportMenuChartId = null;
+      await exportAnalysisChartImage(chartId);
+    });
+  });
+
+  document.querySelectorAll('[data-analysis-export-data]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const target = button as HTMLElement;
+      const chartId = target.dataset.analysisExportData;
+      if (!chartId) return;
+
+      analysisExportMenuChartId = null;
+      await exportAnalysisChartData(chartId);
+    });
+  });
+
+  document.querySelectorAll('[data-analysis-reset]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const chartId = (button as HTMLElement).dataset.analysisReset;
+      if (!chartId) return;
+      resetAnalysisChartViewport(chartId);
+    });
+  });
+
+  document.querySelectorAll('[data-analysis-legend-toggle]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const encoded = (button as HTMLElement).dataset.analysisLegendToggle;
+      if (!encoded) return;
+
+      const [chartId, seriesId] = encoded.split('::');
+      if (!chartId || !seriesId) {
+        return;
+      }
+
+      toggleAnalysisSeriesVisibility(chartId, seriesId);
+    });
+  });
+
+  document.querySelectorAll('[data-analysis-series-rename-start]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const encoded = (button as HTMLElement).dataset.analysisSeriesRenameStart;
+      if (!encoded) return;
+
+      const [chartId, seriesId] = encoded.split('::');
+      const chart = chartId ? getAnalysisChart(chartId) : null;
+      const series =
+        chart?.chartType === 'scalar'
+          ? chart.scalarSeries.find((item) => item.id === seriesId)
+          : chart?.structuredSeries.find((item) => item.id === seriesId);
+
+      if (!chart || !series) {
+        return;
+      }
+
+      analysisSeriesRenameState = {
+        chartId,
+        seriesId,
+        value: series.name
+      };
+      requestRender(true);
+    });
+  });
+
+  document.querySelectorAll('[data-analysis-series-rename-input]').forEach((input) => {
+    input.addEventListener('input', (event) => {
+      if (!analysisSeriesRenameState) {
+        return;
+      }
+
+      analysisSeriesRenameState = {
+        ...analysisSeriesRenameState,
+        value: (event.target as HTMLInputElement).value
+      };
+    });
+
+    input.addEventListener('keydown', (event) => {
+      const keyboardEvent = event as KeyboardEvent;
+      const encoded = (input as HTMLElement).dataset.analysisSeriesRenameInput;
+      if (!encoded) {
+        return;
+      }
+
+      const [chartId, seriesId] = encoded.split('::');
+      if (keyboardEvent.key === 'Enter') {
+        renameAnalysisSeries(chartId, seriesId, (event.target as HTMLInputElement).value);
+      }
+
+      if (keyboardEvent.key === 'Escape') {
+        analysisSeriesRenameState = null;
+        requestRender(true);
+      }
+    });
+  });
+
+  if (analysisSeriesRenameState) {
+    const activeRenameInput = document.querySelector(
+      `[data-analysis-series-rename-input="${analysisSeriesRenameState.chartId}::${analysisSeriesRenameState.seriesId}"]`
+    ) as HTMLInputElement | null;
+
+    if (activeRenameInput) {
+      activeRenameInput.focus();
+      activeRenameInput.select();
+    }
+  }
+
+  document.querySelectorAll('[data-analysis-series-rename-save]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const encoded = (button as HTMLElement).dataset.analysisSeriesRenameSave;
+      if (!encoded || !analysisSeriesRenameState) {
+        return;
+      }
+
+      const [chartId, seriesId] = encoded.split('::');
+      renameAnalysisSeries(chartId, seriesId, analysisSeriesRenameState.value);
+    });
+  });
+
+  document.querySelectorAll('[data-analysis-series-rename-cancel]').forEach((button) => {
+    button.addEventListener('click', () => {
+      analysisSeriesRenameState = null;
+      requestRender(true);
+    });
+  });
+
+  document.querySelectorAll('[data-analysis-series-color]').forEach((input) => {
+    input.addEventListener('input', (event) => {
+      const encoded = (input as HTMLElement).dataset.analysisSeriesColor;
+      if (!encoded) return;
+
+      const [chartId, seriesId] = encoded.split('::');
+      updateAnalysisSeriesColor(chartId, seriesId, (event.target as HTMLInputElement).value);
+    });
+  });
+
+  document.querySelectorAll('[data-analysis-series-move-up]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const encoded = (button as HTMLElement).dataset.analysisSeriesMoveUp;
+      if (!encoded) return;
+
+      const [chartId, seriesId] = encoded.split('::');
+      moveAnalysisSeries(chartId, seriesId, 'up');
+    });
+  });
+
+  document.querySelectorAll('[data-analysis-series-move-down]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const encoded = (button as HTMLElement).dataset.analysisSeriesMoveDown;
+      if (!encoded) return;
+
+      const [chartId, seriesId] = encoded.split('::');
+      moveAnalysisSeries(chartId, seriesId, 'down');
+    });
+  });
+
+  document.querySelectorAll('[data-analysis-series-remove]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const encoded = (button as HTMLElement).dataset.analysisSeriesRemove;
+      if (!encoded) return;
+
+      const [chartId, seriesId] = encoded.split('::');
+      if (!chartId || !seriesId) {
+        return;
+      }
+
+      removeAnalysisSeries(chartId, seriesId);
+    });
+  });
+
+  document.querySelectorAll('[data-analysis-chart-shell]').forEach((shell) => {
+    shell.addEventListener('wheel', (rawEvent) => {
+      const event = rawEvent as WheelEvent;
+      const chartId = (shell as HTMLElement).dataset.analysisChartShell;
+      if (!chartId) return;
+
+      event.preventDefault();
+      const rect = (shell as HTMLElement).getBoundingClientRect();
+      const xRatio = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
+      const yRatio = Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height));
+      zoomAnalysisChartAt(chartId, event.deltaY < 0 ? 0.88 : 1.14, xRatio, yRatio);
+    }, { passive: false });
+
+    shell.addEventListener('mousedown', (rawEvent) => {
+      const event = rawEvent as MouseEvent;
+      if (event.button !== 0) {
+        return;
+      }
+
+      const eventTarget = event.target as HTMLElement | null;
+      if (eventTarget?.closest('[data-analysis-scalar-point], [data-analysis-structured-series]')) {
+        return;
+      }
+
+      const chartId = (shell as HTMLElement).dataset.analysisChartShell;
+      if (!chartId) return;
+
+      const chart = getAnalysisChart(chartId);
+      const active = chart ? getActiveAnalysisViewport(chart) : null;
+      if (!chart || !active) {
+        return;
+      }
+
+      const rect = (shell as HTMLElement).getBoundingClientRect();
+      const geometry = getAnalysisChartGeometry();
+      const plotWidth = rect.width * ((geometry.width - geometry.marginLeft - geometry.marginRight) / geometry.width);
+      const plotHeight = rect.height * ((geometry.height - geometry.marginTop - geometry.marginBottom) / geometry.height);
+
+      analysisChartDragState = {
+        chartId,
+        startClientX: event.clientX,
+        startClientY: event.clientY,
+        originViewport: { ...active.viewport },
+        plotWidth,
+        plotHeight
+      };
+    });
+  });
+
+  document.onmousemove = (event) => {
+    if (!analysisChartDragState) {
+      return;
+    }
+
+    const chart = getAnalysisChart(analysisChartDragState.chartId);
+    if (!chart) {
+      analysisChartDragState = null;
+      return;
+    }
+
+    const xSpan =
+      analysisChartDragState.originViewport.xMax - analysisChartDragState.originViewport.xMin;
+    const ySpan =
+      analysisChartDragState.originViewport.yMax - analysisChartDragState.originViewport.yMin;
+    const deltaX = event.clientX - analysisChartDragState.startClientX;
+    const deltaY = event.clientY - analysisChartDragState.startClientY;
+
+    updateAnalysisChart(chart.id, (currentChart) => ({
+      ...currentChart,
+      viewport: clampAnalysisViewport(currentChart, {
+        xMin: analysisChartDragState.originViewport.xMin - (deltaX / analysisChartDragState.plotWidth) * xSpan,
+        xMax: analysisChartDragState.originViewport.xMax - (deltaX / analysisChartDragState.plotWidth) * xSpan,
+        yMin: analysisChartDragState.originViewport.yMin + (deltaY / analysisChartDragState.plotHeight) * ySpan,
+        yMax: analysisChartDragState.originViewport.yMax + (deltaY / analysisChartDragState.plotHeight) * ySpan
+      })
+    }));
+    requestRender(true);
+  };
+
+  document.onmouseup = () => {
+    if (!analysisChartDragState) {
+      return;
+    }
+
+    analysisChartDragState = null;
+    requestRender(true);
+  };
+
+  document.querySelectorAll('[data-analysis-scalar-point]').forEach((node) => {
+    node.addEventListener('click', () => {
+      const encoded = (node as HTMLElement).dataset.analysisScalarPoint;
+      if (!encoded) return;
+
+      const [chartId, seriesId, recordIdText] = encoded.split('::');
+      const chart = getAnalysisChart(chartId);
+      const series = chart?.scalarSeries.find((item) => item.id === seriesId);
+      const point = series?.points.find((item) => item.recordId === Number(recordIdText));
+      if (!chart || !series || !point) {
+        return;
+      }
+
+      analysisInspector = {
+        kind: 'scalar-point',
+        chartId,
+        chartTitle: chart.title,
+        seriesName: series.name,
+        xLabel: series.xSourceLabel,
+        xValue: point.xRaw,
+        xUnit: series.xUnit,
+        yLabel: series.yItemName,
+        yValue: formatAnalysisNumber(point.yValue),
+        yUnit: series.yUnit,
+        recordId: point.recordId,
+        recordDisplayName: point.recordDisplayName,
+        metricName: series.yItemName
+      };
+      analysisInspectorCollapsed = false;
+      schedulePersistedAnalysisUIStateSave();
+      requestRender(true);
+    });
+  });
+
+  document.querySelectorAll('[data-analysis-structured-series]').forEach((node) => {
+    node.addEventListener('click', () => {
+      const encoded = (node as HTMLElement).dataset.analysisStructuredSeries;
+      if (!encoded) return;
+
+      const [chartId, seriesId] = encoded.split('::');
+      const chart = getAnalysisChart(chartId);
+      const series = chart?.structuredSeries.find((item) => item.id === seriesId);
+      if (!chart || !series) {
+        return;
+      }
+
+      analysisInspector = {
+        kind: 'structured-series',
+        chartId,
+        chartTitle: chart.title,
+        seriesName: series.name,
+        purposeType: series.purposeType,
+        pointCount: series.points.length,
+        xLabel: series.xLabel,
+        xUnit: series.xUnit,
+        yLabel: series.yLabel,
+        yUnit: series.yUnit,
+        note: series.note,
+        recordId: series.experimentId,
+        recordDisplayName: series.recordDisplayName,
+        blockTitle: series.blockTitle,
+        blockId: series.blockId
+      };
+      analysisInspectorCollapsed = false;
+      schedulePersistedAnalysisUIStateSave();
+      requestRender(true);
+    });
+  });
+
+  document.querySelectorAll('[data-analysis-open-record]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const recordId = Number((button as HTMLElement).dataset.analysisOpenRecord);
+      if (!recordId) return;
+
+      await openExperimentDetail(recordId);
+    });
+  });
+
+  document.getElementById('analysis-inspector-toggle')?.addEventListener('click', () => {
+    analysisInspectorCollapsed = !analysisInspectorCollapsed;
+    schedulePersistedAnalysisUIStateSave();
+    requestRender(true);
+  });
+
+  document.querySelectorAll('[data-analysis-expand]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const chartId = (button as HTMLElement).dataset.analysisExpand;
+      if (!chartId) return;
+      analysisExpandedChartId = analysisExpandedChartId === chartId ? null : chartId;
+      requestRender(true);
+    });
+  });
+
+  document.onkeydown = (event) => {
+    if (event.key === 'Escape' && analysisExpandedChartId) {
+      analysisExpandedChartId = null;
+      requestRender(true);
+    }
+  };
+
+  if (!analysisComposer) {
+    return;
+  }
+
+  document.getElementById('analysis-composer-cancel-btn')?.addEventListener('click', () => {
+    closeAnalysisComposer();
+    requestRender(true);
+  });
+
+  document.getElementById('analysis-composer-search')?.addEventListener('input', (event) => {
+    if (!analysisComposer) return;
+
+    const target = event.target as HTMLInputElement;
+    analysisComposer = {
+      ...analysisComposer,
+      searchQuery: target.value,
+      error: ''
+    } as AnalysisComposerState;
+  });
+
+  const applyAnalysisComposerSearch = () => {
+    if (!analysisComposer) {
+      return;
+    }
+
+    analysisComposer = {
+      ...analysisComposer,
+      appliedSearchQuery: analysisComposer.searchQuery.trim(),
+      resultScrollTop: 0,
+      error: ''
+    } as AnalysisComposerState;
+    requestRender(true);
+  };
+
+  document.getElementById('analysis-composer-search-btn')?.addEventListener('click', () => {
+    applyAnalysisComposerSearch();
+  });
+
+  document.getElementById('analysis-composer-search')?.addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter') {
+      return;
+    }
+
+    event.preventDefault();
+    applyAnalysisComposerSearch();
+  });
+
+  const recordPicker = document.getElementById('analysis-record-picker') as HTMLDivElement | null;
+  if (analysisComposer && recordPicker) {
+    recordPicker.scrollTop = analysisComposer.resultScrollTop;
+    recordPicker.addEventListener('scroll', () => {
+      if (!analysisComposer) return;
+      analysisComposer = {
+        ...analysisComposer,
+        resultScrollTop: recordPicker.scrollTop
+      } as AnalysisComposerState;
+    });
+  }
+
+  if (analysisComposer.chartType === 'scalar') {
+    document.querySelectorAll('[data-analysis-composer-record-id]').forEach((input) => {
+      input.addEventListener('change', () => {
+        if (!analysisComposer || analysisComposer.chartType !== 'scalar') return;
+
+        const selectedRecordIds = Array.from(
+          document.querySelectorAll('[data-analysis-composer-record-id]:checked')
+        ).map((element) => Number((element as HTMLInputElement).dataset.analysisComposerRecordId));
+        const scalarMetricOptions = getAnalysisScalarMetricOptions(selectedRecordIds);
+
+        analysisComposer = {
+          ...analysisComposer,
+          selectedRecordIds,
+          yItemName: scalarMetricOptions.includes(analysisComposer.yItemName)
+            ? analysisComposer.yItemName
+            : '',
+          error: ''
+        };
+
+        requestRender(true);
+      });
+    });
+
+    document.getElementById('analysis-composer-toggle-select-btn')?.addEventListener('click', () => {
+      if (!analysisComposer || analysisComposer.chartType !== 'scalar') return;
+      const composer = analysisComposer;
+
+      const currentResultIds = Array.from(
+        document.querySelectorAll('[data-analysis-composer-record-id]')
+      ).map((element) => Number((element as HTMLInputElement).dataset.analysisComposerRecordId));
+      const currentResultIdSet = new Set(
+        currentResultIds
+      );
+      const allCurrentSelected =
+        currentResultIds.length > 0 &&
+        currentResultIds.every((recordId) => composer.selectedRecordIds.includes(recordId));
+      const selectedRecordIds = allCurrentSelected
+        ? composer.selectedRecordIds.filter((recordId) => !currentResultIdSet.has(recordId))
+        : Array.from(new Set([...composer.selectedRecordIds, ...currentResultIds]));
+      const scalarMetricOptions = getAnalysisScalarMetricOptions(selectedRecordIds);
+
+      analysisComposer = {
+        ...composer,
+        selectedRecordIds,
+        yItemName: scalarMetricOptions.includes(composer.yItemName)
+          ? composer.yItemName
+          : '',
+        error: ''
+      };
+
+      document.querySelectorAll('[data-analysis-composer-record-id]').forEach((element) => {
+        (element as HTMLInputElement).checked = !allCurrentSelected;
+      });
+
+      requestRender(true);
+    });
+
+    document.getElementById('analysis-composer-step1-field')?.addEventListener('change', (event) => {
+      if (!analysisComposer || analysisComposer.chartType !== 'scalar') return;
+
+      analysisComposer = {
+        ...analysisComposer,
+        step1FieldKey: (event.target as HTMLSelectElement).value as AnalysisStep1FieldKey,
+        error: ''
+      };
+      requestRender(true);
+    });
+
+    document.getElementById('analysis-composer-y-item')?.addEventListener('change', (event) => {
+      if (!analysisComposer || analysisComposer.chartType !== 'scalar') return;
+
+      analysisComposer = {
+        ...analysisComposer,
+        yItemName: (event.target as HTMLSelectElement).value,
+        error: ''
+      };
+      requestRender(true);
+    });
+  } else {
+    document.querySelectorAll('[data-analysis-composer-structured-record-id]').forEach((input) => {
+      input.addEventListener('change', () => {
+        if (!analysisComposer || analysisComposer.chartType !== 'structured') return;
+
+        const selectedRecordIds = Array.from(
+          document.querySelectorAll('[data-analysis-composer-structured-record-id]:checked')
+        ).map((element) =>
+          Number((element as HTMLInputElement).dataset.analysisComposerStructuredRecordId)
+        );
+        const structuredBlockOptions = getAnalysisStructuredBlockNameOptions(selectedRecordIds);
+
+        analysisComposer = {
+          ...analysisComposer,
+          selectedRecordIds,
+          selectedBlockName: structuredBlockOptions.includes(analysisComposer.selectedBlockName)
+            ? analysisComposer.selectedBlockName
+            : '',
+          error: ''
+        };
+        requestRender(true);
+      });
+    });
+
+    document.getElementById('analysis-composer-toggle-select-btn')?.addEventListener('click', () => {
+      if (!analysisComposer || analysisComposer.chartType !== 'structured') return;
+      const composer = analysisComposer;
+      const currentResultIds = Array.from(
+        document.querySelectorAll('[data-analysis-composer-structured-record-id]')
+      ).map((element) =>
+        Number((element as HTMLInputElement).dataset.analysisComposerStructuredRecordId)
+      );
+      const currentResultIdSet = new Set(currentResultIds);
+      const allCurrentSelected =
+        currentResultIds.length > 0 &&
+        currentResultIds.every((recordId) => composer.selectedRecordIds.includes(recordId));
+      const selectedRecordIds = allCurrentSelected
+        ? composer.selectedRecordIds.filter((recordId) => !currentResultIdSet.has(recordId))
+        : Array.from(new Set([...composer.selectedRecordIds, ...currentResultIds]));
+      const structuredBlockOptions = getAnalysisStructuredBlockNameOptions(selectedRecordIds);
+
+      analysisComposer = {
+        ...composer,
+        selectedRecordIds,
+        selectedBlockName: structuredBlockOptions.includes(composer.selectedBlockName)
+          ? composer.selectedBlockName
+          : '',
+        error: ''
+      };
+
+      document.querySelectorAll('[data-analysis-composer-structured-record-id]').forEach((element) => {
+        (element as HTMLInputElement).checked = !allCurrentSelected;
+      });
+
+      requestRender(true);
+    });
+
+    document.getElementById('analysis-composer-structured-block')?.addEventListener('change', (event) => {
+      if (!analysisComposer || analysisComposer.chartType !== 'structured') return;
+
+      analysisComposer = {
+        ...analysisComposer,
+        selectedBlockName: (event.target as HTMLSelectElement).value,
+        error: ''
+      };
+      requestRender(true);
+    });
+  }
+
+  document.getElementById('analysis-composer-confirm-btn')?.addEventListener('click', async () => {
+    await confirmAddAnalysisSeries();
+  });
 }
 
 async function getLikelyDuplicateMatches(payload: {
@@ -1109,8 +4686,11 @@ function buildManualReviewState(
     previewRows: file.manualReview.previewRows,
     maxColumnCount: file.manualReview.maxColumnCount,
     dataStartRow: file.manualReview.previewRows.length > 1 ? 2 : 1,
+    xSourceMode: file.manualReview.maxColumnCount > 1 ? 'column' : 'generated',
     xColumnIndex: 0,
-    yColumnIndex: 1,
+    yColumnIndex: file.manualReview.maxColumnCount > 1 ? 1 : 0,
+    generatedXStart: 0,
+    generatedXStep: 1,
     previewLoading: false,
     previewError: ''
   };
@@ -1120,12 +4700,23 @@ function updateManualReviewPreviewRows(
   existing: ImportReviewManualState,
   next: NonNullable<PreviewManualImportXYResult['manualReview']>
 ): ImportReviewManualState {
+  const nextMaxColumnCount = next.maxColumnCount;
+  const nextXSourceMode =
+    nextMaxColumnCount > 1
+      ? existing.xSourceMode
+      : 'generated';
+
   return {
     ...existing,
     delimiter: next.suggestedDelimiter,
     suggestedDelimiter: next.suggestedDelimiter,
     previewRows: next.previewRows,
-    maxColumnCount: next.maxColumnCount
+    maxColumnCount: nextMaxColumnCount,
+    xSourceMode: nextXSourceMode,
+    yColumnIndex:
+      nextMaxColumnCount > 1
+        ? Math.min(existing.yColumnIndex, nextMaxColumnCount - 1)
+        : 0
   };
 }
 
@@ -1141,6 +4732,11 @@ function syncTemplateBlockImportInputsToState(context: TemplateBlockEditContext)
         ...block,
         importManualReview: {
           ...block.importManualReview,
+          xSourceMode:
+            ((document.getElementById(
+              `template-block-import-x-source-${block.id}`
+            ) as HTMLSelectElement | null)?.value as ImportManualXAxisSourceMode | undefined) ||
+            block.importManualReview.xSourceMode,
           delimiter:
             ((document.getElementById(
               `template-block-import-delimiter-${block.id}`
@@ -1170,6 +4766,18 @@ function syncTemplateBlockImportInputsToState(context: TemplateBlockEditContext)
                 ) as HTMLInputElement | null)?.value || block.importManualReview.yColumnIndex + 1
               ) - 1
             ),
+          generatedXStart:
+            Number(
+              (document.getElementById(
+                `template-block-import-generated-start-${block.id}`
+              ) as HTMLInputElement | null)?.value || block.importManualReview.generatedXStart
+            ) || 0,
+          generatedXStep:
+            Number(
+              (document.getElementById(
+                `template-block-import-generated-step-${block.id}`
+              ) as HTMLInputElement | null)?.value || block.importManualReview.generatedXStep
+            ) || block.importManualReview.generatedXStep,
         }
       };
     })
@@ -1202,6 +4810,7 @@ function applyTemplateBlockImportCandidate(params: {
 
       return {
         ...block,
+        purposeType: candidate.templateBlock.purposeType || block.purposeType || '',
         blockTitle: candidate.templateBlock.blockTitle,
         primaryLabel: candidate.templateBlock.xLabel,
         primaryUnit: candidate.templateBlock.xUnit,
@@ -1372,8 +4981,12 @@ async function regenerateTemplateBlockImportFromManualReview(
       filePath: importFilePath,
       delimiter: targetBlock.importManualReview.delimiter,
       dataStartRow: targetBlock.importManualReview.dataStartRow,
+      xSourceMode: targetBlock.importManualReview.xSourceMode,
       xColumnIndex: targetBlock.importManualReview.xColumnIndex,
       yColumnIndex: targetBlock.importManualReview.yColumnIndex,
+      generatedXStart: targetBlock.importManualReview.generatedXStart,
+      generatedXStep: targetBlock.importManualReview.generatedXStep,
+      purposeType: targetBlock.purposeType || '',
       blockTitle: targetBlock.blockTitle,
       xLabel: targetBlock.primaryLabel,
       xUnit: targetBlock.primaryUnit,
@@ -1589,6 +5202,19 @@ function bindTemplateBlockEditorEvents(params: {
       if (!blockId) return;
 
       await regenerateTemplateBlockImportFromManualReview(params.context, blockId);
+    });
+  });
+
+  document.querySelectorAll('[data-template-block-import-x-source-id]').forEach((select) => {
+    select.addEventListener('change', () => {
+      if (params.context === 'detail-edit') {
+        collectDetailEditState();
+      } else {
+        saveStep2InputsToState();
+      }
+
+      syncTemplateBlockImportInputsToState(params.context);
+      requestRender(true);
     });
   });
 }
@@ -2203,6 +5829,18 @@ function renderTemplateBlockImportPanel(block: TemplateBlockFormData) {
               </div>
 
               <div class="form-group">
+                <label class="form-label">X 轴来源</label>
+                <select
+                  id="template-block-import-x-source-${block.id}"
+                  class="form-input"
+                  data-template-block-import-x-source-id="${block.id}"
+                >
+                  <option value="column" ${manualReview.xSourceMode === 'column' ? 'selected' : ''}>来自文件列</option>
+                  <option value="generated" ${manualReview.xSourceMode === 'generated' ? 'selected' : ''}>手动生成</option>
+                </select>
+              </div>
+
+              <div class="form-group">
                 <label class="form-label">分隔符</label>
                 <select
                   id="template-block-import-delimiter-${block.id}"
@@ -2215,16 +5853,39 @@ function renderTemplateBlockImportPanel(block: TemplateBlockFormData) {
                 </select>
               </div>
 
-              <div class="form-group">
-                <label class="form-label">X 列</label>
-                <input
-                  id="template-block-import-x-column-${block.id}"
-                  class="form-input"
-                  type="number"
-                  min="1"
-                  value="${manualReview.xColumnIndex + 1}"
-                />
-              </div>
+              ${manualReview.xSourceMode === 'column'
+                ? `
+                    <div class="form-group">
+                      <label class="form-label">X 列</label>
+                      <input
+                        id="template-block-import-x-column-${block.id}"
+                        class="form-input"
+                        type="number"
+                        min="1"
+                        value="${manualReview.xColumnIndex + 1}"
+                      />
+                    </div>
+                  `
+                : `
+                    <div class="form-group">
+                      <label class="form-label">X 起点</label>
+                      <input
+                        id="template-block-import-generated-start-${block.id}"
+                        class="form-input"
+                        type="number"
+                        value="${manualReview.generatedXStart}"
+                      />
+                    </div>
+                    <div class="form-group">
+                      <label class="form-label">X 步长</label>
+                      <input
+                        id="template-block-import-generated-step-${block.id}"
+                        class="form-input"
+                        type="number"
+                        value="${manualReview.generatedXStep}"
+                      />
+                    </div>
+                  `}
 
               <div class="form-group">
                 <label class="form-label">Y 列</label>
@@ -2586,6 +6247,7 @@ function buildValidatedTemplateBlocks(
       normalizedBlocks.push({
         blockId: block.blockId,
         templateType: XY_TEMPLATE_TYPE,
+        purposeType: block.purposeType || '',
         blockTitle,
         blockOrder: index + 1,
         xLabel: block.primaryLabel.trim(),
@@ -2607,6 +6269,7 @@ function buildValidatedTemplateBlocks(
     normalizedBlocks.push({
       blockId: block.blockId,
       templateType: SPECTRUM_TEMPLATE_TYPE,
+      purposeType: block.purposeType || '',
       blockTitle,
       blockOrder: index + 1,
       spectrumAxisLabel: block.primaryLabel.trim(),
@@ -2839,6 +6502,7 @@ async function render() {
   ]);
 
   await ensureAppSettingsLoaded();
+  await ensurePersistedAnalysisUIStateLoaded();
 
   if (currentView === 'login') {
     root.innerHTML = `
@@ -2920,12 +6584,12 @@ async function render() {
   if (currentView === 'home') {
     root.innerHTML = `
       <div class="home-layout">
-        <aside class="sidebar">
-          <div class="sidebar-title">${appName}</div>
-          <div class="menu-item active">主页</div>
-          <div id="menu-data-home" class="menu-item">数据</div>
-          <div id="menu-settings-home" class="menu-item">设置</div>
-        </aside>
+        ${renderAppSidebar(appName, [
+          { label: '主页', icon: '⌂', active: true },
+          { id: 'menu-data-home', label: '数据', icon: '▣' },
+          { id: 'menu-analysis-home', label: '数据分析', icon: '◫' },
+          { id: 'menu-settings-home', label: '设置', icon: '⚙' }
+        ])}
 
         <main class="main-content">
           <header class="topbar">
@@ -2957,6 +6621,13 @@ async function render() {
                   <div class="entry-desc">进入主要工作区，查看、选择、打开和导出已有实验记录</div>
                   <button id="database-btn" class="secondary-btn big-btn">进入</button>
                 </div>
+
+                <div class="entry-card">
+                  <div class="entry-icon">◫</div>
+                  <div class="entry-title">数据分析</div>
+                  <div class="entry-desc">进入只读分析工作区，叠加比较已有标量和结构化数据</div>
+                  <button id="analysis-btn" class="secondary-btn big-btn">进入</button>
+                </div>
               </div>
             </div>
           </section>
@@ -2964,6 +6635,7 @@ async function render() {
       </div>
     `;
 
+    bindAppSidebarEvents();
     document.getElementById('logout-btn')?.addEventListener('click', () => {
       currentView = 'login';
       void render();
@@ -2980,10 +6652,18 @@ async function render() {
       void render();
     });
 
+    document.getElementById('analysis-btn')?.addEventListener('click', async () => {
+      await openAnalysisWorkspace();
+    });
+
     document.getElementById('menu-data-home')?.addEventListener('click', async () => {
       await loadDatabaseListView();
       currentView = 'database-list';
       void render();
+    });
+
+    document.getElementById('menu-analysis-home')?.addEventListener('click', async () => {
+      await openAnalysisWorkspace();
     });
 
     document.getElementById('menu-settings-home')?.addEventListener('click', () => {
@@ -2993,16 +6673,91 @@ async function render() {
     return;
   }
 
+  if (currentView === 'analysis') {
+    root.innerHTML = `
+      <div class="home-layout">
+        ${renderAppSidebar(appName, [
+          { id: 'analysis-menu-home', label: '主页', icon: '⌂' },
+          { id: 'analysis-menu-data', label: '数据', icon: '▣' },
+          { label: '数据分析', icon: '◫', active: true },
+          { id: 'analysis-menu-settings', label: '设置', icon: '⚙' }
+        ])}
+
+        <main class="main-content">
+          <header class="topbar">
+            <div class="topbar-title">数据分析</div>
+            <div class="analysis-header-actions">
+              <button id="analysis-add-scalar-chart-btn" class="secondary-btn" type="button">新增标量图</button>
+              <button id="analysis-add-structured-chart-btn" class="secondary-btn" type="button">新增结构化图</button>
+            </div>
+          </header>
+
+          <section class="content-area">
+            <div class="analysis-workspace-layout ${analysisInspectorCollapsed ? 'inspector-collapsed' : ''}">
+              <div class="analysis-main-panel">
+                ${analysisLoading
+                  ? `<div class="empty-tip">正在加载分析数据...</div>`
+                  : analysisLoadError
+                    ? `<div class="error-message large-error">${escapeHtml(analysisLoadError)}</div>`
+                    : analysisCharts.length
+                      ? analysisCharts.map((chart) => renderAnalysisChartCard(chart)).join('')
+                      : `
+                          <div class="welcome-card">
+                            <h2>开始数据分析</h2>
+                            <p class="subtitle">V1 仅支持标量图和结构化图，且所有操作均保持对源记录只读。</p>
+                            <div class="form-action-row">
+                              <button id="analysis-add-scalar-chart-btn-empty" class="primary-btn action-btn" type="button">创建标量图</button>
+                              <button id="analysis-add-structured-chart-btn-empty" class="secondary-btn" type="button">创建结构化图</button>
+                            </div>
+                          </div>
+                        `}
+              </div>
+
+              <aside class="analysis-inspector-panel ${analysisInspectorCollapsed ? 'collapsed' : ''}">
+                <div class="analysis-inspector-header-row">
+                  <div class="analysis-inspector-header">详情</div>
+                  <button
+                    id="analysis-inspector-toggle"
+                    class="analysis-inspector-toggle-btn"
+                    type="button"
+                    title="${analysisInspectorCollapsed ? '展开详情' : '收起详情'}"
+                    aria-label="${analysisInspectorCollapsed ? '展开详情' : '收起详情'}"
+                  >
+                    ${analysisInspectorCollapsed ? '»' : '«'}
+                  </button>
+                </div>
+                ${analysisInspectorCollapsed ? '' : renderAnalysisInspector()}
+              </aside>
+            </div>
+          </section>
+        </main>
+      </div>
+
+      ${renderAnalysisComposerModal()}
+      ${renderAnalysisExpandedOverlay()}
+    `;
+
+    bindAppSidebarEvents();
+    bindAnalysisWorkspaceEvents();
+    document.getElementById('analysis-add-scalar-chart-btn-empty')?.addEventListener('click', async () => {
+      await addAnalysisChart('scalar');
+    });
+    document.getElementById('analysis-add-structured-chart-btn-empty')?.addEventListener('click', async () => {
+      await addAnalysisChart('structured');
+    });
+    return;
+  }
+
   if (currentView === 'add-step1') {
     root.innerHTML = `
       <div class="home-layout">
-        <aside class="sidebar">
-          <div class="sidebar-title">${appName}</div>
-          <div id="menu-home" class="menu-item">主页</div>
-          <div class="menu-item active">添加数据</div>
-          <div id="menu-data-step1" class="menu-item">数据</div>
-          <div id="menu-settings-step1" class="menu-item">设置</div>
-        </aside>
+        ${renderAppSidebar(appName, [
+          { id: 'menu-home', label: '主页', icon: '⌂' },
+          { label: '添加数据', icon: '＋', active: true },
+          { id: 'menu-data-step1', label: '数据', icon: '▣' },
+          { id: 'menu-analysis-step1', label: '数据分析', icon: '◫' },
+          { id: 'menu-settings-step1', label: '设置', icon: '⚙' }
+        ])}
 
         <main class="main-content">
           <header class="topbar">
@@ -3094,12 +6849,17 @@ async function render() {
       </div>
     `;
 
+    bindAppSidebarEvents();
     bindStep1Events();
 
     document.getElementById('menu-data-step1')?.addEventListener('click', async () => {
       await loadDatabaseListView();
       currentView = 'database-list';
       void render();
+    });
+
+    document.getElementById('menu-analysis-step1')?.addEventListener('click', async () => {
+      await openAnalysisWorkspace();
     });
 
     document.getElementById('menu-settings-step1')?.addEventListener('click', () => {
@@ -3112,13 +6872,13 @@ async function render() {
   if (currentView === 'add-step2') {
     root.innerHTML = `
       <div class="home-layout">
-        <aside class="sidebar">
-          <div class="sidebar-title">${appName}</div>
-          <div id="menu-home-step2" class="menu-item">主页</div>
-          <div class="menu-item active">添加数据</div>
-          <div id="menu-data-step2" class="menu-item">数据</div>
-          <div id="menu-settings-step2" class="menu-item">设置</div>
-        </aside>
+        ${renderAppSidebar(appName, [
+          { id: 'menu-home-step2', label: '主页', icon: '⌂' },
+          { label: '添加数据', icon: '＋', active: true },
+          { id: 'menu-data-step2', label: '数据', icon: '▣' },
+          { id: 'menu-analysis-step2', label: '数据分析', icon: '◫' },
+          { id: 'menu-settings-step2', label: '设置', icon: '⚙' }
+        ])}
 
         <main class="main-content">
           <header class="topbar">
@@ -3182,6 +6942,7 @@ async function render() {
       })}
     `;
 
+    bindAppSidebarEvents();
     bindStep2Events();
     bindDuplicateWarningModalHandlers();
 
@@ -3189,6 +6950,10 @@ async function render() {
       await loadDatabaseListView();
       currentView = 'database-list';
       void render();
+    });
+
+    document.getElementById('menu-analysis-step2')?.addEventListener('click', async () => {
+      await openAnalysisWorkspace();
     });
 
     document.getElementById('menu-settings-step2')?.addEventListener('click', () => {
@@ -3232,12 +6997,12 @@ async function render() {
   if (currentView === 'database-list') {
     root.innerHTML = `
       <div class="home-layout">
-        <aside class="sidebar">
-          <div class="sidebar-title">${appName}</div>
-          <div id="db-menu-home" class="menu-item">主页</div>
-          <div class="menu-item active">数据</div>
-          <div id="db-menu-settings" class="menu-item">设置</div>
-        </aside>
+        ${renderAppSidebar(appName, [
+          { id: 'db-menu-home', label: '主页', icon: '⌂' },
+          { label: '数据', icon: '▣', active: true },
+          { id: 'db-menu-analysis', label: '数据分析', icon: '◫' },
+          { id: 'db-menu-settings', label: '设置', icon: '⚙' }
+        ])}
 
         <main class="main-content">
           <header class="topbar">
@@ -3355,6 +7120,7 @@ async function render() {
       })}
     `;
 
+    bindAppSidebarEvents();
     document.getElementById('db-menu-home')?.addEventListener('click', () => {
       currentView = 'home';
       void render();
@@ -3362,6 +7128,10 @@ async function render() {
 
     document.getElementById('db-menu-settings')?.addEventListener('click', () => {
       void openSettingsView();
+    });
+
+    document.getElementById('db-menu-analysis')?.addEventListener('click', async () => {
+      await openAnalysisWorkspace();
     });
 
     document.getElementById('db-refresh-btn')?.addEventListener('click', async () => {
@@ -3660,12 +7430,12 @@ async function render() {
 
     root.innerHTML = `
       <div class="home-layout">
-        <aside class="sidebar">
-          <div class="sidebar-title">${appName}</div>
-          <div id="detail-menu-home" class="menu-item">主页</div>
-          <div id="detail-menu-list" class="menu-item active">数据</div>
-          <div id="detail-menu-settings" class="menu-item">设置</div>
-        </aside>
+        ${renderAppSidebar(appName, [
+          { id: 'detail-menu-home', label: '主页', icon: '⌂' },
+          { id: 'detail-menu-list', label: '数据', icon: '▣', active: true },
+          { id: 'detail-menu-analysis', label: '数据分析', icon: '◫' },
+          { id: 'detail-menu-settings', label: '设置', icon: '⚙' }
+        ])}
 
         <main class="main-content">
           <header class="topbar">
@@ -3787,6 +7557,7 @@ async function render() {
               id: `detail_template_${block.id}`,
               blockId: block.id,
               templateType: block.templateType,
+              purposeType: block.purposeType || '',
               blockTitle: block.blockTitle,
               primaryLabel:
                 block.templateType === XY_TEMPLATE_TYPE
@@ -3851,6 +7622,7 @@ async function render() {
       })}
     `;
 
+    bindAppSidebarEvents();
     document.getElementById('detail-back-btn')?.addEventListener('click', async () => {
       await loadDatabaseListView();
       currentView = 'database-list';
@@ -3866,6 +7638,10 @@ async function render() {
     document.getElementById('detail-menu-home')?.addEventListener('click', () => {
       currentView = 'home';
       void render();
+    });
+
+    document.getElementById('detail-menu-analysis')?.addEventListener('click', async () => {
+      await openAnalysisWorkspace();
     });
 
     document.getElementById('detail-menu-settings')?.addEventListener('click', () => {
@@ -4018,6 +7794,19 @@ async function render() {
           editReason: detailEditReason,
           editor: detailEditor
         };
+
+        const analysisWarnings = buildAnalysisPreparationWarnings(
+          updatePayload.step2.map((item) => ({
+            itemName: item.itemName,
+            itemValue: item.itemValue,
+            itemUnit: item.itemUnit
+          })),
+          updatePayload.templateBlocks
+        );
+
+        if (!confirmAnalysisPreparationWarnings(analysisWarnings)) {
+          return;
+        }
 
         const openedWarning = await openDuplicateWarningForUpdate(updatePayload);
         if (openedWarning) {
@@ -4299,11 +8088,12 @@ async function render() {
 
     root.innerHTML = `
       <div class="home-layout">
-        <aside class="sidebar">
-          <div class="sidebar-title">${appName}</div>
-          <div id="settings-menu-home" class="menu-item">主页</div>
-          <div class="menu-item active">设置</div>
-        </aside>
+        ${renderAppSidebar(appName, [
+          { id: 'settings-menu-home', label: '主页', icon: '⌂' },
+          { id: 'settings-menu-data', label: '数据', icon: '▣' },
+          { id: 'settings-menu-analysis', label: '数据分析', icon: '◫' },
+          { label: '设置', icon: '⚙', active: true }
+        ])}
 
         <main class="main-content">
           <header class="topbar">
@@ -4330,9 +8120,20 @@ async function render() {
       </div>
     `;
 
+    bindAppSidebarEvents();
     document.getElementById('settings-menu-home')?.addEventListener('click', () => {
       currentView = 'home';
       void render();
+    });
+
+    document.getElementById('settings-menu-data')?.addEventListener('click', async () => {
+      await loadDatabaseListView();
+      currentView = 'database-list';
+      void render();
+    });
+
+    document.getElementById('settings-menu-analysis')?.addEventListener('click', async () => {
+      await openAnalysisWorkspace();
     });
 
     document.getElementById('settings-back-home-btn')?.addEventListener('click', () => {
@@ -4878,6 +8679,19 @@ function bindStep2Events() {
         displayName: buildDisplayName(step1FormData)
       };
 
+      const analysisWarnings = buildAnalysisPreparationWarnings(
+        savePayload.step2.map((item) => ({
+          itemName: item.itemName,
+          itemValue: item.itemValue,
+          itemUnit: item.itemUnit
+        })),
+        savePayload.templateBlocks
+      );
+
+      if (!confirmAnalysisPreparationWarnings(analysisWarnings)) {
+        return;
+      }
+
       const openedWarning = await openDuplicateWarningForCreate(savePayload);
       if (openedWarning) {
         return;
@@ -5011,7 +8825,7 @@ function prepareDetailEditState() {
     id: `detail_template_${block.id}`,
     blockId: block.id,
     templateType: block.templateType,
-    purposeType: '',
+    purposeType: block.purposeType || '',
     blockTitle: block.blockTitle,
     primaryLabel:
       block.templateType === XY_TEMPLATE_TYPE ? block.xLabel : block.spectrumAxisLabel,
@@ -5317,6 +9131,27 @@ function renderFatalError(error: unknown) {
 window.addEventListener('unhandledrejection', (event) => {
   event.preventDefault();
   handleAsyncError(event.reason);
+});
+
+window.addEventListener('beforeunload', () => {
+  if (!persistedAnalysisUiStateLoaded) {
+    return;
+  }
+
+  if (persistedAnalysisUiSaveTimer) {
+    window.clearTimeout(persistedAnalysisUiSaveTimer);
+    persistedAnalysisUiSaveTimer = null;
+  }
+
+  const serialized =
+    pendingPersistedAnalysisUiStateSerialized ||
+    JSON.stringify(buildPersistedAnalysisUIStateSnapshot());
+
+  pendingPersistedAnalysisUiStateSerialized = null;
+
+  if (serialized !== lastPersistedAnalysisUiStateSerialized) {
+    void persistAnalysisUIState(serialized);
+  }
 });
 
 void render().catch((error) => {

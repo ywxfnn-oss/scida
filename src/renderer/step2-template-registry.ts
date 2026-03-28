@@ -1,11 +1,5 @@
-export type StructuredBlockPurpose =
-  | ''
-  | 'spectrum'
-  | 'iv'
-  | 'xrd'
-  | 'eqe'
-  | 'responsivity'
-  | 'custom';
+export type { StructuredBlockPurpose } from '../template-blocks';
+import type { StructuredBlockPurpose } from '../template-blocks';
 
 export type ValueNatureLabel =
   | 'measured'

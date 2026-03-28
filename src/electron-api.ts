@@ -1,3 +1,5 @@
+import type { StructuredBlockPurpose } from './template-blocks';
+
 export type GroupByType =
   | 'sampleCode'
   | 'testProject'
@@ -17,6 +19,49 @@ export type ActionResult = {
 export type AppSettings = {
   storageRoot: string;
   loginUsername: string;
+};
+
+export type AnalysisStep1FieldKey =
+  | 'testProject'
+  | 'sampleCode'
+  | 'tester'
+  | 'instrument'
+  | 'testTime'
+  | 'sampleOwner';
+
+export type PersistedAnalysisUIStateScalarSeriesConfig = {
+  xFieldKey: AnalysisStep1FieldKey;
+  yMetricName: string;
+  selectedRecordIds: number[];
+  hidden?: boolean;
+  displayName?: string;
+  color?: string;
+};
+
+export type PersistedAnalysisUIStateStructuredSeriesConfig = {
+  blockDisplayName: string;
+  selectedRecordIds: number[];
+  hidden?: boolean;
+  displayName?: string;
+  color?: string;
+};
+
+export type PersistedAnalysisUIStateChartConfig =
+  | {
+      chartType: 'scalar';
+      semanticTitle: string;
+      scalarSeries: PersistedAnalysisUIStateScalarSeriesConfig[];
+    }
+  | {
+      chartType: 'structured';
+      semanticTitle: string;
+      structuredSeries: PersistedAnalysisUIStateStructuredSeriesConfig[];
+    };
+
+export type PersistedAnalysisUIState = {
+  sidebarCollapsed: boolean;
+  analysisDetailCollapsed: boolean;
+  analysisCharts: PersistedAnalysisUIStateChartConfig[];
 };
 
 export type AuthenticatePayload = {
@@ -79,6 +124,7 @@ export type ImportSelectedFile = {
 export type SelectImportFilesResult = ImportSelectedFile[];
 
 export type ImportManualDelimiter = 'comma' | 'tab' | 'semicolon' | 'whitespace';
+export type ImportManualXAxisSourceMode = 'column' | 'generated';
 
 export type ImportManualPreviewRow = {
   rowNumber: number;
@@ -124,6 +170,7 @@ export type XYPoint = {
 export type SaveExperimentXYBlockPayload = {
   blockId?: number;
   templateType: 'xy';
+  purposeType: StructuredBlockPurpose;
   blockTitle: string;
   blockOrder: number;
   xLabel: string;
@@ -143,6 +190,7 @@ export type SaveExperimentXYBlockPayload = {
 export type SaveExperimentSpectrumBlockPayload = {
   blockId?: number;
   templateType: 'spectrum';
+  purposeType: StructuredBlockPurpose;
   blockTitle: string;
   blockOrder: number;
   spectrumAxisLabel: string;
@@ -171,8 +219,12 @@ export type PreviewManualImportXYPayload = {
   filePath: string;
   delimiter: ImportManualDelimiter;
   dataStartRow: number;
+  xSourceMode: ImportManualXAxisSourceMode;
   xColumnIndex: number;
   yColumnIndex: number;
+  generatedXStart?: number;
+  generatedXStep?: number;
+  purposeType?: StructuredBlockPurpose;
   blockTitle: string;
   xLabel: string;
   xUnit: string;
@@ -365,6 +417,7 @@ export type ExperimentDetail = {
     | {
         id: number;
         templateType: 'xy';
+        purposeType: StructuredBlockPurpose;
         blockTitle: string;
         blockOrder: number;
         xLabel: string;
@@ -382,6 +435,7 @@ export type ExperimentDetail = {
     | {
         id: number;
         templateType: 'spectrum';
+        purposeType: StructuredBlockPurpose;
         blockTitle: string;
         blockOrder: number;
         spectrumAxisLabel: string;
@@ -423,6 +477,22 @@ export type ExportResult = {
   exportPath?: string;
   compressed?: boolean;
   error?: string;
+};
+
+export type SaveGeneratedFilePayload = {
+  title: string;
+  defaultFileName: string;
+  filters: Array<{
+    name: string;
+    extensions: string[];
+  }>;
+  textContent?: string;
+  base64Content?: string;
+};
+
+export type SaveGeneratedFileResult = ActionResult & {
+  canceled?: boolean;
+  savedPath?: string;
 };
 
 export type FileIntegrityReport = {
@@ -502,6 +572,8 @@ export interface ElectronAPI {
   authenticate: (payload: AuthenticatePayload) => Promise<ActionResult>;
   getAppSettings: () => Promise<AppSettings>;
   saveAppSettings: (payload: SaveAppSettingsPayload) => Promise<ActionResult>;
+  getPersistedAnalysisUIState: () => Promise<PersistedAnalysisUIState>;
+  savePersistedAnalysisUIState: (payload: PersistedAnalysisUIState) => Promise<ActionResult>;
   listDictionaryItems: (
     payload?: ListDictionaryItemsPayload
   ) => Promise<DictionaryItemsByType>;
@@ -555,6 +627,9 @@ export interface ElectronAPI {
   listRecentOperationLogs: (
     payload?: ListRecentOperationLogsPayload
   ) => Promise<RecentOperationLogEntry[]>;
+  saveGeneratedFile: (
+    payload: SaveGeneratedFilePayload
+  ) => Promise<SaveGeneratedFileResult>;
   openPathLocation: (payload: { targetPath: string }) => Promise<ActionResult>;
   openSavedFile: (payload: { filePath: string }) => Promise<ActionResult>;
   openInFolder: (payload: { filePath: string }) => Promise<ActionResult>;

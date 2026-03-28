@@ -14,7 +14,9 @@ import type {
   CopyFileToStorageResult,
   DeactivateDictionaryItemPayload,
   ListDictionaryItemsPayload,
+  PersistedAnalysisUIState,
   SaveAppSettingsPayload,
+  SaveGeneratedFilePayload,
   SaveExperimentPayload,
   SaveExperimentResult,
   UpdateExperimentPayload
@@ -62,6 +64,10 @@ import {
   saveAppSettings,
   verifyLogin
 } from './main/auth-settings';
+import {
+  getPersistedAnalysisUIState,
+  savePersistedAnalysisUIState
+} from './main/ui-state-settings';
 import {
   addDictionaryItem,
   deactivateDictionaryItem,
@@ -478,6 +484,31 @@ app.whenReady().then(async () => {
     }
   );
 
+  ipcMain.handle('ui:getPersistedAnalysisUIState', async () => {
+    try {
+      return await getPersistedAnalysisUIState(prisma);
+    } catch (error) {
+      console.error('getPersistedAnalysisUIState failed:', error);
+      return {
+        sidebarCollapsed: false,
+        analysisDetailCollapsed: false,
+        analysisCharts: []
+      };
+    }
+  });
+
+  ipcMain.handle(
+    'ui:savePersistedAnalysisUIState',
+    async (_event, payload: PersistedAnalysisUIState): Promise<ActionResult> => {
+      try {
+        return await savePersistedAnalysisUIState(prisma, payload);
+      } catch (error) {
+        console.error('savePersistedAnalysisUIState failed:', error);
+        return { success: false, error: '保存界面状态失败，请稍后重试' };
+      }
+    }
+  );
+
   ipcMain.handle(
     'dictionary:list',
     async (_event, payload?: ListDictionaryItemsPayload) => {
@@ -555,6 +586,38 @@ app.whenReady().then(async () => {
     } catch (error) {
       console.error('selectImportFiles failed:', error);
       return [];
+    }
+  });
+
+  ipcMain.handle('file:saveGeneratedFile', async (_event, payload: SaveGeneratedFilePayload) => {
+    try {
+      if (!payload.textContent && !payload.base64Content) {
+        return { success: false, error: '缺少可保存的文件内容' };
+      }
+
+      const result = await dialog.showSaveDialog({
+        title: payload.title,
+        defaultPath: payload.defaultFileName,
+        filters: payload.filters
+      });
+
+      if (result.canceled || !result.filePath) {
+        return { success: false, canceled: true };
+      }
+
+      if (payload.base64Content) {
+        fs.writeFileSync(result.filePath, Buffer.from(payload.base64Content, 'base64'));
+      } else {
+        fs.writeFileSync(result.filePath, payload.textContent || '', 'utf8');
+      }
+
+      return {
+        success: true,
+        savedPath: result.filePath
+      };
+    } catch (error) {
+      console.error('saveGeneratedFile failed:', error);
+      return { success: false, error: '保存文件失败，请稍后重试' };
     }
   });
 
@@ -1032,6 +1095,7 @@ app.whenReady().then(async () => {
           return {
             id: block.id,
             templateType: XY_TEMPLATE_TYPE,
+            purposeType: meta.purposeType,
             blockTitle: block.blockTitle,
             blockOrder: block.blockOrder,
             xLabel: meta.xLabel,
@@ -1056,6 +1120,7 @@ app.whenReady().then(async () => {
         return {
           id: block.id,
           templateType: SPECTRUM_TEMPLATE_TYPE,
+          purposeType: meta.purposeType,
           blockTitle: block.blockTitle,
           blockOrder: block.blockOrder,
           spectrumAxisLabel: meta.spectrumAxisLabel,

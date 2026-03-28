@@ -2,8 +2,18 @@ export const XY_TEMPLATE_TYPE = 'xy' as const;
 export const SPECTRUM_TEMPLATE_TYPE = 'spectrum' as const;
 export const TEMPLATE_BLOCK_MAX_POINTS = 5000;
 export const XY_BLOCK_MAX_POINTS = TEMPLATE_BLOCK_MAX_POINTS;
+const STRUCTURED_BLOCK_PURPOSE_VALUES = [
+  '',
+  'spectrum',
+  'iv',
+  'xrd',
+  'eqe',
+  'responsivity',
+  'custom'
+] as const;
 
 export type TemplateBlockType = typeof XY_TEMPLATE_TYPE | typeof SPECTRUM_TEMPLATE_TYPE;
+export type StructuredBlockPurpose = (typeof STRUCTURED_BLOCK_PURPOSE_VALUES)[number];
 
 export type XYPoint = {
   x: number;
@@ -11,6 +21,7 @@ export type XYPoint = {
 };
 
 export type XYCurveBlockMeta = {
+  purposeType: StructuredBlockPurpose;
   xLabel: string;
   xUnit: string;
   yLabel: string;
@@ -19,6 +30,7 @@ export type XYCurveBlockMeta = {
 };
 
 export type SpectrumBlockMeta = {
+  purposeType: StructuredBlockPurpose;
   spectrumAxisLabel: string;
   spectrumAxisUnit: string;
   signalLabel: string;
@@ -50,6 +62,14 @@ export type SpectrumBlockPayload = TemplateBlockSharedFields &
 
 export type TemplateBlockPayload = XYCurveBlockPayload | SpectrumBlockPayload;
 export type TemplateBlockMeta = XYCurveBlockMeta | SpectrumBlockMeta;
+
+export function normalizeStructuredBlockPurpose(
+  value: string | null | undefined
+): StructuredBlockPurpose {
+  const normalized = (value || '').trim() as StructuredBlockPurpose;
+
+  return STRUCTURED_BLOCK_PURPOSE_VALUES.includes(normalized) ? normalized : '';
+}
 
 export function trimBlockTitle(value: string) {
   return value.trim();
@@ -149,6 +169,7 @@ export function normalizeTemplateBlocks(
       return {
         ...block,
         templateType: XY_TEMPLATE_TYPE,
+        purposeType: normalizeStructuredBlockPurpose(block.purposeType),
         blockTitle: trimBlockTitle(block.blockTitle),
         blockOrder: index + 1,
         xLabel: block.xLabel.trim(),
@@ -162,6 +183,7 @@ export function normalizeTemplateBlocks(
     return {
       ...block,
       templateType: SPECTRUM_TEMPLATE_TYPE,
+      purposeType: normalizeStructuredBlockPurpose(block.purposeType),
       blockTitle: trimBlockTitle(block.blockTitle),
       blockOrder: index + 1,
       spectrumAxisLabel: block.spectrumAxisLabel.trim(),
@@ -176,6 +198,7 @@ export function normalizeTemplateBlocks(
 export function serializeTemplateBlockMeta(block: TemplateBlockPayload) {
   if (block.templateType === XY_TEMPLATE_TYPE) {
     const meta: XYCurveBlockMeta = {
+      purposeType: normalizeStructuredBlockPurpose(block.purposeType),
       xLabel: block.xLabel.trim(),
       xUnit: block.xUnit.trim(),
       yLabel: block.yLabel.trim(),
@@ -187,6 +210,7 @@ export function serializeTemplateBlockMeta(block: TemplateBlockPayload) {
   }
 
   const meta: SpectrumBlockMeta = {
+    purposeType: normalizeStructuredBlockPurpose(block.purposeType),
     spectrumAxisLabel: block.spectrumAxisLabel.trim(),
     spectrumAxisUnit: block.spectrumAxisUnit.trim(),
     signalLabel: block.signalLabel.trim(),
@@ -206,6 +230,9 @@ export function parseTemplateBlockMeta(
 
     if (templateType === XY_TEMPLATE_TYPE) {
       return {
+        purposeType: normalizeStructuredBlockPurpose(
+          typeof parsed.purposeType === 'string' ? parsed.purposeType : ''
+        ),
         xLabel: typeof parsed.xLabel === 'string' ? parsed.xLabel : '',
         xUnit: typeof parsed.xUnit === 'string' ? parsed.xUnit : '',
         yLabel: typeof parsed.yLabel === 'string' ? parsed.yLabel : '',
@@ -215,6 +242,9 @@ export function parseTemplateBlockMeta(
     }
 
     return {
+      purposeType: normalizeStructuredBlockPurpose(
+        typeof parsed.purposeType === 'string' ? parsed.purposeType : ''
+      ),
       spectrumAxisLabel:
         typeof parsed.spectrumAxisLabel === 'string' ? parsed.spectrumAxisLabel : '',
       spectrumAxisUnit:
@@ -226,6 +256,7 @@ export function parseTemplateBlockMeta(
   } catch {
     if (templateType === XY_TEMPLATE_TYPE) {
       return {
+        purposeType: '',
         xLabel: '',
         xUnit: '',
         yLabel: '',
@@ -235,6 +266,7 @@ export function parseTemplateBlockMeta(
     }
 
     return {
+      purposeType: '',
       spectrumAxisLabel: '',
       spectrumAxisUnit: '',
       signalLabel: '',

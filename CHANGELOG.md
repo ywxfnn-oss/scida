@@ -2,6 +2,35 @@
 
 ## Unreleased
 
+### Added
+
+- Added the new `数据分析` entry as a read-only workspace for comparing existing experiment records without modifying source data.
+- Added analysis chart support for:
+  - `标量图`
+  - `结构化图`
+- Added the right-side `详情` panel for readable record, condition, metric, and structured-block inspection in analysis flows.
+- Added mouse-driven chart interaction in analysis:
+  - wheel zoom
+  - drag pan
+  - reset view
+  - single-chart expand view
+- Added lightweight analysis UI persistence for:
+  - global sidebar collapsed state
+  - analysis detail-panel collapsed state
+  - analysis chart configuration rebuild state
+- Added per-series analysis controls for:
+  - hide / show
+  - remove
+  - rename
+  - color adjustment
+  - order adjustment
+
+### Changed
+
+- Changed analysis legend behavior so series can be controlled directly from the chart-local legend area.
+- Changed `导出当前图数据` in the analysis workspace to export only the currently visible series in the chart.
+- Changed analysis persistence to store chart configuration only; no raw-data snapshots or rendered point caches are written.
+
 ## v1.1.0 - 2026-03-26
 
 ### Added

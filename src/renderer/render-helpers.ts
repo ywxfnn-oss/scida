@@ -72,8 +72,8 @@ export function formatDateTimeForDisplay(value: string) {
   return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
 }
 
-export function escapeHtml(value: string) {
-  return value
+export function escapeHtml(value: unknown) {
+  return String(value ?? '')
     .replaceAll('&', '&amp;')
     .replaceAll('<', '&lt;')
     .replaceAll('>', '&gt;')

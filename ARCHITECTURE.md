@@ -8,6 +8,20 @@ Scidata Manager is a local-first Electron application for storing, browsing, edi
 
 The app keeps structured records in SQLite through Prisma and stores raw experiment files on disk under a configurable storage root.
 
+## Product Boundaries
+
+Current product behavior is intentionally split into three adjacent but different areas:
+
+- `数据`
+  - owns experiment creation, database list/detail/edit, and managed-file-aware record lifecycle
+- `数据分析`
+  - owns read-only visual comparison of existing records
+  - stores UI/chart configuration only
+  - never becomes the source-of-truth path for experiment data
+- `导出`
+  - owns workbook and ZIP export behavior
+  - still runs off the existing record/export model rather than analysis-side snapshots
+
 ## Runtime Layers
 
 ### Main Process
@@ -28,6 +42,8 @@ Responsibilities:
   - Excel workbook generation
   - ZIP creation
   - full export and item-name export flows
+- `src/main/ui-state-settings.ts`
+  - lightweight UI-state persistence for global shell state and analysis workspace config
 - `src/main/file-helpers.ts`
   - path building
   - filesystem helper utilities
@@ -68,6 +84,7 @@ Responsibilities:
 - keep Node/Electron access out of the renderer
 - forward renderer requests to main-process IPC handlers
 - include additive APIs for duplicate checks and file integrity scan results
+- include additive APIs for read/write of persisted analysis UI configuration
 
 ### Renderer
 **Files:** `src/renderer.ts`, `src/renderer/render-helpers.ts`
@@ -79,6 +96,7 @@ Responsibilities:
   - event binding
   - DOM/state collection
   - preload API usage
+  - read-only analysis workspace state and chart interaction
 - `src/renderer/render-helpers.ts`
   - pure formatting helpers
   - parameterized HTML string builders used by the renderer
@@ -87,6 +105,7 @@ Current user-facing safety features:
 
 - Settings includes a minimal file integrity scan report for the configured `storageRoot`.
 - create and update save flows include a non-blocking duplicate-record warning.
+- analysis remains chart-config-only and does not edit or delete source records.
 
 ## Database Layer
 
