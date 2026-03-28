@@ -1343,7 +1343,7 @@ function reconcileAnalysisComposerSelection(composer: AnalysisComposerState) {
     return {
       ...composer,
       selectedRecordIds,
-      yItemName: scalarMetricOptions.includes(composer.yItemName) ? composer.yItemName : ''
+      yItemName: pickSingleAnalysisOption(scalarMetricOptions, composer.yItemName)
     };
   }
 
@@ -1351,10 +1351,16 @@ function reconcileAnalysisComposerSelection(composer: AnalysisComposerState) {
   return {
     ...composer,
     selectedRecordIds,
-    selectedBlockName: structuredBlockOptions.includes(composer.selectedBlockName)
-      ? composer.selectedBlockName
-      : ''
+    selectedBlockName: pickSingleAnalysisOption(structuredBlockOptions, composer.selectedBlockName)
   };
+}
+
+function pickSingleAnalysisOption(options: string[], currentValue: string) {
+  if (options.includes(currentValue)) {
+    return currentValue;
+  }
+
+  return options.length === 1 ? options[0] : '';
 }
 
 function getVisibleAnalysisScalarSeries(chart: AnalysisChartCard) {
@@ -3901,6 +3907,9 @@ function renderAnalysisComposerModal() {
 
   if (composer.chartType === 'scalar') {
     const scalarMetricOptions = getAnalysisScalarMetricOptions(composer.selectedRecordIds);
+    const selectedCount = composer.selectedRecordIds.filter((recordId) =>
+      filteredRecords.some((entry) => entry.listItem.id === recordId)
+    ).length;
     const scalarMetricPrompt = !composer.selectedRecordIds.length
       ? '先勾选来源记录。'
       : scalarMetricOptions.length
@@ -3934,6 +3943,7 @@ function renderAnalysisComposerModal() {
             draftValue: composer.filterDraftValue
           })}
           <div class="analysis-modal-toolbar">
+            <div class="analysis-filter-result-summary">当前结果 ${filteredRecords.length} 条，已选择 ${selectedCount} 条</div>
             <button
               id="analysis-composer-toggle-select-btn"
               class="secondary-btn analysis-compact-toggle-btn"
@@ -3943,8 +3953,8 @@ function renderAnalysisComposerModal() {
               ${
                 filteredRecords.length &&
                 filteredRecords.every((entry) => composer.selectedRecordIds.includes(entry.listItem.id))
-                  ? '清除当前结果'
-                  : '全选当前结果'
+                  ? '取消当前结果'
+                  : '选择当前结果'
               }
             </button>
           </div>
@@ -4009,6 +4019,9 @@ function renderAnalysisComposerModal() {
   }
 
   const structuredBlockOptions = getAnalysisStructuredBlockNameOptions(composer.selectedRecordIds);
+  const selectedCount = composer.selectedRecordIds.filter((recordId) =>
+    filteredRecords.some((entry) => entry.listItem.id === recordId)
+  ).length;
   const structuredBlockPrompt = !composer.selectedRecordIds.length
     ? '先勾选来源记录。'
     : structuredBlockOptions.length
@@ -4042,6 +4055,7 @@ function renderAnalysisComposerModal() {
           draftValue: composer.filterDraftValue
         })}
         <div class="analysis-modal-toolbar">
+          <div class="analysis-filter-result-summary">当前结果 ${filteredRecords.length} 条，已选择 ${selectedCount} 条</div>
           <button
             id="analysis-composer-toggle-select-btn"
             class="secondary-btn analysis-compact-toggle-btn"
@@ -4051,8 +4065,8 @@ function renderAnalysisComposerModal() {
             ${
               filteredRecords.length &&
               filteredRecords.every((entry) => composer.selectedRecordIds.includes(entry.listItem.id))
-                ? '清除当前结果'
-                : '全选当前结果'
+                ? '取消当前结果'
+                : '选择当前结果'
             }
           </button>
         </div>
@@ -4863,9 +4877,7 @@ function bindAnalysisWorkspaceEvents() {
         analysisComposer = {
           ...analysisComposer,
           selectedRecordIds,
-          yItemName: scalarMetricOptions.includes(analysisComposer.yItemName)
-            ? analysisComposer.yItemName
-            : '',
+          yItemName: pickSingleAnalysisOption(scalarMetricOptions, analysisComposer.yItemName),
           error: ''
         };
 
@@ -4894,9 +4906,7 @@ function bindAnalysisWorkspaceEvents() {
       analysisComposer = {
         ...composer,
         selectedRecordIds,
-        yItemName: scalarMetricOptions.includes(composer.yItemName)
-          ? composer.yItemName
-          : '',
+        yItemName: pickSingleAnalysisOption(scalarMetricOptions, composer.yItemName),
         error: ''
       };
 
@@ -4943,9 +4953,10 @@ function bindAnalysisWorkspaceEvents() {
         analysisComposer = {
           ...analysisComposer,
           selectedRecordIds,
-          selectedBlockName: structuredBlockOptions.includes(analysisComposer.selectedBlockName)
-            ? analysisComposer.selectedBlockName
-            : '',
+          selectedBlockName: pickSingleAnalysisOption(
+            structuredBlockOptions,
+            analysisComposer.selectedBlockName
+          ),
           error: ''
         };
         requestRender(true);
@@ -4972,9 +4983,10 @@ function bindAnalysisWorkspaceEvents() {
       analysisComposer = {
         ...composer,
         selectedRecordIds,
-        selectedBlockName: structuredBlockOptions.includes(composer.selectedBlockName)
-          ? composer.selectedBlockName
-          : '',
+        selectedBlockName: pickSingleAnalysisOption(
+          structuredBlockOptions,
+          composer.selectedBlockName
+        ),
         error: ''
       };
 
@@ -7876,16 +7888,17 @@ async function render() {
           { id: 'db-menu-settings', label: '设置', icon: '⚙' }
         ])}
 
-        <main class="main-content">
-          <header class="topbar">
-            <div class="topbar-title">数据库入口</div>
-            <div class="detail-top-actions">
-              <span>已选择 ${selectedExperimentIds.length} 条</span>
-              <button id="db-select-all-btn" class="secondary-btn">
-                ${areAllVisibleSelected() ? '取消全选' : '全选'}
-              </button>
-              <button
-                id="db-clear-selection-btn"
+	        <main class="main-content">
+	          <header class="topbar">
+	            <div class="topbar-title">数据库入口</div>
+	            <div class="detail-top-actions">
+	              <span>当前结果 ${getVisibleExperimentIds().length} 条</span>
+	              <span>已选择 ${selectedExperimentIds.length} 条</span>
+	              <button id="db-select-all-btn" class="secondary-btn">
+	                ${areAllVisibleSelected() ? '取消当前结果' : '全选当前结果'}
+	              </button>
+	              <button
+	                id="db-clear-selection-btn"
                 class="secondary-btn"
                 type="button"
                 ${selectedExperimentIds.length ? '' : 'disabled'}

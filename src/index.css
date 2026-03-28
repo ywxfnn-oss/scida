@@ -2131,6 +2131,12 @@ body {
   gap: 10px;
   flex-wrap: wrap;
   margin-top: 12px;
+  align-items: center;
+}
+
+.analysis-filter-result-summary {
+  font-size: 13px;
+  color: #64748b;
 }
 
 .analysis-record-picker {
