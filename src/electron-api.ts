@@ -50,11 +50,13 @@ export type PersistedAnalysisUIStateChartConfig =
   | {
       chartType: 'scalar';
       semanticTitle: string;
+      customTitle?: string;
       scalarSeries: PersistedAnalysisUIStateScalarSeriesConfig[];
     }
   | {
       chartType: 'structured';
       semanticTitle: string;
+      customTitle?: string;
       structuredSeries: PersistedAnalysisUIStateStructuredSeriesConfig[];
     };
 

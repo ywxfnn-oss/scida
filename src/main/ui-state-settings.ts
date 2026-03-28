@@ -24,6 +24,11 @@ function normalizeOptionalDisplayName(value: unknown) {
   return text || undefined;
 }
 
+function normalizeOptionalTitle(value: unknown) {
+  const text = typeof value === 'string' ? value.trim() : '';
+  return text || undefined;
+}
+
 function normalizeOptionalColor(value: unknown) {
   const text = typeof value === 'string' ? value.trim() : '';
   return HEX_COLOR_PATTERN.test(text) ? text.toLowerCase() : undefined;
@@ -102,11 +107,13 @@ function normalizeChartConfig(value: unknown): PersistedAnalysisUIStateChartConf
   const config = value as Record<string, unknown>;
   const chartType = config.chartType === 'structured' ? 'structured' : config.chartType === 'scalar' ? 'scalar' : '';
   const semanticTitle = typeof config.semanticTitle === 'string' ? config.semanticTitle.trim() : '';
+  const customTitle = normalizeOptionalTitle(config.customTitle);
 
   if (chartType === 'scalar') {
     return {
       chartType,
       semanticTitle,
+      customTitle,
       scalarSeries: Array.isArray(config.scalarSeries)
         ? config.scalarSeries
             .map((series) => normalizeScalarSeriesConfig(series))
@@ -121,6 +128,7 @@ function normalizeChartConfig(value: unknown): PersistedAnalysisUIStateChartConf
     return {
       chartType,
       semanticTitle,
+      customTitle,
       structuredSeries: Array.isArray(config.structuredSeries)
         ? config.structuredSeries
             .map((series) => normalizeStructuredSeriesConfig(series))

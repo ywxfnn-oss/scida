@@ -206,7 +206,9 @@ type AnalysisScalarPoint = {
 type AnalysisScalarSeries = {
   id: string;
   name: string;
+  defaultName: string;
   color: string;
+  defaultColor: string;
   hidden: boolean;
   recordIds: number[];
   xSourceLabel: string;
@@ -222,7 +224,9 @@ type AnalysisScalarSeries = {
 type AnalysisStructuredSeries = {
   id: string;
   name: string;
+  defaultName: string;
   color: string;
+  defaultColor: string;
   hidden: boolean;
   sourceBlockDisplayName: string;
   experimentId: number;
@@ -250,6 +254,7 @@ type AnalysisChartCard = {
   id: string;
   chartType: AnalysisChartType;
   title: string;
+  customTitle: string | null;
   scalarSeries: AnalysisScalarSeries[];
   structuredSeries: AnalysisStructuredSeries[];
   viewport: AnalysisViewport | null;
@@ -640,6 +645,10 @@ let analysisExportMenuChartId: string | null = null;
 let analysisChartDragState: AnalysisChartDragState | null = null;
 let analysisInspectorCollapsed = false;
 let analysisExpandedChartId: string | null = null;
+let analysisChartTitleEditState: {
+  chartId: string;
+  value: string;
+} | null = null;
 let analysisSeriesRenameState: {
   chartId: string;
   seriesId: string;
@@ -685,30 +694,39 @@ function buildPersistedAnalysisUIStateSnapshot(): PersistedAnalysisUIState {
     sidebarCollapsed,
     analysisDetailCollapsed: analysisInspectorCollapsed,
     analysisCharts: analysisCharts.map((chart) => {
+      const autoTitle = getAnalysisAutoChartTitle(chart);
       if (chart.chartType === 'scalar') {
         return {
           chartType: 'scalar',
-          semanticTitle: chart.title,
+          semanticTitle: autoTitle,
+          customTitle:
+            chart.customTitle?.trim() && chart.customTitle.trim() !== autoTitle
+              ? chart.customTitle.trim()
+              : undefined,
           scalarSeries: chart.scalarSeries.map((series) => ({
             xFieldKey: series.xSourceValue.replace('step1:', '') as AnalysisStep1FieldKey,
             yMetricName: series.yItemName,
             selectedRecordIds: [...series.recordIds],
             hidden: series.hidden,
-            displayName: series.name,
-            color: series.color
+            displayName: series.name !== series.defaultName ? series.name : undefined,
+            color: series.color !== series.defaultColor ? series.color : undefined
           }))
         };
       }
 
       return {
         chartType: 'structured',
-        semanticTitle: chart.title,
+        semanticTitle: autoTitle,
+        customTitle:
+          chart.customTitle?.trim() && chart.customTitle.trim() !== autoTitle
+            ? chart.customTitle.trim()
+            : undefined,
         structuredSeries: chart.structuredSeries.map((series) => ({
           blockDisplayName: series.sourceBlockDisplayName,
           selectedRecordIds: [series.experimentId],
           hidden: series.hidden,
-          displayName: series.name,
-          color: series.color
+          displayName: series.name !== series.defaultName ? series.name : undefined,
+          color: series.color !== series.defaultColor ? series.color : undefined
         }))
       };
     })
@@ -957,6 +975,30 @@ function getAnalysisChartColor(index: number) {
   return ANALYSIS_CHART_COLORS[index % ANALYSIS_CHART_COLORS.length];
 }
 
+function getAnalysisSeriesDefaultName(
+  series: AnalysisScalarSeries | AnalysisStructuredSeries
+) {
+  return series.defaultName.trim() || series.name.trim();
+}
+
+function getAnalysisSeriesDefaultColor(
+  series: AnalysisScalarSeries | AnalysisStructuredSeries
+) {
+  return series.defaultColor.trim().toLowerCase() || series.color.trim().toLowerCase();
+}
+
+function hasAnalysisCustomSeriesName(
+  series: AnalysisScalarSeries | AnalysisStructuredSeries
+) {
+  return series.name.trim() !== getAnalysisSeriesDefaultName(series);
+}
+
+function hasAnalysisCustomSeriesColor(
+  series: AnalysisScalarSeries | AnalysisStructuredSeries
+) {
+  return series.color.trim().toLowerCase() !== getAnalysisSeriesDefaultColor(series);
+}
+
 function normalizeAnalysisUnit(unit: string) {
   return unit.trim().toLowerCase();
 }
@@ -1062,6 +1104,26 @@ function buildAnalysisChartTitle(chartType: AnalysisChartType) {
   return chartType === 'scalar' ? '标量分析' : '结构化分析';
 }
 
+function getAnalysisAutoChartTitle(chart: AnalysisChartCard, fallbackTitle = '') {
+  const hasSeries =
+    chart.chartType === 'scalar' ? chart.scalarSeries.length > 0 : chart.structuredSeries.length > 0;
+
+  if (!hasSeries) {
+    return fallbackTitle.trim() || buildAnalysisChartTitle(chart.chartType);
+  }
+
+  return composeAnalysisChartTitle(chart);
+}
+
+function getAnalysisEffectiveChartTitle(chart: AnalysisChartCard, fallbackTitle = '') {
+  const customTitle = chart.customTitle?.trim();
+  if (customTitle) {
+    return customTitle;
+  }
+
+  return getAnalysisAutoChartTitle(chart, fallbackTitle);
+}
+
 function composeAnalysisChartTitle(chart: AnalysisChartCard) {
   if (chart.chartType === 'scalar') {
     const visibleScalarSeries = getVisibleAnalysisScalarSeries(chart);
@@ -1104,6 +1166,7 @@ function buildAnalysisChart(chartType: AnalysisChartType): AnalysisChartCard {
     id: generateId(),
     chartType,
     title: buildAnalysisChartTitle(chartType),
+    customTitle: null,
     scalarSeries: [],
     structuredSeries: [],
     viewport: null,
@@ -1286,7 +1349,9 @@ function buildAnalysisScalarSeries(
     series: {
       id: generateId(),
       name: composer.yItemName.trim(),
+      defaultName: composer.yItemName.trim(),
       color: getAnalysisChartColor(chart.scalarSeries.length),
+      defaultColor: getAnalysisChartColor(chart.scalarSeries.length),
       hidden: false,
       recordIds: [...composer.selectedRecordIds],
       xSourceLabel,
@@ -1320,14 +1385,18 @@ function buildAnalysisStructuredSeriesFromBlock(
   const xUnit = block.templateType === XY_TEMPLATE_TYPE ? block.xUnit : block.spectrumAxisUnit;
   const yLabel = block.templateType === XY_TEMPLATE_TYPE ? block.yLabel : block.signalLabel;
   const yUnit = block.templateType === XY_TEMPLATE_TYPE ? block.yUnit : block.signalUnit;
+  const defaultName = getAnalysisStructuredBlockDisplayName(block);
+  const defaultColor = getAnalysisChartColor(chart.structuredSeries.length);
 
   return {
     series: {
       id: generateId(),
-      name: getAnalysisStructuredBlockDisplayName(block),
-      color: getAnalysisChartColor(chart.structuredSeries.length),
+      name: defaultName,
+      defaultName,
+      color: defaultColor,
+      defaultColor,
       hidden: false,
-      sourceBlockDisplayName: getAnalysisStructuredBlockDisplayName(block),
+      sourceBlockDisplayName: defaultName,
       experimentId: entry.detail.id,
       recordDisplayName: entry.detail.displayName,
       blockId: block.id,
@@ -1450,6 +1519,7 @@ function restoreAnalysisChartFromPersistedConfig(
 ): AnalysisChartCard {
   let chart = buildAnalysisChart(config.chartType);
   const fallbackTitle = config.semanticTitle.trim() || chart.title;
+  const customTitle = config.customTitle?.trim() || null;
 
   if (config.chartType === 'scalar') {
     config.scalarSeries.forEach((seriesConfig) => {
@@ -1477,8 +1547,8 @@ function restoreAnalysisChartFromPersistedConfig(
           {
             ...buildResult.series,
             hidden: Boolean(seriesConfig.hidden),
-            name: seriesConfig.displayName?.trim() || buildResult.series.name,
-            color: seriesConfig.color || buildResult.series.color
+            name: seriesConfig.displayName?.trim() || buildResult.series.defaultName,
+            color: seriesConfig.color || buildResult.series.defaultColor
           }
         ],
         selectionNotice: ''
@@ -1517,8 +1587,8 @@ function restoreAnalysisChartFromPersistedConfig(
           ...buildResult.seriesList.map((series) => ({
             ...series,
             hidden: Boolean(seriesConfig.hidden),
-            name: seriesConfig.displayName?.trim() || series.name,
-            color: seriesConfig.color || series.color
+            name: seriesConfig.displayName?.trim() || series.defaultName,
+            color: seriesConfig.color || series.defaultColor
           }))
         ]
       };
@@ -1532,14 +1602,8 @@ function restoreAnalysisChartFromPersistedConfig(
 
   const nextChart = {
     ...chart,
-    title:
-      chart.chartType === 'scalar'
-        ? chart.scalarSeries.length
-          ? composeAnalysisChartTitle(chart)
-          : fallbackTitle
-        : chart.structuredSeries.length
-          ? composeAnalysisChartTitle(chart)
-          : fallbackTitle,
+    customTitle,
+    title: customTitle || getAnalysisAutoChartTitle(chart, fallbackTitle),
     statusMessages: [] as string[]
   };
 
@@ -1581,7 +1645,9 @@ function refreshAnalysisChartsFromCatalog() {
             ...buildResult.series,
             hidden: series.hidden,
             name: series.name,
-            color: series.color
+            color: series.color,
+            defaultName: buildResult.series.defaultName,
+            defaultColor: buildResult.series.defaultColor
           });
         }
       });
@@ -1594,7 +1660,7 @@ function refreshAnalysisChartsFromCatalog() {
 
       return {
         ...nextChart,
-        title: composeAnalysisChartTitle(nextChart),
+        title: getAnalysisEffectiveChartTitle(nextChart, chart.title),
         statusMessages: buildAnalysisChartStatusMessages(nextChart)
       };
     }
@@ -1617,6 +1683,8 @@ function refreshAnalysisChartsFromCatalog() {
           hidden: series.hidden,
           name: series.name,
           color: series.color,
+          defaultName: buildResult.series.defaultName,
+          defaultColor: buildResult.series.defaultColor,
           sourceBlockDisplayName: series.sourceBlockDisplayName
         });
       }
@@ -1630,7 +1698,7 @@ function refreshAnalysisChartsFromCatalog() {
 
     return {
       ...nextChart,
-      title: composeAnalysisChartTitle(nextChart),
+      title: getAnalysisEffectiveChartTitle(nextChart, chart.title),
       statusMessages: buildAnalysisChartStatusMessages(nextChart)
     };
   });
@@ -1647,18 +1715,27 @@ function updateAnalysisChart(
   chartId: string,
   updater: (chart: AnalysisChartCard) => AnalysisChartCard
 ) {
+  let updatedChart: AnalysisChartCard | null = null;
   analysisCharts = analysisCharts.map((chart) => {
     if (chart.id !== chartId) {
       return chart;
     }
 
     const nextChart = updater(chart);
-    return {
+    updatedChart = {
       ...nextChart,
-      title: composeAnalysisChartTitle(nextChart),
+      title: getAnalysisEffectiveChartTitle(nextChart, chart.title),
       statusMessages: buildAnalysisChartStatusMessages(nextChart)
     };
+    return updatedChart;
   });
+
+  if (updatedChart && analysisInspector?.chartId === chartId) {
+    analysisInspector = {
+      ...analysisInspector,
+      chartTitle: updatedChart.title
+    };
+  }
 }
 
 async function loadAnalysisWorkspaceData() {
@@ -1688,6 +1765,7 @@ async function openAnalysisWorkspace() {
   analysisChartDragState = null;
   analysisExportMenuChartId = null;
   analysisExpandedChartId = null;
+  analysisChartTitleEditState = null;
 
   await ensurePersistedAnalysisUIStateLoaded();
 
@@ -1762,6 +1840,10 @@ function removeAnalysisChart(chartId: string) {
 
   if (analysisExpandedChartId === chartId) {
     analysisExpandedChartId = null;
+  }
+
+  if (analysisChartTitleEditState?.chartId === chartId) {
+    analysisChartTitleEditState = null;
   }
 
   if (analysisSeriesRenameState?.chartId === chartId) {
@@ -1855,6 +1937,46 @@ function removeAnalysisSeries(chartId: string, seriesId: string) {
   requestRender(true);
 }
 
+function renameAnalysisChart(chartId: string, nextTitle: string) {
+  const trimmedTitle = nextTitle.trim();
+  if (!trimmedTitle) {
+    return;
+  }
+
+  const chart = getAnalysisChart(chartId);
+  if (!chart) {
+    return;
+  }
+
+  updateAnalysisChart(chartId, (currentChart) => ({
+    ...currentChart,
+    customTitle: trimmedTitle
+  }));
+
+  analysisChartTitleEditState = null;
+  schedulePersistedAnalysisUIStateSave();
+  requestRender(true);
+}
+
+function restoreDefaultAnalysisChartTitle(chartId: string) {
+  const chart = getAnalysisChart(chartId);
+  if (!chart) {
+    return;
+  }
+
+  updateAnalysisChart(chartId, (currentChart) => ({
+    ...currentChart,
+    customTitle: null
+  }));
+
+  if (analysisChartTitleEditState?.chartId === chartId) {
+    analysisChartTitleEditState = null;
+  }
+
+  schedulePersistedAnalysisUIStateSave();
+  requestRender(true);
+}
+
 function renameAnalysisSeries(chartId: string, seriesId: string, nextName: string) {
   const trimmedName = nextName.trim();
   if (!trimmedName) {
@@ -1887,6 +2009,39 @@ function renameAnalysisSeries(chartId: string, seriesId: string, nextName: strin
   requestRender(true);
 }
 
+function restoreDefaultAnalysisSeriesName(chartId: string, seriesId: string) {
+  const chart = getAnalysisChart(chartId);
+  if (!chart) {
+    return;
+  }
+
+  if (chart.chartType === 'scalar') {
+    updateAnalysisChart(chartId, (currentChart) => ({
+      ...currentChart,
+      scalarSeries: currentChart.scalarSeries.map((series) =>
+        series.id === seriesId ? { ...series, name: getAnalysisSeriesDefaultName(series) } : series
+      )
+    }));
+  } else {
+    updateAnalysisChart(chartId, (currentChart) => ({
+      ...currentChart,
+      structuredSeries: currentChart.structuredSeries.map((series) =>
+        series.id === seriesId ? { ...series, name: getAnalysisSeriesDefaultName(series) } : series
+      )
+    }));
+  }
+
+  if (
+    analysisSeriesRenameState?.chartId === chartId &&
+    analysisSeriesRenameState.seriesId === seriesId
+  ) {
+    analysisSeriesRenameState = null;
+  }
+
+  schedulePersistedAnalysisUIStateSave();
+  requestRender(true);
+}
+
 function updateAnalysisSeriesColor(chartId: string, seriesId: string, color: string) {
   const normalizedColor = color.trim().toLowerCase();
   if (!/^#[0-9a-f]{6}$/.test(normalizedColor)) {
@@ -1910,6 +2065,32 @@ function updateAnalysisSeriesColor(chartId: string, seriesId: string, color: str
       ...currentChart,
       structuredSeries: currentChart.structuredSeries.map((series) =>
         series.id === seriesId ? { ...series, color: normalizedColor } : series
+      )
+    }));
+  }
+
+  schedulePersistedAnalysisUIStateSave();
+  requestRender(true);
+}
+
+function restoreDefaultAnalysisSeriesColor(chartId: string, seriesId: string) {
+  const chart = getAnalysisChart(chartId);
+  if (!chart) {
+    return;
+  }
+
+  if (chart.chartType === 'scalar') {
+    updateAnalysisChart(chartId, (currentChart) => ({
+      ...currentChart,
+      scalarSeries: currentChart.scalarSeries.map((series) =>
+        series.id === seriesId ? { ...series, color: getAnalysisSeriesDefaultColor(series) } : series
+      )
+    }));
+  } else {
+    updateAnalysisChart(chartId, (currentChart) => ({
+      ...currentChart,
+      structuredSeries: currentChart.structuredSeries.map((series) =>
+        series.id === seriesId ? { ...series, color: getAnalysisSeriesDefaultColor(series) } : series
       )
     }));
   }
@@ -2916,6 +3097,7 @@ function renderAnalysisChartCard(chart: AnalysisChartCard, expanded = false) {
     chart.chartType === 'scalar'
       ? chart.scalarSeries
       : chart.structuredSeries;
+  const isChartTitleEditing = analysisChartTitleEditState?.chartId === chart.id;
   const primaryScalarSeries = getVisibleAnalysisScalarSeries(chart)[0] || chart.scalarSeries[0];
   const primaryStructuredSeries =
     getVisibleAnalysisStructuredSeries(chart)[0] || chart.structuredSeries[0];
@@ -2941,7 +3123,65 @@ function renderAnalysisChartCard(chart: AnalysisChartCard, expanded = false) {
       <div class="analysis-card-header">
         <div class="analysis-card-heading">
           <div class="analysis-card-eyebrow">${chart.chartType === 'scalar' ? '标量' : '结构化'}</div>
-          <div class="analysis-card-title">${escapeHtml(chart.title)}</div>
+          <div class="analysis-card-title-row">
+            <div class="analysis-card-title">${escapeHtml(chart.title)}</div>
+            <div class="analysis-card-title-actions">
+              <button
+                class="analysis-card-title-btn"
+                type="button"
+                title="编辑图表标题"
+                aria-label="编辑图表标题"
+                data-analysis-chart-title-edit="${chart.id}"
+              >
+                ✎
+              </button>
+              ${chart.customTitle
+                ? `
+                    <button
+                      class="analysis-card-title-btn"
+                      type="button"
+                      title="恢复默认标题"
+                      aria-label="恢复默认标题"
+                      data-analysis-chart-title-reset="${chart.id}"
+                    >
+                      ↺
+                    </button>
+                  `
+                : ''}
+            </div>
+          </div>
+          ${isChartTitleEditing
+            ? `
+                <div class="analysis-card-title-edit-row">
+                  <input
+                    class="form-input analysis-card-title-input"
+                    value="${escapeHtml(analysisChartTitleEditState?.value || chart.title)}"
+                    data-analysis-chart-title-input="${chart.id}"
+                  />
+                  <button
+                    class="analysis-legend-save-btn"
+                    type="button"
+                    data-analysis-chart-title-save="${chart.id}"
+                  >
+                    保存
+                  </button>
+                  <button
+                    class="analysis-legend-cancel-btn"
+                    type="button"
+                    data-analysis-chart-title-cancel="${chart.id}"
+                  >
+                    取消
+                  </button>
+                  <button
+                    class="analysis-legend-cancel-btn"
+                    type="button"
+                    data-analysis-chart-title-restore="${chart.id}"
+                  >
+                    默认
+                  </button>
+                </div>
+              `
+            : ''}
           <div class="analysis-card-meta">${axisSummary}</div>
         </div>
         <div class="analysis-card-actions">
@@ -3025,6 +3265,19 @@ function renderAnalysisChartCard(chart: AnalysisChartCard, expanded = false) {
                             data-analysis-series-color="${chart.id}::${series.id}"
                           />
                         </label>
+                        ${hasAnalysisCustomSeriesColor(series)
+                          ? `
+                              <button
+                                class="analysis-legend-icon-btn"
+                                type="button"
+                                title="恢复默认颜色"
+                                aria-label="恢复默认颜色"
+                                data-analysis-series-color-reset="${chart.id}::${series.id}"
+                              >
+                                ↺
+                              </button>
+                            `
+                          : ''}
                         <button
                           class="analysis-legend-icon-btn"
                           type="button"
@@ -3054,6 +3307,19 @@ function renderAnalysisChartCard(chart: AnalysisChartCard, expanded = false) {
                         >
                           ✎
                         </button>
+                        ${hasAnalysisCustomSeriesName(series)
+                          ? `
+                              <button
+                                class="analysis-legend-icon-btn"
+                                type="button"
+                                title="恢复默认名称"
+                                aria-label="恢复默认名称"
+                                data-analysis-series-name-reset="${chart.id}::${series.id}"
+                              >
+                                ↺
+                              </button>
+                            `
+                          : ''}
                         <button
                           class="analysis-legend-remove"
                           type="button"
@@ -3587,6 +3853,94 @@ function bindAnalysisWorkspaceEvents() {
     });
   });
 
+  document.querySelectorAll('[data-analysis-chart-title-edit]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const chartId = (button as HTMLElement).dataset.analysisChartTitleEdit;
+      const chart = chartId ? getAnalysisChart(chartId) : null;
+      if (!chartId || !chart) {
+        return;
+      }
+
+      analysisChartTitleEditState = {
+        chartId,
+        value: chart.title
+      };
+      requestRender(true);
+    });
+  });
+
+  document.querySelectorAll('[data-analysis-chart-title-input]').forEach((input) => {
+    input.addEventListener('input', (event) => {
+      if (!analysisChartTitleEditState) {
+        return;
+      }
+
+      analysisChartTitleEditState = {
+        ...analysisChartTitleEditState,
+        value: (event.target as HTMLInputElement).value
+      };
+    });
+
+    input.addEventListener('keydown', (event) => {
+      const encoded = (input as HTMLElement).dataset.analysisChartTitleInput;
+      const keyboardEvent = event as KeyboardEvent;
+      if (!encoded) {
+        return;
+      }
+
+      if (keyboardEvent.key === 'Enter') {
+        renameAnalysisChart(encoded, (event.target as HTMLInputElement).value);
+      }
+
+      if (keyboardEvent.key === 'Escape') {
+        analysisChartTitleEditState = null;
+        requestRender(true);
+      }
+    });
+  });
+
+  if (analysisChartTitleEditState) {
+    const activeChartTitleInput = document.querySelector(
+      `[data-analysis-chart-title-input="${analysisChartTitleEditState.chartId}"]`
+    ) as HTMLInputElement | null;
+
+    if (activeChartTitleInput) {
+      activeChartTitleInput.focus();
+      activeChartTitleInput.select();
+    }
+  }
+
+  document.querySelectorAll('[data-analysis-chart-title-save]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const chartId = (button as HTMLElement).dataset.analysisChartTitleSave;
+      if (!chartId || !analysisChartTitleEditState) {
+        return;
+      }
+
+      renameAnalysisChart(chartId, analysisChartTitleEditState.value);
+    });
+  });
+
+  document.querySelectorAll('[data-analysis-chart-title-cancel]').forEach((button) => {
+    button.addEventListener('click', () => {
+      analysisChartTitleEditState = null;
+      requestRender(true);
+    });
+  });
+
+  document.querySelectorAll('[data-analysis-chart-title-reset], [data-analysis-chart-title-restore]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const chartId =
+        (button as HTMLElement).dataset.analysisChartTitleReset ||
+        (button as HTMLElement).dataset.analysisChartTitleRestore;
+      if (!chartId) {
+        return;
+      }
+
+      restoreDefaultAnalysisChartTitle(chartId);
+    });
+  });
+
   document.querySelectorAll('[data-analysis-legend-toggle]').forEach((button) => {
     button.addEventListener('click', () => {
       const encoded = (button as HTMLElement).dataset.analysisLegendToggle;
@@ -3697,6 +4051,16 @@ function bindAnalysisWorkspaceEvents() {
     });
   });
 
+  document.querySelectorAll('[data-analysis-series-color-reset]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const encoded = (button as HTMLElement).dataset.analysisSeriesColorReset;
+      if (!encoded) return;
+
+      const [chartId, seriesId] = encoded.split('::');
+      restoreDefaultAnalysisSeriesColor(chartId, seriesId);
+    });
+  });
+
   document.querySelectorAll('[data-analysis-series-move-up]').forEach((button) => {
     button.addEventListener('click', () => {
       const encoded = (button as HTMLElement).dataset.analysisSeriesMoveUp;
@@ -3728,6 +4092,18 @@ function bindAnalysisWorkspaceEvents() {
       }
 
       removeAnalysisSeries(chartId, seriesId);
+    });
+  });
+
+  document.querySelectorAll('[data-analysis-series-name-reset]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const encoded = (button as HTMLElement).dataset.analysisSeriesNameReset;
+      if (!encoded) {
+        return;
+      }
+
+      const [chartId, seriesId] = encoded.split('::');
+      restoreDefaultAnalysisSeriesName(chartId, seriesId);
     });
   });
 

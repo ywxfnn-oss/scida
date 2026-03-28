@@ -1472,7 +1472,52 @@ body {
   font-size: 19px;
   font-weight: 700;
   color: #0f172a;
+  margin-top: 0;
+}
+
+.analysis-card-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   margin-top: 8px;
+}
+
+.analysis-card-title-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.analysis-card-title-btn {
+  width: 26px;
+  height: 26px;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(226, 232, 240, 0.95);
+  color: #475569;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font: inherit;
+}
+
+.analysis-card-title-btn:hover {
+  background: rgba(203, 213, 225, 0.95);
+  color: #1f2937;
+}
+
+.analysis-card-title-input {
+  min-width: 240px;
+  height: 34px;
+}
+
+.analysis-card-title-edit-row {
+  margin-top: 8px;
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 
 .analysis-card-meta {
@@ -1577,7 +1622,7 @@ body {
 .analysis-legend-list {
   display: flex;
   flex-wrap: wrap;
-  gap: 10px;
+  gap: 8px;
   margin-top: 14px;
 }
 
@@ -1585,9 +1630,9 @@ body {
   display: inline-flex;
   flex-direction: column;
   align-items: stretch;
-  gap: 6px;
-  padding: 6px;
-  border-radius: 16px;
+  gap: 4px;
+  padding: 5px 6px;
+  border-radius: 14px;
   background: #f8fafc;
   border: 1px solid #dbe4ef;
   color: #334155;
@@ -1596,7 +1641,7 @@ body {
 .analysis-legend-primary-row {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
 }
 
 .analysis-legend-item.hidden-series {
@@ -1611,17 +1656,19 @@ body {
   color: inherit;
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  padding: 4px 8px;
+  gap: 6px;
+  padding: 4px 7px;
   border-radius: 999px;
   cursor: pointer;
   font: inherit;
+  min-width: 0;
 }
 
 .analysis-legend-actions {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 3px;
+  flex-wrap: wrap;
 }
 
 .analysis-legend-main:hover {
@@ -1636,8 +1683,8 @@ body {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 24px;
-  height: 24px;
+  width: 22px;
+  height: 22px;
   overflow: hidden;
   border-radius: 999px;
   border: 1px solid #dbe4ef;
@@ -1646,9 +1693,9 @@ body {
 }
 
 .analysis-legend-color-input {
-  width: 32px;
-  height: 32px;
-  margin: -4px;
+  width: 28px;
+  height: 28px;
+  margin: -3px;
   padding: 0;
   border: 0;
   background: transparent;
@@ -1659,11 +1706,11 @@ body {
   border: 0;
   background: transparent;
   color: #64748b;
-  width: 24px;
-  height: 24px;
+  width: 22px;
+  height: 22px;
   border-radius: 999px;
   cursor: pointer;
-  font: inherit;
+  font-size: 12px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1683,11 +1730,11 @@ body {
   border: 0;
   background: transparent;
   color: #94a3b8;
-  width: 24px;
-  height: 24px;
+  width: 22px;
+  height: 22px;
   border-radius: 999px;
   cursor: pointer;
-  font: inherit;
+  font-size: 12px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1701,6 +1748,7 @@ body {
 .analysis-legend-edit-row {
   display: inline-flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 6px;
 }
 
