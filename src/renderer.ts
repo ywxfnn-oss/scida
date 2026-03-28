@@ -46,9 +46,12 @@ import {
   renderRecentOperationLogs
 } from './renderer/render-helpers';
 import {
+  collectCrossFilterCandidateValues,
   formatCrossFilterChipLabel,
   getCrossFilterFieldPlaceholder,
-  matchesCrossFilterSet
+  matchesCrossFilterSet,
+  supportsCrossFilterCandidatePicker,
+  type CrossFilterRecordLike
 } from './cross-filters';
 import {
   getStructuredBlockPurposeLabel,
@@ -317,6 +320,7 @@ type AnalysisComposerState =
       filterDraftOperator: CrossFilterOperator;
       filterDraftValue: string;
       filterDraftValue2: string;
+      filterDraftPendingValues: string[];
       selectedRecordIds: number[];
       step1FieldKey: AnalysisStep1FieldKey;
       yItemName: string;
@@ -335,6 +339,7 @@ type AnalysisComposerState =
       filterDraftOperator: CrossFilterOperator;
       filterDraftValue: string;
       filterDraftValue2: string;
+      filterDraftPendingValues: string[];
       selectedRecordIds: number[];
       selectedBlockName: string;
       pending: boolean;
@@ -347,6 +352,7 @@ type CrossFilterDraftState = {
   operator: CrossFilterOperator;
   value: string;
   value2: string;
+  pendingValues: string[];
 };
 
 type AppSidebarItem = {
@@ -653,8 +659,13 @@ let databaseFilterDraft: CrossFilterDraftState = {
   field: 'sampleCode',
   operator: 'eq',
   value: '',
-  value2: ''
+  value2: '',
+  pendingValues: []
 };
+let databaseFilterCandidateQuery = '';
+let databaseFilterCandidateValues: string[] = [];
+let databaseFilterCandidateLoading = false;
+let databaseFilterCandidateKey = '';
 let databaseGroups: ExperimentGroup[] = [];
 let currentDetail: ExperimentDetail | null = null;
 let currentEditHistory: ExperimentEditHistoryEntry[] = [];
@@ -703,6 +714,7 @@ let analysisRecords: AnalysisRecordCatalogEntry[] = [];
 let analysisCharts: AnalysisChartCard[] = [];
 let analysisInspector: AnalysisInspectorState | null = null;
 let analysisComposer: AnalysisComposerState | null = null;
+let analysisFilterCandidateQuery = '';
 let analysisExportMenuChartId: string | null = null;
 let analysisChartDragState: AnalysisChartDragState | null = null;
 let analysisInspectorCollapsed = false;
@@ -1077,12 +1089,17 @@ function buildDefaultCrossFilterDraft(): CrossFilterDraftState {
     field: 'sampleCode',
     operator: 'eq',
     value: '',
-    value2: ''
+    value2: '',
+    pendingValues: []
   };
 }
 
 function supportsCrossFilterRangeOperator(field: CrossFilterField) {
   return field === 'conditionValue' || field === 'metricValue';
+}
+
+function supportsCrossFilterPendingMultiValue(operator: CrossFilterOperator) {
+  return operator === 'eq';
 }
 
 function createCrossFilterChip(
@@ -1119,8 +1136,233 @@ function addCrossFilterChip(
   return [...chips, createCrossFilterChip(field, trimmedValue, operator, value2)];
 }
 
+function addCrossFilterChipBatch(
+  chips: CrossFilterChip[],
+  field: CrossFilterField,
+  operator: CrossFilterOperator,
+  values: string[],
+  value2 = ''
+) {
+  let nextChips = [...chips];
+
+  values
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .forEach((value) => {
+      const duplicate = nextChips.some(
+        (chip) =>
+          chip.field === field &&
+          (chip.operator || 'eq') === operator &&
+          chip.value.trim() === value &&
+          (chip.value2 || '').trim() === value2.trim()
+      );
+
+      if (!duplicate) {
+        nextChips = [...nextChips, createCrossFilterChip(field, value, operator, value2)];
+      }
+    });
+
+  return nextChips;
+}
+
+function addPendingCrossFilterValue(values: string[], value: string) {
+  const trimmed = value.trim();
+
+  if (!trimmed || values.includes(trimmed)) {
+    return values;
+  }
+
+  return [...values, trimmed];
+}
+
+function removePendingCrossFilterValue(values: string[], value: string) {
+  return values.filter((entry) => entry !== value);
+}
+
 function removeCrossFilterChip(chips: CrossFilterChip[], chipId: string) {
   return chips.filter((chip) => chip.id !== chipId);
+}
+
+function buildCrossFilterCandidateBaseChips(
+  chips: CrossFilterChip[],
+  field: CrossFilterField,
+  operator: CrossFilterOperator
+) {
+  if (!supportsCrossFilterCandidatePicker(field, operator)) {
+    return chips;
+  }
+
+  return chips.filter(
+    (chip) => !(chip.field === field && (chip.operator || 'eq') === 'eq')
+  );
+}
+
+function filterCrossFilterCandidateValues(values: string[], query: string) {
+  const normalizedQuery = query.trim().toLowerCase();
+  if (!normalizedQuery) {
+    return values;
+  }
+
+  return values.filter((value) => value.toLowerCase().includes(normalizedQuery));
+}
+
+function togglePendingCrossFilterCandidateValue(
+  values: string[],
+  value: string,
+  checked: boolean
+) {
+  return checked ? addPendingCrossFilterValue(values, value) : removePendingCrossFilterValue(values, value);
+}
+
+function resetDatabaseFilterCandidateState() {
+  databaseFilterCandidateQuery = '';
+  databaseFilterCandidateValues = [];
+  databaseFilterCandidateLoading = false;
+  databaseFilterCandidateKey = '';
+}
+
+function getDatabaseFilterCandidateValues() {
+  return filterCrossFilterCandidateValues(
+    databaseFilterCandidateValues,
+    databaseFilterCandidateQuery
+  );
+}
+
+async function refreshDatabaseFilterCandidateValues(force = false) {
+  if (
+    !databaseFilterDraft.open ||
+    !supportsCrossFilterCandidatePicker(databaseFilterDraft.field, databaseFilterDraft.operator)
+  ) {
+    if (databaseFilterCandidateValues.length || databaseFilterCandidateLoading || databaseFilterCandidateQuery) {
+      resetDatabaseFilterCandidateState();
+    }
+    return;
+  }
+
+  const baseCrossFilters = buildCrossFilterCandidateBaseChips(
+    databaseCrossFilters,
+    databaseFilterDraft.field,
+    databaseFilterDraft.operator
+  );
+  const requestKey = JSON.stringify({
+    query: databaseSearchKeyword.trim(),
+    field: databaseFilterDraft.field,
+    crossFilters: baseCrossFilters.map((chip) => ({
+      field: chip.field,
+      operator: chip.operator || 'eq',
+      value: chip.value,
+      value2: chip.value2 || ''
+    }))
+  });
+
+  if (!force && requestKey === databaseFilterCandidateKey) {
+    return;
+  }
+
+  databaseFilterCandidateKey = requestKey;
+  databaseFilterCandidateLoading = true;
+  void renderPreservingContentScroll();
+
+  try {
+    const values = await window.electronAPI.listExperimentFilterValueCandidates({
+      query: databaseSearchKeyword.trim(),
+      crossFilters: baseCrossFilters,
+      field: databaseFilterDraft.field
+    });
+
+    if (databaseFilterCandidateKey !== requestKey) {
+      return;
+    }
+
+    databaseFilterCandidateValues = values;
+  } catch (error) {
+    console.error(error);
+    if (databaseFilterCandidateKey === requestKey) {
+      databaseFilterCandidateValues = [];
+    }
+  } finally {
+    if (databaseFilterCandidateKey === requestKey) {
+      databaseFilterCandidateLoading = false;
+      void renderPreservingContentScroll();
+    }
+  }
+}
+
+function buildAnalysisCrossFilterRecord(
+  entry: AnalysisRecordCatalogEntry
+): CrossFilterRecordLike {
+  return {
+    sampleCode: entry.detail.sampleCode,
+    testTime: entry.detail.testTime,
+    testProject: entry.detail.testProject,
+    tester: entry.detail.tester,
+    instrument: entry.detail.instrument,
+    sampleOwner: entry.detail.sampleOwner,
+    dataItems: entry.detail.dataItems.map((item) => ({
+      scalarRole: item.scalarRole,
+      itemName: item.itemName,
+      itemValue: item.itemValue,
+      itemUnit: item.itemUnit
+    })),
+    templateBlocks: entry.detail.templateBlocks.map((block) => {
+      if (block.templateType === XY_TEMPLATE_TYPE) {
+        return {
+          templateType: XY_TEMPLATE_TYPE,
+          blockTitle: block.blockTitle,
+          purposeType: block.purposeType,
+          xLabel: block.xLabel,
+          yLabel: block.yLabel
+        };
+      }
+
+      return {
+        templateType: SPECTRUM_TEMPLATE_TYPE,
+        blockTitle: block.blockTitle,
+        purposeType: block.purposeType,
+        spectrumAxisLabel: block.spectrumAxisLabel,
+        signalLabel: block.signalLabel
+      };
+    })
+  };
+}
+
+function matchesAnalysisRecordSearch(entry: AnalysisRecordCatalogEntry, query: string) {
+  const normalizedQuery = query.trim().toLowerCase();
+  if (!normalizedQuery) {
+    return true;
+  }
+
+  return [
+    entry.listItem.displayName,
+    entry.listItem.sampleCode,
+    entry.listItem.testProject,
+    entry.listItem.tester,
+    entry.listItem.instrument
+  ]
+    .join(' ')
+    .toLowerCase()
+    .includes(normalizedQuery);
+}
+
+function getAnalysisFilterCandidateValues(composer: AnalysisComposerState) {
+  if (!supportsCrossFilterCandidatePicker(composer.filterDraftField, composer.filterDraftOperator)) {
+    return [];
+  }
+
+  const baseCrossFilters = buildCrossFilterCandidateBaseChips(
+    composer.crossFilters,
+    composer.filterDraftField,
+    composer.filterDraftOperator
+  );
+  const filteredRecords = analysisRecords
+    .filter((entry) => matchesAnalysisRecordSearch(entry, composer.appliedSearchQuery))
+    .map((entry) => buildAnalysisCrossFilterRecord(entry))
+    .filter((record) => matchesCrossFilterSet(record, baseCrossFilters));
+
+  return filterCrossFilterCandidateValues(
+    collectCrossFilterCandidateValues(filteredRecords, composer.filterDraftField, baseCrossFilters),
+    analysisFilterCandidateQuery
+  );
 }
 
 function renderCrossFilterControls(params: {
@@ -1131,9 +1373,18 @@ function renderCrossFilterControls(params: {
   draftOperator: CrossFilterOperator;
   draftValue: string;
   draftValue2: string;
+  draftPendingValues: string[];
+  draftCandidateQuery: string;
+  candidateValues: string[];
+  candidateLoading?: boolean;
 }) {
   const prefix = params.scope === 'database' ? 'db' : 'analysis-composer';
   const supportsRange = supportsCrossFilterRangeOperator(params.draftField);
+  const supportsPendingValues = supportsCrossFilterPendingMultiValue(params.draftOperator);
+  const supportsCandidatePicker = supportsCrossFilterCandidatePicker(
+    params.draftField,
+    params.draftOperator
+  );
 
   return `
     <div class="cross-filter-chip-row">
@@ -1175,7 +1426,7 @@ function renderCrossFilterControls(params: {
     ${
       params.draftOpen
         ? `
-            <div class="cross-filter-draft-row">
+            <div class="cross-filter-draft-row ${supportsRange ? 'cross-filter-draft-row-range' : ''}">
               <select id="${prefix}-filter-field" class="form-input cross-filter-field-select">
                 ${CROSS_FILTER_FIELD_OPTIONS.map(
                   (option) => `
@@ -1201,9 +1452,24 @@ function renderCrossFilterControls(params: {
               <input
                 id="${prefix}-filter-value"
                 class="form-input cross-filter-value-input"
-                placeholder="${escapeHtml(getCrossFilterFieldPlaceholder(params.draftField))}"
+                placeholder="${escapeHtml(
+                  supportsRange && params.draftOperator !== 'eq'
+                    ? params.draftOperator === 'between'
+                      ? '输入区间下限'
+                      : '输入数值阈值'
+                    : getCrossFilterFieldPlaceholder(params.draftField)
+                )}"
                 value="${escapeHtml(params.draftValue)}"
               />
+              ${
+                supportsPendingValues
+                  ? `
+                      <button id="${prefix}-filter-pending-add-btn" class="secondary-btn cross-filter-pending-add-btn" type="button">
+                        加入值
+                      </button>
+                    `
+                  : ''
+              }
               ${
                 supportsRange && params.draftOperator === 'between'
                   ? `
@@ -1216,9 +1482,88 @@ function renderCrossFilterControls(params: {
                     `
                   : ''
               }
-              <button id="${prefix}-filter-apply-btn" class="primary-btn" type="button">添加条件</button>
+              <button id="${prefix}-filter-apply-btn" class="primary-btn" type="button">
+                ${supportsPendingValues ? '应用筛选' : '添加条件'}
+              </button>
               <button id="${prefix}-filter-cancel-btn" class="secondary-btn" type="button">取消</button>
             </div>
+            ${
+              supportsPendingValues
+                ? `
+                    <div class="cross-filter-draft-hint">
+                      ${
+                        supportsCandidatePicker
+                          ? '可从候选值中多选，也可手动输入后加入值，再一次性应用。'
+                          : '可先连续加入多个值，再一次性应用为多个筛选条件。'
+                      }
+                    </div>
+                    <div class="cross-filter-pending-row">
+                      ${
+                        params.draftPendingValues.length
+                          ? params.draftPendingValues
+                              .map(
+                                (value) => `
+                                  <span class="cross-filter-pending-chip">
+                                    <span class="cross-filter-pending-chip-label">${escapeHtml(value)}</span>
+                                    <button
+                                      class="cross-filter-chip-remove"
+                                      type="button"
+                                      title="移除待加入的值"
+                                      data-cross-filter-pending-remove="${params.scope}::${encodeURIComponent(value)}"
+                                    >
+                                      ×
+                                    </button>
+                                  </span>
+                                `
+                              )
+                              .join('')
+                          : '<span class="cross-filter-chip-placeholder">还没有待加入的值</span>'
+                      }
+                    </div>
+                    ${
+                      supportsCandidatePicker
+                        ? `
+                            <div class="cross-filter-candidate-shell">
+                              <div class="cross-filter-candidate-search-row">
+                                <input
+                                  id="${prefix}-filter-candidate-search"
+                                  class="form-input cross-filter-candidate-search"
+                                  placeholder="筛选候选值"
+                                  value="${escapeHtml(params.draftCandidateQuery)}"
+                                />
+                                <span class="cross-filter-candidate-count">候选值 ${params.candidateValues.length} 个</span>
+                              </div>
+                              <div class="cross-filter-candidate-list">
+                                ${
+                                  params.candidateLoading
+                                    ? '<div class="cross-filter-candidate-empty">正在加载可选值...</div>'
+                                    : params.candidateValues.length
+                                      ? params.candidateValues
+                                          .map(
+                                            (value) => `
+                                              <label class="cross-filter-candidate-option">
+                                                <input
+                                                  type="checkbox"
+                                                  data-cross-filter-candidate-toggle="${params.scope}::${encodeURIComponent(value)}"
+                                                  ${params.draftPendingValues.includes(value) ? 'checked' : ''}
+                                                />
+                                                <span>${escapeHtml(value)}</span>
+                                              </label>
+                                            `
+                                          )
+                                          .join('')
+                                      : '<div class="cross-filter-candidate-empty">当前结果中没有可选值，可继续手动输入。</div>'
+                                }
+                              </div>
+                            </div>
+                          `
+                        : ''
+                    }
+                  `
+                : supportsRange
+                  ? '<div class="cross-filter-draft-hint">仅对可解析为纯数字的标量值进行比较，不做单位换算。</div>'
+                  : ''
+            }
           `
         : ''
     }
@@ -1230,14 +1575,21 @@ function openDatabaseFilterDraft() {
     ...databaseFilterDraft,
     open: true
   };
+  databaseFilterCandidateQuery = '';
 }
 
 function closeDatabaseFilterDraft() {
   databaseFilterDraft = buildDefaultCrossFilterDraft();
+  resetDatabaseFilterCandidateState();
 }
 
 async function applyDatabaseFilterDraft() {
-  if (!databaseFilterDraft.value.trim()) {
+  const supportsPendingValues = supportsCrossFilterPendingMultiValue(databaseFilterDraft.operator);
+  const pendingValues = supportsPendingValues
+    ? addPendingCrossFilterValue(databaseFilterDraft.pendingValues, databaseFilterDraft.value)
+    : [];
+
+  if (!supportsPendingValues && !databaseFilterDraft.value.trim()) {
     return;
   }
 
@@ -1245,13 +1597,20 @@ async function applyDatabaseFilterDraft() {
     return;
   }
 
-  databaseCrossFilters = addCrossFilterChip(
-    databaseCrossFilters,
-    databaseFilterDraft.field,
-    databaseFilterDraft.value,
-    databaseFilterDraft.operator,
-    databaseFilterDraft.value2
-  );
+  databaseCrossFilters = supportsPendingValues
+    ? addCrossFilterChipBatch(
+        databaseCrossFilters,
+        databaseFilterDraft.field,
+        databaseFilterDraft.operator,
+        pendingValues
+      )
+    : addCrossFilterChip(
+        databaseCrossFilters,
+        databaseFilterDraft.field,
+        databaseFilterDraft.value,
+        databaseFilterDraft.operator,
+        databaseFilterDraft.value2
+      );
   closeDatabaseFilterDraft();
   await loadDatabaseList();
   void render();
@@ -1266,6 +1625,7 @@ function openAnalysisComposerFilterDraft() {
     ...analysisComposer,
     filterDraftOpen: true
   } as AnalysisComposerState;
+  analysisFilterCandidateQuery = '';
 }
 
 function closeAnalysisComposerFilterDraft() {
@@ -1280,8 +1640,10 @@ function closeAnalysisComposerFilterDraft() {
     filterDraftOperator: 'eq',
     filterDraftValue: '',
     filterDraftValue2: '',
+    filterDraftPendingValues: [],
     error: ''
   } as AnalysisComposerState;
+  analysisFilterCandidateQuery = '';
 }
 
 function applyAnalysisComposerFilterDraft() {
@@ -1289,7 +1651,17 @@ function applyAnalysisComposerFilterDraft() {
     return;
   }
 
-  if (!analysisComposer.filterDraftValue.trim()) {
+  const supportsPendingValues = supportsCrossFilterPendingMultiValue(
+    analysisComposer.filterDraftOperator
+  );
+  const pendingValues = supportsPendingValues
+    ? addPendingCrossFilterValue(
+        analysisComposer.filterDraftPendingValues,
+        analysisComposer.filterDraftValue
+      )
+    : [];
+
+  if (!supportsPendingValues && !analysisComposer.filterDraftValue.trim()) {
     return;
   }
 
@@ -1299,18 +1671,26 @@ function applyAnalysisComposerFilterDraft() {
 
   const nextComposer = reconcileAnalysisComposerSelection({
     ...analysisComposer,
-    crossFilters: addCrossFilterChip(
-      analysisComposer.crossFilters,
-      analysisComposer.filterDraftField,
-      analysisComposer.filterDraftValue,
-      analysisComposer.filterDraftOperator,
-      analysisComposer.filterDraftValue2
-    ),
+    crossFilters: supportsPendingValues
+      ? addCrossFilterChipBatch(
+          analysisComposer.crossFilters,
+          analysisComposer.filterDraftField,
+          analysisComposer.filterDraftOperator,
+          pendingValues
+        )
+      : addCrossFilterChip(
+          analysisComposer.crossFilters,
+          analysisComposer.filterDraftField,
+          analysisComposer.filterDraftValue,
+          analysisComposer.filterDraftOperator,
+          analysisComposer.filterDraftValue2
+        ),
     filterDraftOpen: false,
     filterDraftField: 'sampleCode' as CrossFilterField,
     filterDraftOperator: 'eq' as CrossFilterOperator,
     filterDraftValue: '',
     filterDraftValue2: '',
+    filterDraftPendingValues: [],
     resultScrollTop: 0,
     error: ''
   } as AnalysisComposerState);
@@ -1363,60 +1743,12 @@ function matchesAnalysisRecordFilters(
   entry: AnalysisRecordCatalogEntry,
   chips: CrossFilterChip[]
 ) {
-  return matchesCrossFilterSet(
-    {
-      sampleCode: entry.detail.sampleCode,
-      testTime: entry.detail.testTime,
-      testProject: entry.detail.testProject,
-      tester: entry.detail.tester,
-      instrument: entry.detail.instrument,
-      sampleOwner: entry.detail.sampleOwner,
-      dataItems: entry.detail.dataItems.map((item) => ({
-        scalarRole: item.scalarRole,
-        itemName: item.itemName,
-        itemValue: item.itemValue,
-        itemUnit: item.itemUnit
-      })),
-      templateBlocks: entry.detail.templateBlocks.map((block) => {
-        if (block.templateType === XY_TEMPLATE_TYPE) {
-          return {
-            templateType: XY_TEMPLATE_TYPE,
-            blockTitle: block.blockTitle,
-            purposeType: block.purposeType,
-            xLabel: block.xLabel,
-            yLabel: block.yLabel
-          };
-        }
-
-        return {
-          templateType: SPECTRUM_TEMPLATE_TYPE,
-          blockTitle: block.blockTitle,
-          purposeType: block.purposeType,
-          spectrumAxisLabel: block.spectrumAxisLabel,
-          signalLabel: block.signalLabel
-        };
-      })
-    },
-    chips
-  );
+  return matchesCrossFilterSet(buildAnalysisCrossFilterRecord(entry), chips);
 }
 
 function getAnalysisComposerFilteredRecords(composer: AnalysisComposerState) {
   return analysisRecords.filter((entry) => {
-    const matchesSearch = !composer.appliedSearchQuery.trim()
-      ? true
-      : [
-          entry.listItem.displayName,
-          entry.listItem.sampleCode,
-          entry.listItem.testProject,
-          entry.listItem.tester,
-          entry.listItem.instrument
-        ]
-          .join(' ')
-          .toLowerCase()
-          .includes(composer.appliedSearchQuery.trim().toLowerCase());
-
-    if (!matchesSearch) {
+    if (!matchesAnalysisRecordSearch(entry, composer.appliedSearchQuery)) {
       return false;
     }
 
@@ -1940,6 +2272,7 @@ function restoreAnalysisChartFromPersistedConfig(
         filterDraftOperator: 'eq',
         filterDraftValue: '',
         filterDraftValue2: '',
+        filterDraftPendingValues: [],
         selectedRecordIds: [...seriesConfig.selectedRecordIds],
         step1FieldKey: seriesConfig.xFieldKey,
         yItemName: seriesConfig.yMetricName,
@@ -1981,6 +2314,7 @@ function restoreAnalysisChartFromPersistedConfig(
         filterDraftOperator: 'eq',
         filterDraftValue: '',
         filterDraftValue2: '',
+        filterDraftPendingValues: [],
         selectedRecordIds: [...seriesConfig.selectedRecordIds],
         selectedBlockName: seriesConfig.blockDisplayName,
         pending: false,
@@ -2053,6 +2387,7 @@ function refreshAnalysisChartsFromCatalog() {
             filterDraftOperator: 'eq',
             filterDraftValue: '',
             filterDraftValue2: '',
+            filterDraftPendingValues: [],
             selectedRecordIds: [...series.recordIds],
             step1FieldKey: series.xSourceValue.startsWith('step1:')
               ? (series.xSourceValue.replace('step1:', '') as AnalysisStep1FieldKey)
@@ -2216,9 +2551,11 @@ async function openAnalysisWorkspace() {
 
 function closeAnalysisComposer() {
   analysisComposer = null;
+  analysisFilterCandidateQuery = '';
 }
 
 function openAnalysisComposer(chartId: string, chartType: AnalysisChartType) {
+  analysisFilterCandidateQuery = '';
   analysisComposer =
     chartType === 'scalar'
       ? {
@@ -2233,6 +2570,7 @@ function openAnalysisComposer(chartId: string, chartType: AnalysisChartType) {
           filterDraftOperator: 'eq',
           filterDraftValue: '',
           filterDraftValue2: '',
+          filterDraftPendingValues: [],
           selectedRecordIds: [],
           step1FieldKey: 'testTime',
           yItemName: '',
@@ -2251,6 +2589,7 @@ function openAnalysisComposer(chartId: string, chartType: AnalysisChartType) {
           filterDraftOperator: 'eq',
           filterDraftValue: '',
           filterDraftValue2: '',
+          filterDraftPendingValues: [],
           selectedRecordIds: [],
           selectedBlockName: '',
           pending: false,
@@ -4044,7 +4383,10 @@ function renderAnalysisComposerModal() {
             draftField: composer.filterDraftField,
             draftOperator: composer.filterDraftOperator,
             draftValue: composer.filterDraftValue,
-            draftValue2: composer.filterDraftValue2
+            draftValue2: composer.filterDraftValue2,
+            draftPendingValues: composer.filterDraftPendingValues,
+            draftCandidateQuery: analysisFilterCandidateQuery,
+            candidateValues: getAnalysisFilterCandidateValues(composer)
           })}
           <div class="analysis-modal-toolbar">
             <div class="analysis-filter-result-summary">当前结果 ${filteredRecords.length} 条，已选择 ${selectedCount} 条</div>
@@ -4158,7 +4500,10 @@ function renderAnalysisComposerModal() {
           draftField: composer.filterDraftField,
           draftOperator: composer.filterDraftOperator,
           draftValue: composer.filterDraftValue,
-          draftValue2: composer.filterDraftValue2
+          draftValue2: composer.filterDraftValue2,
+          draftPendingValues: composer.filterDraftPendingValues,
+          draftCandidateQuery: analysisFilterCandidateQuery,
+          candidateValues: getAnalysisFilterCandidateValues(composer)
         })}
         <div class="analysis-modal-toolbar">
           <div class="analysis-filter-result-summary">当前结果 ${filteredRecords.length} 条，已选择 ${selectedCount} 条</div>
@@ -4226,6 +4571,7 @@ function bindDatabaseCrossFilterEvents() {
   document.getElementById('db-filter-add-btn')?.addEventListener('click', () => {
     openDatabaseFilterDraft();
     void renderPreservingContentScroll();
+    void refreshDatabaseFilterCandidateValues(true);
   });
 
   document.querySelectorAll('[data-cross-filter-remove^="database::"]').forEach((button) => {
@@ -4255,17 +4601,53 @@ function bindDatabaseCrossFilterEvents() {
       ...databaseFilterDraft,
       field: nextField,
       operator: supportsCrossFilterRangeOperator(nextField) ? databaseFilterDraft.operator : 'eq',
-      value2: supportsCrossFilterRangeOperator(nextField) ? databaseFilterDraft.value2 : ''
+      value2: supportsCrossFilterRangeOperator(nextField) ? databaseFilterDraft.value2 : '',
+      pendingValues: []
+    };
+    databaseFilterCandidateQuery = '';
+    void renderPreservingContentScroll();
+    void refreshDatabaseFilterCandidateValues(true);
+  });
+
+  document.getElementById('db-filter-operator')?.addEventListener('change', (event) => {
+    const nextOperator = (event.target as HTMLSelectElement).value as CrossFilterOperator;
+    databaseFilterDraft = {
+      ...databaseFilterDraft,
+      operator: nextOperator,
+      pendingValues: [],
+      value2: nextOperator === 'between' ? databaseFilterDraft.value2 : ''
+    };
+    databaseFilterCandidateQuery = '';
+    void renderPreservingContentScroll();
+    void refreshDatabaseFilterCandidateValues(true);
+  });
+
+  document.getElementById('db-filter-pending-add-btn')?.addEventListener('click', () => {
+    databaseFilterDraft = {
+      ...databaseFilterDraft,
+      pendingValues: addPendingCrossFilterValue(databaseFilterDraft.pendingValues, databaseFilterDraft.value),
+      value: ''
     };
     void renderPreservingContentScroll();
   });
 
-  document.getElementById('db-filter-operator')?.addEventListener('change', (event) => {
-    databaseFilterDraft = {
-      ...databaseFilterDraft,
-      operator: (event.target as HTMLSelectElement).value as CrossFilterOperator
-    };
-    void renderPreservingContentScroll();
+  document.querySelectorAll('[data-cross-filter-pending-remove^="database::"]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const encoded = (button as HTMLElement).dataset.crossFilterPendingRemove;
+      const value = encoded?.split('::')[1];
+      if (!value) {
+        return;
+      }
+
+      databaseFilterDraft = {
+        ...databaseFilterDraft,
+        pendingValues: removePendingCrossFilterValue(
+          databaseFilterDraft.pendingValues,
+          decodeURIComponent(value)
+        )
+      };
+      void renderPreservingContentScroll();
+    });
   });
 
   document.getElementById('db-filter-value')?.addEventListener('input', (event) => {
@@ -4273,6 +4655,31 @@ function bindDatabaseCrossFilterEvents() {
       ...databaseFilterDraft,
       value: (event.target as HTMLInputElement).value
     };
+  });
+
+  document.getElementById('db-filter-candidate-search')?.addEventListener('input', (event) => {
+    databaseFilterCandidateQuery = (event.target as HTMLInputElement).value;
+    void renderPreservingContentScroll();
+  });
+
+  document.querySelectorAll('[data-cross-filter-candidate-toggle^="database::"]').forEach((input) => {
+    input.addEventListener('change', (event) => {
+      const encoded = (input as HTMLElement).dataset.crossFilterCandidateToggle;
+      const value = encoded?.split('::')[1];
+      if (!value) {
+        return;
+      }
+
+      databaseFilterDraft = {
+        ...databaseFilterDraft,
+        pendingValues: togglePendingCrossFilterCandidateValue(
+          databaseFilterDraft.pendingValues,
+          decodeURIComponent(value),
+          (event.target as HTMLInputElement).checked
+        )
+      };
+      void renderPreservingContentScroll();
+    });
   });
 
   document.getElementById('db-filter-apply-btn')?.addEventListener('click', async () => {
@@ -4290,6 +4697,16 @@ function bindDatabaseCrossFilterEvents() {
     }
 
     event.preventDefault();
+    if (supportsCrossFilterPendingMultiValue(databaseFilterDraft.operator)) {
+      databaseFilterDraft = {
+        ...databaseFilterDraft,
+        pendingValues: addPendingCrossFilterValue(databaseFilterDraft.pendingValues, databaseFilterDraft.value),
+        value: ''
+      };
+      void renderPreservingContentScroll();
+      return;
+    }
+
     await applyDatabaseFilterDraft();
   });
 
@@ -4356,6 +4773,7 @@ function bindAnalysisComposerFilterEvents() {
       filterDraftOperator: 'eq',
       filterDraftValue: '',
       filterDraftValue2: '',
+      filterDraftPendingValues: [],
       resultScrollTop: 0,
       error: ''
     } as AnalysisComposerState);
@@ -4377,8 +4795,10 @@ function bindAnalysisComposerFilterEvents() {
         : 'eq',
       filterDraftValue2: supportsCrossFilterRangeOperator(nextField)
         ? analysisComposer.filterDraftValue2
-        : ''
+        : '',
+      filterDraftPendingValues: []
     } as AnalysisComposerState;
+    analysisFilterCandidateQuery = '';
     requestRender(true);
   });
 
@@ -4387,11 +4807,53 @@ function bindAnalysisComposerFilterEvents() {
       return;
     }
 
+    const nextOperator = (event.target as HTMLSelectElement).value as CrossFilterOperator;
     analysisComposer = {
       ...analysisComposer,
-      filterDraftOperator: (event.target as HTMLSelectElement).value as CrossFilterOperator
+      filterDraftOperator: nextOperator,
+      filterDraftPendingValues: []
+    } as AnalysisComposerState;
+    analysisFilterCandidateQuery = '';
+    requestRender(true);
+  });
+
+  document.getElementById('analysis-composer-filter-pending-add-btn')?.addEventListener('click', () => {
+    if (!analysisComposer) {
+      return;
+    }
+
+    analysisComposer = {
+      ...analysisComposer,
+      filterDraftPendingValues: addPendingCrossFilterValue(
+        analysisComposer.filterDraftPendingValues,
+        analysisComposer.filterDraftValue
+      ),
+      filterDraftValue: ''
     } as AnalysisComposerState;
     requestRender(true);
+  });
+
+  document.querySelectorAll('[data-cross-filter-pending-remove^="analysis::"]').forEach((button) => {
+    button.addEventListener('click', () => {
+      if (!analysisComposer) {
+        return;
+      }
+
+      const encoded = (button as HTMLElement).dataset.crossFilterPendingRemove;
+      const value = encoded?.split('::')[1];
+      if (!value) {
+        return;
+      }
+
+      analysisComposer = {
+        ...analysisComposer,
+        filterDraftPendingValues: removePendingCrossFilterValue(
+          analysisComposer.filterDraftPendingValues,
+          decodeURIComponent(value)
+        )
+      } as AnalysisComposerState;
+      requestRender(true);
+    });
   });
 
   document.getElementById('analysis-composer-filter-value')?.addEventListener('input', (event) => {
@@ -4404,6 +4866,37 @@ function bindAnalysisComposerFilterEvents() {
       filterDraftValue: (event.target as HTMLInputElement).value
     } as AnalysisComposerState;
   });
+
+  document.getElementById('analysis-composer-filter-candidate-search')?.addEventListener('input', (event) => {
+    analysisFilterCandidateQuery = (event.target as HTMLInputElement).value;
+    requestRender(true);
+  });
+
+  document
+    .querySelectorAll('[data-cross-filter-candidate-toggle^="analysis::"]')
+    .forEach((input) => {
+      input.addEventListener('change', (event) => {
+        if (!analysisComposer) {
+          return;
+        }
+
+        const encoded = (input as HTMLElement).dataset.crossFilterCandidateToggle;
+        const value = encoded?.split('::')[1];
+        if (!value) {
+          return;
+        }
+
+        analysisComposer = {
+          ...analysisComposer,
+          filterDraftPendingValues: togglePendingCrossFilterCandidateValue(
+            analysisComposer.filterDraftPendingValues,
+            decodeURIComponent(value),
+            (event.target as HTMLInputElement).checked
+          )
+        } as AnalysisComposerState;
+        requestRender(true);
+      });
+    });
 
   document.getElementById('analysis-composer-filter-apply-btn')?.addEventListener('click', () => {
     applyAnalysisComposerFilterDraft();
@@ -4420,6 +4913,22 @@ function bindAnalysisComposerFilterEvents() {
     }
 
     event.preventDefault();
+    if (
+      analysisComposer &&
+      supportsCrossFilterPendingMultiValue(analysisComposer.filterDraftOperator)
+    ) {
+      analysisComposer = {
+        ...analysisComposer,
+        filterDraftPendingValues: addPendingCrossFilterValue(
+          analysisComposer.filterDraftPendingValues,
+          analysisComposer.filterDraftValue
+        ),
+        filterDraftValue: ''
+      } as AnalysisComposerState;
+      requestRender(true);
+      return;
+    }
+
     applyAnalysisComposerFilterDraft();
   });
 
@@ -8114,7 +8623,11 @@ async function render() {
                 draftField: databaseFilterDraft.field,
                 draftOperator: databaseFilterDraft.operator,
                 draftValue: databaseFilterDraft.value,
-                draftValue2: databaseFilterDraft.value2
+                draftValue2: databaseFilterDraft.value2,
+                draftPendingValues: databaseFilterDraft.pendingValues,
+                draftCandidateQuery: databaseFilterCandidateQuery,
+                candidateValues: getDatabaseFilterCandidateValues(),
+                candidateLoading: databaseFilterCandidateLoading
               })}
 
               <div class="group-tabs">
@@ -9714,6 +10227,10 @@ async function loadDatabaseList(
 
   const validIds = databaseGroups.flatMap((group) => group.items.map((item) => item.id));
   selectedExperimentIds = selectedExperimentIds.filter((id) => validIds.includes(id));
+
+  if (databaseFilterDraft.open) {
+    void refreshDatabaseFilterCandidateValues(true);
+  }
 }
 
 async function loadDatabaseListView() {

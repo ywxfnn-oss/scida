@@ -92,7 +92,7 @@ import {
   type XYCurveBlockMeta,
   type XYPoint
 } from './template-blocks';
-import { matchesCrossFilterSet } from './cross-filters';
+import { collectCrossFilterCandidateValues, matchesCrossFilterSet } from './cross-filters';
 
 let prisma!: PrismaClient;
 
@@ -1076,6 +1076,180 @@ app.whenReady().then(async () => {
       }
 
       return Array.from(groupMap.values());
+    }
+  );
+
+  ipcMain.handle(
+    'experiment:listFilterValueCandidates',
+    async (
+      _event,
+      payload: {
+        query?: string;
+        crossFilters?: Array<{
+          id: string;
+          field:
+            | 'sampleCode'
+            | 'testTime'
+            | 'testProject'
+            | 'tester'
+            | 'instrument'
+            | 'sampleOwner'
+            | 'conditionName'
+            | 'conditionValue'
+            | 'metricName'
+            | 'metricValue'
+            | 'secondaryName'
+            | 'secondaryValue'
+            | 'structuredBlockName';
+          operator?: 'eq' | 'gte' | 'lte' | 'between';
+          value: string;
+          value2?: string;
+        }>;
+        field:
+          | 'sampleCode'
+          | 'testTime'
+          | 'testProject'
+          | 'tester'
+          | 'instrument'
+          | 'sampleOwner'
+          | 'conditionName'
+          | 'conditionValue'
+          | 'metricName'
+          | 'metricValue'
+          | 'secondaryName'
+          | 'secondaryValue'
+          | 'structuredBlockName';
+      }
+    ) => {
+      const keyword = (payload?.query || '').trim();
+      const crossFilters = Array.isArray(payload?.crossFilters)
+        ? payload.crossFilters.filter((chip) => chip?.value?.trim())
+        : [];
+      const whereClauses = [];
+
+      if (keyword) {
+        whereClauses.push({
+          OR: [
+            { displayName: { contains: keyword } },
+            { sampleCode: { contains: keyword } },
+            { testProject: { contains: keyword } },
+            { tester: { contains: keyword } },
+            { instrument: { contains: keyword } },
+            { sampleOwner: { contains: keyword } }
+          ]
+        });
+      }
+
+      const experiments = await prisma.experiment.findMany({
+        where: whereClauses.length ? { AND: whereClauses } : undefined,
+        orderBy: { id: 'desc' },
+        include: {
+          dataItems: {
+            select: {
+              scalarRole: true,
+              itemName: true,
+              itemValue: true,
+              itemUnit: true
+            }
+          },
+          templateBlocks: {
+            select: {
+              templateType: true,
+              blockTitle: true,
+              metaJson: true
+            }
+          }
+        }
+      });
+
+      const filteredExperiments = crossFilters.length
+        ? experiments.filter((item) =>
+            matchesCrossFilterSet(
+              {
+                sampleCode: item.sampleCode,
+                testTime: item.testTime,
+                testProject: item.testProject,
+                tester: item.tester,
+                instrument: item.instrument,
+                sampleOwner: item.sampleOwner,
+                dataItems: item.dataItems.map((dataItem) => ({
+                  scalarRole: dataItem.scalarRole,
+                  itemName: dataItem.itemName,
+                  itemValue: dataItem.itemValue,
+                  itemUnit: dataItem.itemUnit
+                })),
+                templateBlocks: item.templateBlocks.map((block) => {
+                  const meta = parseTemplateBlockMeta(
+                    block.templateType as TemplateBlockType,
+                    block.metaJson
+                  ) as XYCurveBlockMeta | SpectrumBlockMeta;
+
+                  if (block.templateType === XY_TEMPLATE_TYPE) {
+                    return {
+                      templateType: XY_TEMPLATE_TYPE,
+                      blockTitle: block.blockTitle,
+                      purposeType: meta.purposeType,
+                      xLabel: (meta as XYCurveBlockMeta).xLabel,
+                      yLabel: (meta as XYCurveBlockMeta).yLabel
+                    };
+                  }
+
+                  return {
+                    templateType: SPECTRUM_TEMPLATE_TYPE,
+                    blockTitle: block.blockTitle,
+                    purposeType: meta.purposeType,
+                    spectrumAxisLabel: (meta as SpectrumBlockMeta).spectrumAxisLabel,
+                    signalLabel: (meta as SpectrumBlockMeta).signalLabel
+                  };
+                })
+              },
+              crossFilters
+            )
+          )
+        : experiments;
+
+      return collectCrossFilterCandidateValues(
+        filteredExperiments.map((item) => ({
+          sampleCode: item.sampleCode,
+          testTime: item.testTime,
+          testProject: item.testProject,
+          tester: item.tester,
+          instrument: item.instrument,
+          sampleOwner: item.sampleOwner,
+          dataItems: item.dataItems.map((dataItem) => ({
+            scalarRole: dataItem.scalarRole,
+            itemName: dataItem.itemName,
+            itemValue: dataItem.itemValue,
+            itemUnit: dataItem.itemUnit
+          })),
+          templateBlocks: item.templateBlocks.map((block) => {
+            const meta = parseTemplateBlockMeta(
+              block.templateType as TemplateBlockType,
+              block.metaJson
+            ) as XYCurveBlockMeta | SpectrumBlockMeta;
+
+            if (block.templateType === XY_TEMPLATE_TYPE) {
+              return {
+                templateType: XY_TEMPLATE_TYPE,
+                blockTitle: block.blockTitle,
+                purposeType: meta.purposeType,
+                xLabel: (meta as XYCurveBlockMeta).xLabel,
+                yLabel: (meta as XYCurveBlockMeta).yLabel
+              };
+            }
+
+            return {
+              templateType: SPECTRUM_TEMPLATE_TYPE,
+              blockTitle: block.blockTitle,
+              purposeType: meta.purposeType,
+              spectrumAxisLabel: (meta as SpectrumBlockMeta).spectrumAxisLabel,
+              signalLabel: (meta as SpectrumBlockMeta).signalLabel
+            };
+          })
+        })),
+        payload.field,
+        crossFilters
+      );
     }
   );
 

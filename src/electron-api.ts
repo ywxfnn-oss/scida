@@ -384,6 +384,12 @@ export type ListExperimentsPayload = {
   sortOrder?: ExperimentListSortOrder;
 };
 
+export type ListExperimentFilterValueCandidatesPayload = {
+  query?: string;
+  crossFilters?: CrossFilterChip[];
+  field: CrossFilterField;
+};
+
 export type ExperimentFilterOptions = {
   testProjects: string[];
   testers: string[];
@@ -617,6 +623,9 @@ export interface ElectronAPI {
   ) => Promise<DuplicateExperimentCheckResult>;
   saveExperiment: (payload: SaveExperimentPayload) => Promise<SaveExperimentResult>;
   listExperiments: (payload?: ListExperimentsPayload) => Promise<ExperimentGroup[]>;
+  listExperimentFilterValueCandidates: (
+    payload: ListExperimentFilterValueCandidatesPayload
+  ) => Promise<string[]>;
   listExperimentFilterOptions: () => Promise<ExperimentFilterOptions>;
   getExperimentDetail: (experimentId: number) => Promise<ExperimentDetail>;
   listExperimentEditLogs: (

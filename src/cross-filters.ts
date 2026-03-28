@@ -1,4 +1,4 @@
-import type { CrossFilterChip, CrossFilterField } from './electron-api';
+import type { CrossFilterChip, CrossFilterField, CrossFilterOperator } from './electron-api';
 import type { StructuredBlockPurpose, TemplateBlockType } from './template-blocks';
 import { trimBlockTitle, XY_TEMPLATE_TYPE } from './template-blocks';
 
@@ -154,6 +154,16 @@ export function formatCrossFilterChipLabel(chip: CrossFilterChip) {
   return `${getCrossFilterFieldLabel(chip.field)}：${normalizedValue}`;
 }
 
+export function supportsCrossFilterCandidatePicker(
+  field: CrossFilterField,
+  operator: CrossFilterOperator = 'eq'
+) {
+  return (
+    operator === 'eq' &&
+    ['conditionName', 'conditionValue', 'metricName', 'metricValue', 'structuredBlockName'].includes(field)
+  );
+}
+
 export function getStructuredBlockPurposeFilterLabel(purposeType?: string | null) {
   return STRUCTURED_BLOCK_PURPOSE_FILTER_LABELS[(purposeType || '').trim()] || '';
 }
@@ -233,6 +243,12 @@ function supportsNumericRange(field: CrossFilterField) {
   return field === 'conditionValue' || field === 'metricValue' || field === 'secondaryValue';
 }
 
+function formatScalarCandidateValue(item: CrossFilterScalarItemLike) {
+  return item.itemUnit?.trim()
+    ? `${item.itemValue}${item.itemValue.trim() ? ' ' : ''}${item.itemUnit}`
+    : item.itemValue;
+}
+
 function matchesScalarValueNumeric(item: CrossFilterScalarItemLike, chip: CrossFilterChip) {
   if (!supportsNumericRange(chip.field)) {
     return false;
@@ -270,6 +286,26 @@ function matchesScalarValueNumeric(item: CrossFilterScalarItemLike, chip: CrossF
 
 function isExactMatchChip(chip: CrossFilterChip) {
   return (chip.operator || 'eq') === 'eq';
+}
+
+function getExactChipValues(
+  chips: CrossFilterChip[],
+  field: CrossFilterField
+) {
+  return chips
+    .filter((chip) => chip.field === field && isExactMatchChip(chip) && chip.value.trim())
+    .map((chip) => chip.value.trim());
+}
+
+function matchesScopedScalarName(
+  itemName: string,
+  scopedNames: string[]
+) {
+  if (!scopedNames.length) {
+    return true;
+  }
+
+  return scopedNames.some((name) => matchesExactText(itemName, name));
 }
 
 function matchesTopLevelField(record: CrossFilterRecordLike, chip: CrossFilterChip) {
@@ -395,4 +431,69 @@ export function matchesCrossFilterSet(
   }
 
   return nonExactChips.every((chip) => matchesCrossFilterChip(record, chip));
+}
+
+export function collectCrossFilterCandidateValues(
+  records: CrossFilterRecordLike[],
+  field: CrossFilterField,
+  chips: CrossFilterChip[] = []
+) {
+  const values = new Set<string>();
+  const scopedConditionNames = getExactChipValues(chips, 'conditionName');
+  const scopedMetricNames = getExactChipValues(chips, 'metricName');
+
+  records.forEach((record) => {
+    if (field === 'conditionName') {
+      record.dataItems.forEach((item) => {
+        if (resolveScalarItemRole(item) === 'condition' && item.itemName.trim()) {
+          values.add(item.itemName.trim());
+        }
+      });
+      return;
+    }
+
+    if (field === 'conditionValue') {
+      record.dataItems.forEach((item) => {
+        if (
+          resolveScalarItemRole(item) === 'condition' &&
+          matchesScopedScalarName(item.itemName, scopedConditionNames)
+        ) {
+          const candidate = formatScalarCandidateValue(item).trim();
+          if (candidate) values.add(candidate);
+        }
+      });
+      return;
+    }
+
+    if (field === 'metricName') {
+      record.dataItems.forEach((item) => {
+        if (resolveScalarItemRole(item) === 'metric' && item.itemName.trim()) {
+          values.add(item.itemName.trim());
+        }
+      });
+      return;
+    }
+
+    if (field === 'metricValue') {
+      record.dataItems.forEach((item) => {
+        if (
+          resolveScalarItemRole(item) === 'metric' &&
+          matchesScopedScalarName(item.itemName, scopedMetricNames)
+        ) {
+          const candidate = formatScalarCandidateValue(item).trim();
+          if (candidate) values.add(candidate);
+        }
+      });
+      return;
+    }
+
+    if (field === 'structuredBlockName') {
+      record.templateBlocks.forEach((block) => {
+        const candidate = getStructuredBlockDisplayNameForFilter(block).trim();
+        if (candidate) values.add(candidate);
+      });
+    }
+  });
+
+  return Array.from(values).sort((left, right) => left.localeCompare(right, 'zh-CN'));
 }
