@@ -391,8 +391,10 @@ const CROSS_FILTER_FIELD_OPTIONS: Array<{
   { field: 'tester', label: '测试人' },
   { field: 'instrument', label: '仪器' },
   { field: 'sampleOwner', label: '样品所属人员' },
-  { field: 'secondaryName', label: '二级名称' },
-  { field: 'secondaryValue', label: '二级值' },
+  { field: 'conditionName', label: '实验条件名称' },
+  { field: 'conditionValue', label: '实验条件值' },
+  { field: 'metricName', label: '结果指标名称' },
+  { field: 'metricValue', label: '结果指标值' },
   { field: 'structuredBlockName', label: '结构化数据块名称' }
 ];
 const CONDITION_NAME_KEYWORDS = [
@@ -1289,8 +1291,10 @@ function matchesAnalysisRecordFilters(
       instrument: entry.detail.instrument,
       sampleOwner: entry.detail.sampleOwner,
       dataItems: entry.detail.dataItems.map((item) => ({
+        scalarRole: item.scalarRole,
         itemName: item.itemName,
-        itemValue: item.itemValue
+        itemValue: item.itemValue,
+        itemUnit: item.itemUnit
       })),
       templateBlocks: entry.detail.templateBlocks.map((block) => {
         if (block.templateType === XY_TEMPLATE_TYPE) {

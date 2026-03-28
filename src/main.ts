@@ -919,6 +919,10 @@ app.whenReady().then(async () => {
             | 'tester'
             | 'instrument'
             | 'sampleOwner'
+            | 'conditionName'
+            | 'conditionValue'
+            | 'metricName'
+            | 'metricValue'
             | 'secondaryName'
             | 'secondaryValue'
             | 'structuredBlockName';
@@ -957,8 +961,10 @@ app.whenReady().then(async () => {
           ? {
               dataItems: {
                 select: {
+                  scalarRole: true,
                   itemName: true,
-                  itemValue: true
+                  itemValue: true,
+                  itemUnit: true
                 }
               },
               templateBlocks: {
@@ -983,8 +989,10 @@ app.whenReady().then(async () => {
                 instrument: item.instrument,
                 sampleOwner: item.sampleOwner,
                 dataItems: (item.dataItems || []).map((dataItem) => ({
+                  scalarRole: dataItem.scalarRole,
                   itemName: dataItem.itemName,
-                  itemValue: dataItem.itemValue
+                  itemValue: dataItem.itemValue,
+                  itemUnit: dataItem.itemUnit
                 })),
                 templateBlocks: (item.templateBlocks || []).map((block) => {
                   const meta = parseTemplateBlockMeta(

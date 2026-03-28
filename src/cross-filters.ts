@@ -3,8 +3,10 @@ import type { StructuredBlockPurpose, TemplateBlockType } from './template-block
 import { trimBlockTitle, XY_TEMPLATE_TYPE } from './template-blocks';
 
 export type CrossFilterScalarItemLike = {
+  scalarRole?: string | null;
   itemName: string;
   itemValue: string;
+  itemUnit?: string | null;
 };
 
 export type CrossFilterStructuredBlockLike = {
@@ -35,10 +37,54 @@ const CROSS_FILTER_FIELD_LABELS: Record<CrossFilterField, string> = {
   tester: '测试人',
   instrument: '仪器',
   sampleOwner: '样品所属人员',
+  conditionName: '实验条件名称',
+  conditionValue: '实验条件值',
+  metricName: '结果指标名称',
+  metricValue: '结果指标值',
   secondaryName: '二级名称',
   secondaryValue: '二级值',
   structuredBlockName: '结构化数据块名称'
 };
+
+const CONDITION_NAME_KEYWORDS = [
+  '温度',
+  '偏压',
+  '光功率',
+  '波长',
+  '频率',
+  '环境气氛',
+  '测试气氛',
+  '条件',
+  '气压',
+  '湿度',
+  'bias',
+  'temperature',
+  'power',
+  'wavelength',
+  'frequency',
+  'condition',
+  'atmosphere',
+  'humidity'
+];
+
+const METRIC_NAME_KEYWORDS = [
+  'rise time',
+  'fall time',
+  'responsivity',
+  'eqe',
+  'dark current',
+  'd*',
+  'detectivity',
+  'nep',
+  'on/off',
+  'on off',
+  '峰值响应',
+  '截止波长',
+  '响应度',
+  '暗电流',
+  '上升时间',
+  '下降时间'
+];
 
 const STRUCTURED_BLOCK_PURPOSE_FILTER_LABELS: Record<string, string> = {
   spectrum: 'Spectrum',
@@ -67,6 +113,14 @@ export function getCrossFilterFieldPlaceholder(field: CrossFilterField) {
       return '输入仪器名称';
     case 'sampleOwner':
       return '输入样品所属人员';
+    case 'conditionName':
+      return '输入实验条件名称';
+    case 'conditionValue':
+      return '输入实验条件值';
+    case 'metricName':
+      return '输入结果指标名称';
+    case 'metricValue':
+      return '输入结果指标值';
     case 'secondaryName':
       return '输入二级名称';
     case 'secondaryValue':
@@ -111,6 +165,43 @@ function matchesExactText(left: string | null | undefined, right: string) {
   return normalizeCrossFilterText(left) === normalizeCrossFilterText(right);
 }
 
+function inferLegacyScalarRole(itemName: string): 'condition' | 'metric' {
+  const normalized = normalizeCrossFilterText(itemName);
+
+  if (!normalized) {
+    return 'metric';
+  }
+
+  if (CONDITION_NAME_KEYWORDS.some((keyword) => normalized.includes(keyword.toLowerCase()))) {
+    return 'condition';
+  }
+
+  if (METRIC_NAME_KEYWORDS.some((keyword) => normalized.includes(keyword.toLowerCase()))) {
+    return 'metric';
+  }
+
+  return 'metric';
+}
+
+function resolveScalarItemRole(item: CrossFilterScalarItemLike) {
+  return item.scalarRole === 'condition' || item.scalarRole === 'metric'
+    ? item.scalarRole
+    : inferLegacyScalarRole(item.itemName);
+}
+
+function matchesScalarValueExact(item: CrossFilterScalarItemLike, target: string) {
+  const joinedWithSpace = item.itemUnit?.trim()
+    ? `${item.itemValue}${item.itemValue.trim() ? ' ' : ''}${item.itemUnit}`
+    : item.itemValue;
+  const joinedTight = item.itemUnit?.trim()
+    ? `${item.itemValue}${item.itemUnit}`
+    : item.itemValue;
+
+  return [item.itemValue, joinedWithSpace, joinedTight].some((candidate) =>
+    matchesExactText(candidate, target)
+  );
+}
+
 function matchesTopLevelField(record: CrossFilterRecordLike, chip: CrossFilterChip) {
   switch (chip.field) {
     case 'sampleCode':
@@ -131,12 +222,36 @@ function matchesTopLevelField(record: CrossFilterRecordLike, chip: CrossFilterCh
 }
 
 function matchesScalarItemField(record: CrossFilterRecordLike, chip: CrossFilterChip) {
+  if (chip.field === 'conditionName') {
+    return record.dataItems.some(
+      (item) => resolveScalarItemRole(item) === 'condition' && matchesExactText(item.itemName, chip.value)
+    );
+  }
+
+  if (chip.field === 'conditionValue') {
+    return record.dataItems.some(
+      (item) => resolveScalarItemRole(item) === 'condition' && matchesScalarValueExact(item, chip.value)
+    );
+  }
+
+  if (chip.field === 'metricName') {
+    return record.dataItems.some(
+      (item) => resolveScalarItemRole(item) === 'metric' && matchesExactText(item.itemName, chip.value)
+    );
+  }
+
+  if (chip.field === 'metricValue') {
+    return record.dataItems.some(
+      (item) => resolveScalarItemRole(item) === 'metric' && matchesScalarValueExact(item, chip.value)
+    );
+  }
+
   if (chip.field === 'secondaryName') {
     return record.dataItems.some((item) => matchesExactText(item.itemName, chip.value));
   }
 
   if (chip.field === 'secondaryValue') {
-    return record.dataItems.some((item) => matchesExactText(item.itemValue, chip.value));
+    return record.dataItems.some((item) => matchesScalarValueExact(item, chip.value));
   }
 
   return false;

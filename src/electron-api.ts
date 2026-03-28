@@ -17,6 +17,10 @@ export type CrossFilterField =
   | 'tester'
   | 'instrument'
   | 'sampleOwner'
+  | 'conditionName'
+  | 'conditionValue'
+  | 'metricName'
+  | 'metricValue'
   | 'secondaryName'
   | 'secondaryValue'
   | 'structuredBlockName';
