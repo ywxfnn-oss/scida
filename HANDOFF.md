@@ -27,6 +27,7 @@ Current analysis-module milestone delivers:
 - chart types:
   - `标量图`
   - `结构化图`
+- manual chart-title editing with restore-default support
 - right-side `详情` panel with record-oriented readable detail
 - mouse-wheel zoom
 - drag pan
@@ -39,8 +40,12 @@ Current analysis-module milestone delivers:
   - hide / show
   - remove
   - rename
+  - restore default name
   - color adjustment
+  - restore default color
   - move up / move down
+- compact chart-local legend controls
+- cleaner empty / weak-state wording for no-chart, empty-chart, all-hidden, and no-usable-data cases
 
 Current scalar-chart rules:
 
@@ -87,6 +92,7 @@ Persisted chart rebuild config currently includes:
 
 - chart type
 - semantic title
+- optional custom title override
 - scalar chart source config:
   - Step 1 X field
   - metric name
@@ -101,6 +107,7 @@ Persisted chart rebuild config currently includes:
 - chart viewport, zoom level, pan offset, modal state, hover state, and expanded-overlay state are not persisted
 - no drag-sort for series; ordering is button-based only
 - rename changes the analysis display label only; chart semantic title generation remains source/axis based
+- empty / weak-state polish is renderer-only and intentionally lightweight
 - unit handling is still lightweight blocking/warning, not full normalization
 - structured semantic alignment is still caution-oriented, not normalization-oriented
 - no saved chart templates or cross-project analysis presets yet

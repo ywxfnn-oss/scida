@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+## v1.2.2 - 2026-03-28
+
+### Changed
+
+- Polished analysis empty and weak-state wording for:
+  - no-chart state
+  - empty-chart state
+  - all-series-hidden state
+  - no-usable-data state
+  - no-filter-match state
+- Refined lightweight analysis empty-state styling and spacing for cleaner, more consistent readability.
+- Polished analysis interaction clarity by keeping draggable chart background and clickable data/legend targets visually distinct.
+
+## v1.2.1 - 2026-03-28
+
+### Added
+
+- Added manual chart-title editing for scalar and structured analysis charts.
+- Added lightweight restore-default actions for:
+  - chart title
+  - per-series display name
+  - per-series color
+
+### Changed
+
+- Polished chart-local legend layout so rename, color, order, hide/show, remove, and restore-default actions stay compact and local.
+- Extended lightweight analysis persistence so custom chart titles and per-series display overrides restore across restart.
+
+## v1.2.0 - 2026-03-28
+
 ### Added
 
 - Added the new `数据分析` entry as a read-only workspace for comparing existing experiment records without modifying source data.
