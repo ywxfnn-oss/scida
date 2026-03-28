@@ -92,6 +92,7 @@ import {
   type XYCurveBlockMeta,
   type XYPoint
 } from './template-blocks';
+import { matchesCrossFilterSet } from './cross-filters';
 
 let prisma!: PrismaClient;
 
@@ -904,24 +905,29 @@ app.whenReady().then(async () => {
       payload?: {
         query?: string;
         groupBy?: 'sampleCode' | 'testProject' | 'testTime' | 'instrument' | 'tester' | 'sampleOwner';
-        filters?: {
-          sampleCode?: string;
-          testProject?: string;
-          instrument?: string;
-          tester?: string;
-          sampleOwner?: string;
-        };
+        crossFilters?: Array<{
+          id: string;
+          field:
+            | 'sampleCode'
+            | 'testTime'
+            | 'testProject'
+            | 'tester'
+            | 'instrument'
+            | 'sampleOwner'
+            | 'secondaryName'
+            | 'secondaryValue'
+            | 'structuredBlockName';
+          value: string;
+        }>;
         sortOrder?: 'newest' | 'oldest';
       }
     ) => {
       const keyword = (payload?.query || '').trim();
       const groupBy = payload?.groupBy || 'sampleCode';
       const sortOrder = payload?.sortOrder || 'newest';
-      const sampleCodeFilter = (payload?.filters?.sampleCode || '').trim();
-      const testProjectFilter = (payload?.filters?.testProject || '').trim();
-      const instrumentFilter = (payload?.filters?.instrument || '').trim();
-      const testerFilter = (payload?.filters?.tester || '').trim();
-      const sampleOwnerFilter = (payload?.filters?.sampleOwner || '').trim();
+      const crossFilters = Array.isArray(payload?.crossFilters)
+        ? payload.crossFilters.filter((chip) => chip?.value?.trim())
+        : [];
       const whereClauses = [];
 
       if (keyword) {
@@ -937,53 +943,84 @@ app.whenReady().then(async () => {
         });
       }
 
-      if (sampleCodeFilter) {
-        whereClauses.push({
-          sampleCode: { contains: sampleCodeFilter }
-        });
-      }
-
-      if (testProjectFilter) {
-        whereClauses.push({
-          testProject: { contains: testProjectFilter }
-        });
-      }
-
-      if (instrumentFilter) {
-        whereClauses.push({
-          instrument: { contains: instrumentFilter }
-        });
-      }
-
-      if (testerFilter) {
-        whereClauses.push({
-          tester: { contains: testerFilter }
-        });
-      }
-
-      if (sampleOwnerFilter) {
-        whereClauses.push({
-          sampleOwner: { contains: sampleOwnerFilter }
-        });
-      }
-
       const experiments = await prisma.experiment.findMany({
         where: whereClauses.length ? { AND: whereClauses } : undefined,
         orderBy: {
           id: sortOrder === 'oldest' ? 'asc' : 'desc'
-        }
+        },
+        include: crossFilters.length
+          ? {
+              dataItems: {
+                select: {
+                  itemName: true,
+                  itemValue: true
+                }
+              },
+              templateBlocks: {
+                select: {
+                  templateType: true,
+                  blockTitle: true,
+                  metaJson: true
+                }
+              }
+            }
+          : undefined
       });
+
+      const filteredExperiments = crossFilters.length
+        ? experiments.filter((item) =>
+            matchesCrossFilterSet(
+              {
+                sampleCode: item.sampleCode,
+                testTime: item.testTime,
+                testProject: item.testProject,
+                tester: item.tester,
+                instrument: item.instrument,
+                sampleOwner: item.sampleOwner,
+                dataItems: (item.dataItems || []).map((dataItem) => ({
+                  itemName: dataItem.itemName,
+                  itemValue: dataItem.itemValue
+                })),
+                templateBlocks: (item.templateBlocks || []).map((block) => {
+                  const meta = parseTemplateBlockMeta(
+                    block.templateType as TemplateBlockType,
+                    block.metaJson
+                  ) as XYCurveBlockMeta | SpectrumBlockMeta;
+
+                  if (block.templateType === XY_TEMPLATE_TYPE) {
+                    return {
+                      templateType: XY_TEMPLATE_TYPE,
+                      blockTitle: block.blockTitle,
+                      purposeType: meta.purposeType,
+                      xLabel: (meta as XYCurveBlockMeta).xLabel,
+                      yLabel: (meta as XYCurveBlockMeta).yLabel
+                    };
+                  }
+
+                  return {
+                    templateType: SPECTRUM_TEMPLATE_TYPE,
+                    blockTitle: block.blockTitle,
+                    purposeType: meta.purposeType,
+                    spectrumAxisLabel: (meta as SpectrumBlockMeta).spectrumAxisLabel,
+                    signalLabel: (meta as SpectrumBlockMeta).signalLabel
+                  };
+                })
+              },
+              crossFilters
+            )
+          )
+        : experiments;
 
       const groupMap = new Map<
         string,
         {
           groupKey: string;
           groupLabel: string;
-          items: typeof experiments;
+          items: typeof filteredExperiments;
         }
       >();
 
-      for (const item of experiments) {
+      for (const item of filteredExperiments) {
         let groupValue = '';
 
         switch (groupBy) {

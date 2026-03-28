@@ -10,6 +10,23 @@ export type GroupByType =
 
 export type ExperimentListSortOrder = 'newest' | 'oldest';
 
+export type CrossFilterField =
+  | 'sampleCode'
+  | 'testTime'
+  | 'testProject'
+  | 'tester'
+  | 'instrument'
+  | 'sampleOwner'
+  | 'secondaryName'
+  | 'secondaryValue'
+  | 'structuredBlockName';
+
+export type CrossFilterChip = {
+  id: string;
+  field: CrossFilterField;
+  value: string;
+};
+
 export type ActionResult = {
   success: boolean;
   error?: string;
@@ -352,18 +369,10 @@ export type ExperimentGroup = {
   items: ExperimentListItem[];
 };
 
-export type ExperimentListFilters = {
-  sampleCode?: string;
-  testProject?: string;
-  instrument?: string;
-  tester?: string;
-  sampleOwner?: string;
-};
-
 export type ListExperimentsPayload = {
   query?: string;
   groupBy?: GroupByType;
-  filters?: ExperimentListFilters;
+  crossFilters?: CrossFilterChip[];
   sortOrder?: ExperimentListSortOrder;
 };
 

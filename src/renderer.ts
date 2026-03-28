@@ -2,6 +2,8 @@ import './index.css';
 import type {
   AnalysisStep1FieldKey,
   AppSettings,
+  CrossFilterChip,
+  CrossFilterField,
   DictionaryItemsByType,
   DictionaryType,
   DuplicateExperimentMatch,
@@ -42,6 +44,11 @@ import {
   renderOperationLogFilterButtons,
   renderRecentOperationLogs
 } from './renderer/render-helpers';
+import {
+  formatCrossFilterChipLabel,
+  getCrossFilterFieldPlaceholder,
+  matchesCrossFilterSet
+} from './cross-filters';
 import {
   getStructuredBlockPurposeLabel,
   getValueNatureLabelText,
@@ -303,6 +310,10 @@ type AnalysisComposerState =
       searchQuery: string;
       appliedSearchQuery: string;
       resultScrollTop: number;
+      crossFilters: CrossFilterChip[];
+      filterDraftOpen: boolean;
+      filterDraftField: CrossFilterField;
+      filterDraftValue: string;
       selectedRecordIds: number[];
       step1FieldKey: AnalysisStep1FieldKey;
       yItemName: string;
@@ -315,11 +326,21 @@ type AnalysisComposerState =
       searchQuery: string;
       appliedSearchQuery: string;
       resultScrollTop: number;
+      crossFilters: CrossFilterChip[];
+      filterDraftOpen: boolean;
+      filterDraftField: CrossFilterField;
+      filterDraftValue: string;
       selectedRecordIds: number[];
       selectedBlockName: string;
       pending: boolean;
       error: string;
     };
+
+type CrossFilterDraftState = {
+  open: boolean;
+  field: CrossFilterField;
+  value: string;
+};
 
 type AppSidebarItem = {
   id?: string;
@@ -359,6 +380,20 @@ const ANALYSIS_STEP1_FIELD_OPTIONS: Array<{
   { key: 'instrument', label: '测试仪器' },
   { key: 'testTime', label: '测试时间' },
   { key: 'sampleOwner', label: '样品所属人员' }
+];
+const CROSS_FILTER_FIELD_OPTIONS: Array<{
+  field: CrossFilterField;
+  label: string;
+}> = [
+  { field: 'sampleCode', label: '样品编号' },
+  { field: 'testTime', label: '测试时间' },
+  { field: 'testProject', label: '测试项目' },
+  { field: 'tester', label: '测试人' },
+  { field: 'instrument', label: '仪器' },
+  { field: 'sampleOwner', label: '样品所属人员' },
+  { field: 'secondaryName', label: '二级名称' },
+  { field: 'secondaryValue', label: '二级值' },
+  { field: 'structuredBlockName', label: '结构化数据块名称' }
 ];
 const CONDITION_NAME_KEYWORDS = [
   '温度',
@@ -587,12 +622,12 @@ let settingsSubView: SettingsSubView = 'general';
 let databaseSearchKeyword = '';
 let databaseGroupBy: GroupByType = 'sampleCode';
 const databaseSortOrder: ExperimentListSortOrder = 'newest';
-let databaseFilterPanelVisible = false;
-let databaseFilterSampleCode = '';
-let databaseFilterTestProject = '';
-let databaseFilterInstrument = '';
-let databaseFilterTester = '';
-let databaseFilterSampleOwner = '';
+let databaseCrossFilters: CrossFilterChip[] = [];
+let databaseFilterDraft: CrossFilterDraftState = {
+  open: false,
+  field: 'sampleCode',
+  value: ''
+};
 let databaseGroups: ExperimentGroup[] = [];
 let currentDetail: ExperimentDetail | null = null;
 let currentEditHistory: ExperimentEditHistoryEntry[] = [];
@@ -1009,6 +1044,190 @@ function getAnalysisStep1FieldLabel(fieldKey: AnalysisStep1FieldKey) {
   );
 }
 
+function buildDefaultCrossFilterDraft(): CrossFilterDraftState {
+  return {
+    open: false,
+    field: 'sampleCode',
+    value: ''
+  };
+}
+
+function createCrossFilterChip(field: CrossFilterField, value: string): CrossFilterChip {
+  return {
+    id: generateId(),
+    field,
+    value: value.trim()
+  };
+}
+
+function addCrossFilterChip(
+  chips: CrossFilterChip[],
+  field: CrossFilterField,
+  value: string
+) {
+  const trimmedValue = value.trim();
+  if (!trimmedValue) {
+    return chips;
+  }
+
+  return [...chips, createCrossFilterChip(field, trimmedValue)];
+}
+
+function removeCrossFilterChip(chips: CrossFilterChip[], chipId: string) {
+  return chips.filter((chip) => chip.id !== chipId);
+}
+
+function renderCrossFilterControls(params: {
+  scope: 'database' | 'analysis';
+  chips: CrossFilterChip[];
+  draftOpen: boolean;
+  draftField: CrossFilterField;
+  draftValue: string;
+}) {
+  const prefix = params.scope === 'database' ? 'db' : 'analysis-composer';
+
+  return `
+    <div class="cross-filter-chip-row">
+      ${
+        params.chips.length
+          ? params.chips
+              .map(
+                (chip) => `
+                  <span class="cross-filter-chip">
+                    <span class="cross-filter-chip-label">${escapeHtml(formatCrossFilterChipLabel(chip))}</span>
+                    <button
+                      class="cross-filter-chip-remove"
+                      type="button"
+                      title="移除筛选条件"
+                      data-cross-filter-remove="${params.scope}::${chip.id}"
+                    >
+                      ×
+                    </button>
+                  </span>
+                `
+              )
+              .join('')
+          : '<span class="cross-filter-chip-placeholder">当前没有附加筛选条件</span>'
+      }
+      ${
+        params.chips.length
+          ? `
+              <button
+                id="${prefix}-filter-clear-btn"
+                class="text-btn cross-filter-clear-btn"
+                type="button"
+              >
+                清空全部
+              </button>
+            `
+          : ''
+      }
+    </div>
+    ${
+      params.draftOpen
+        ? `
+            <div class="cross-filter-draft-row">
+              <select id="${prefix}-filter-field" class="form-input cross-filter-field-select">
+                ${CROSS_FILTER_FIELD_OPTIONS.map(
+                  (option) => `
+                    <option value="${option.field}" ${params.draftField === option.field ? 'selected' : ''}>
+                      ${option.label}
+                    </option>
+                  `
+                ).join('')}
+              </select>
+              <input
+                id="${prefix}-filter-value"
+                class="form-input cross-filter-value-input"
+                placeholder="${escapeHtml(getCrossFilterFieldPlaceholder(params.draftField))}"
+                value="${escapeHtml(params.draftValue)}"
+              />
+              <button id="${prefix}-filter-apply-btn" class="primary-btn" type="button">添加条件</button>
+              <button id="${prefix}-filter-cancel-btn" class="secondary-btn" type="button">取消</button>
+            </div>
+          `
+        : ''
+    }
+  `;
+}
+
+function openDatabaseFilterDraft() {
+  databaseFilterDraft = {
+    ...databaseFilterDraft,
+    open: true
+  };
+}
+
+function closeDatabaseFilterDraft() {
+  databaseFilterDraft = buildDefaultCrossFilterDraft();
+}
+
+async function applyDatabaseFilterDraft() {
+  if (!databaseFilterDraft.value.trim()) {
+    return;
+  }
+
+  databaseCrossFilters = addCrossFilterChip(
+    databaseCrossFilters,
+    databaseFilterDraft.field,
+    databaseFilterDraft.value
+  );
+  closeDatabaseFilterDraft();
+  await loadDatabaseList();
+  void render();
+}
+
+function openAnalysisComposerFilterDraft() {
+  if (!analysisComposer) {
+    return;
+  }
+
+  analysisComposer = {
+    ...analysisComposer,
+    filterDraftOpen: true
+  } as AnalysisComposerState;
+}
+
+function closeAnalysisComposerFilterDraft() {
+  if (!analysisComposer) {
+    return;
+  }
+
+  analysisComposer = {
+    ...analysisComposer,
+    filterDraftOpen: false,
+    filterDraftField: 'sampleCode',
+    filterDraftValue: '',
+    error: ''
+  } as AnalysisComposerState;
+}
+
+function applyAnalysisComposerFilterDraft() {
+  if (!analysisComposer) {
+    return;
+  }
+
+  if (!analysisComposer.filterDraftValue.trim()) {
+    return;
+  }
+
+  const nextComposer = reconcileAnalysisComposerSelection({
+    ...analysisComposer,
+    crossFilters: addCrossFilterChip(
+      analysisComposer.crossFilters,
+      analysisComposer.filterDraftField,
+      analysisComposer.filterDraftValue
+    ),
+    filterDraftOpen: false,
+    filterDraftField: 'sampleCode' as CrossFilterField,
+    filterDraftValue: '',
+    resultScrollTop: 0,
+    error: ''
+  } as AnalysisComposerState);
+  analysisComposer = nextComposer as AnalysisComposerState;
+  requestRender(true);
+}
+
 function getAnalysisStructuredBlockDisplayName(block: ExperimentDetail['templateBlocks'][number]) {
   const purposeLabel = getStructuredBlockPurposeLabel(block.purposeType || '');
   const hasKnownPurpose = purposeLabel && purposeLabel !== '未指定';
@@ -1048,6 +1267,94 @@ function getAnalysisStructuredBlockNameOptions(recordIds: number[]) {
     });
 
   return Array.from(nameSet).sort((left, right) => left.localeCompare(right, 'zh-CN'));
+}
+
+function matchesAnalysisRecordFilters(
+  entry: AnalysisRecordCatalogEntry,
+  chips: CrossFilterChip[]
+) {
+  return matchesCrossFilterSet(
+    {
+      sampleCode: entry.detail.sampleCode,
+      testTime: entry.detail.testTime,
+      testProject: entry.detail.testProject,
+      tester: entry.detail.tester,
+      instrument: entry.detail.instrument,
+      sampleOwner: entry.detail.sampleOwner,
+      dataItems: entry.detail.dataItems.map((item) => ({
+        itemName: item.itemName,
+        itemValue: item.itemValue
+      })),
+      templateBlocks: entry.detail.templateBlocks.map((block) => {
+        if (block.templateType === XY_TEMPLATE_TYPE) {
+          return {
+            templateType: XY_TEMPLATE_TYPE,
+            blockTitle: block.blockTitle,
+            purposeType: block.purposeType,
+            xLabel: block.xLabel,
+            yLabel: block.yLabel
+          };
+        }
+
+        return {
+          templateType: SPECTRUM_TEMPLATE_TYPE,
+          blockTitle: block.blockTitle,
+          purposeType: block.purposeType,
+          spectrumAxisLabel: block.spectrumAxisLabel,
+          signalLabel: block.signalLabel
+        };
+      })
+    },
+    chips
+  );
+}
+
+function getAnalysisComposerFilteredRecords(composer: AnalysisComposerState) {
+  return analysisRecords.filter((entry) => {
+    const matchesSearch = !composer.appliedSearchQuery.trim()
+      ? true
+      : [
+          entry.listItem.displayName,
+          entry.listItem.sampleCode,
+          entry.listItem.testProject,
+          entry.listItem.tester,
+          entry.listItem.instrument
+        ]
+          .join(' ')
+          .toLowerCase()
+          .includes(composer.appliedSearchQuery.trim().toLowerCase());
+
+    if (!matchesSearch) {
+      return false;
+    }
+
+    return matchesAnalysisRecordFilters(entry, composer.crossFilters);
+  });
+}
+
+function reconcileAnalysisComposerSelection(composer: AnalysisComposerState) {
+  const filteredRecordIds = new Set(
+    getAnalysisComposerFilteredRecords(composer).map((entry) => entry.listItem.id)
+  );
+  const selectedRecordIds = composer.selectedRecordIds.filter((recordId) => filteredRecordIds.has(recordId));
+
+  if (composer.chartType === 'scalar') {
+    const scalarMetricOptions = getAnalysisScalarMetricOptions(selectedRecordIds);
+    return {
+      ...composer,
+      selectedRecordIds,
+      yItemName: scalarMetricOptions.includes(composer.yItemName) ? composer.yItemName : ''
+    };
+  }
+
+  const structuredBlockOptions = getAnalysisStructuredBlockNameOptions(selectedRecordIds);
+  return {
+    ...composer,
+    selectedRecordIds,
+    selectedBlockName: structuredBlockOptions.includes(composer.selectedBlockName)
+      ? composer.selectedBlockName
+      : ''
+  };
 }
 
 function getVisibleAnalysisScalarSeries(chart: AnalysisChartCard) {
@@ -1529,6 +1836,10 @@ function restoreAnalysisChartFromPersistedConfig(
         searchQuery: '',
         appliedSearchQuery: '',
         resultScrollTop: 0,
+        crossFilters: [],
+        filterDraftOpen: false,
+        filterDraftField: 'sampleCode',
+        filterDraftValue: '',
         selectedRecordIds: [...seriesConfig.selectedRecordIds],
         step1FieldKey: seriesConfig.xFieldKey,
         yItemName: seriesConfig.yMetricName,
@@ -1564,6 +1875,10 @@ function restoreAnalysisChartFromPersistedConfig(
         searchQuery: '',
         appliedSearchQuery: '',
         resultScrollTop: 0,
+        crossFilters: [],
+        filterDraftOpen: false,
+        filterDraftField: 'sampleCode',
+        filterDraftValue: '',
         selectedRecordIds: [...seriesConfig.selectedRecordIds],
         selectedBlockName: seriesConfig.blockDisplayName,
         pending: false,
@@ -1630,6 +1945,10 @@ function refreshAnalysisChartsFromCatalog() {
             searchQuery: '',
             appliedSearchQuery: '',
             resultScrollTop: 0,
+            crossFilters: [],
+            filterDraftOpen: false,
+            filterDraftField: 'sampleCode',
+            filterDraftValue: '',
             selectedRecordIds: [...series.recordIds],
             step1FieldKey: series.xSourceValue.startsWith('step1:')
               ? (series.xSourceValue.replace('step1:', '') as AnalysisStep1FieldKey)
@@ -1804,6 +2123,10 @@ function openAnalysisComposer(chartId: string, chartType: AnalysisChartType) {
           searchQuery: '',
           appliedSearchQuery: '',
           resultScrollTop: 0,
+          crossFilters: [],
+          filterDraftOpen: false,
+          filterDraftField: 'sampleCode',
+          filterDraftValue: '',
           selectedRecordIds: [],
           step1FieldKey: 'testTime',
           yItemName: '',
@@ -1816,6 +2139,10 @@ function openAnalysisComposer(chartId: string, chartType: AnalysisChartType) {
           searchQuery: '',
           appliedSearchQuery: '',
           resultScrollTop: 0,
+          crossFilters: [],
+          filterDraftOpen: false,
+          filterDraftField: 'sampleCode',
+          filterDraftValue: '',
           selectedRecordIds: [],
           selectedBlockName: '',
           pending: false,
@@ -3569,26 +3896,10 @@ function renderAnalysisComposerModal() {
     return '';
   }
 
-  const filteredRecords = analysisRecords.filter((entry) => {
-    if (!analysisComposer.appliedSearchQuery.trim()) {
-      return true;
-    }
+  const composer = analysisComposer;
+  const filteredRecords = getAnalysisComposerFilteredRecords(composer);
 
-    const searchText = [
-      entry.listItem.displayName,
-      entry.listItem.sampleCode,
-      entry.listItem.testProject,
-      entry.listItem.tester,
-      entry.listItem.instrument
-    ]
-      .join(' ')
-      .toLowerCase();
-
-    return searchText.includes(analysisComposer.appliedSearchQuery.trim().toLowerCase());
-  });
-
-  if (analysisComposer.chartType === 'scalar') {
-    const composer = analysisComposer;
+  if (composer.chartType === 'scalar') {
     const scalarMetricOptions = getAnalysisScalarMetricOptions(composer.selectedRecordIds);
     const scalarMetricPrompt = !composer.selectedRecordIds.length
       ? '先勾选来源记录。'
@@ -3613,7 +3924,15 @@ function renderAnalysisComposerModal() {
               value="${escapeHtml(composer.searchQuery)}"
             />
             <button id="analysis-composer-search-btn" class="primary-btn search-btn" type="button">搜索</button>
+            <button id="analysis-composer-filter-add-btn" class="secondary-btn search-btn filter-add-btn" type="button" title="新增筛选条件">＋</button>
           </div>
+          ${renderCrossFilterControls({
+            scope: 'analysis',
+            chips: composer.crossFilters,
+            draftOpen: composer.filterDraftOpen,
+            draftField: composer.filterDraftField,
+            draftValue: composer.filterDraftValue
+          })}
           <div class="analysis-modal-toolbar">
             <button
               id="analysis-composer-toggle-select-btn"
@@ -3689,7 +4008,6 @@ function renderAnalysisComposerModal() {
     `;
   }
 
-  const composer = analysisComposer;
   const structuredBlockOptions = getAnalysisStructuredBlockNameOptions(composer.selectedRecordIds);
   const structuredBlockPrompt = !composer.selectedRecordIds.length
     ? '先勾选来源记录。'
@@ -3714,7 +4032,15 @@ function renderAnalysisComposerModal() {
             value="${escapeHtml(composer.searchQuery)}"
           />
           <button id="analysis-composer-search-btn" class="primary-btn search-btn" type="button">搜索</button>
+          <button id="analysis-composer-filter-add-btn" class="secondary-btn search-btn filter-add-btn" type="button" title="新增筛选条件">＋</button>
         </div>
+        ${renderCrossFilterControls({
+          scope: 'analysis',
+          chips: composer.crossFilters,
+          draftOpen: composer.filterDraftOpen,
+          draftField: composer.filterDraftField,
+          draftValue: composer.filterDraftValue
+        })}
         <div class="analysis-modal-toolbar">
           <button
             id="analysis-composer-toggle-select-btn"
@@ -3774,6 +4100,160 @@ function renderAnalysisComposerModal() {
       </div>
     </div>
   `;
+}
+
+function bindDatabaseCrossFilterEvents() {
+  document.getElementById('db-filter-add-btn')?.addEventListener('click', () => {
+    openDatabaseFilterDraft();
+    void renderPreservingContentScroll();
+  });
+
+  document.querySelectorAll('[data-cross-filter-remove^="database::"]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const encoded = (button as HTMLElement).dataset.crossFilterRemove;
+      const chipId = encoded?.split('::')[1];
+      if (!chipId) {
+        return;
+      }
+
+      databaseCrossFilters = removeCrossFilterChip(databaseCrossFilters, chipId);
+      await loadDatabaseList();
+      void render();
+    });
+  });
+
+  document.getElementById('db-filter-clear-btn')?.addEventListener('click', async () => {
+    databaseCrossFilters = [];
+    closeDatabaseFilterDraft();
+    await loadDatabaseList();
+    void render();
+  });
+
+  document.getElementById('db-filter-field')?.addEventListener('change', (event) => {
+    databaseFilterDraft = {
+      ...databaseFilterDraft,
+      field: (event.target as HTMLSelectElement).value as CrossFilterField
+    };
+    void renderPreservingContentScroll();
+  });
+
+  document.getElementById('db-filter-value')?.addEventListener('input', (event) => {
+    databaseFilterDraft = {
+      ...databaseFilterDraft,
+      value: (event.target as HTMLInputElement).value
+    };
+  });
+
+  document.getElementById('db-filter-apply-btn')?.addEventListener('click', async () => {
+    await applyDatabaseFilterDraft();
+  });
+
+  document.getElementById('db-filter-cancel-btn')?.addEventListener('click', () => {
+    closeDatabaseFilterDraft();
+    void renderPreservingContentScroll();
+  });
+
+  document.getElementById('db-filter-value')?.addEventListener('keydown', async (event) => {
+    if (event.key !== 'Enter') {
+      return;
+    }
+
+    event.preventDefault();
+    await applyDatabaseFilterDraft();
+  });
+}
+
+function bindAnalysisComposerFilterEvents() {
+  if (!analysisComposer) {
+    return;
+  }
+
+  document.getElementById('analysis-composer-filter-add-btn')?.addEventListener('click', () => {
+    openAnalysisComposerFilterDraft();
+    requestRender(true);
+  });
+
+  document.querySelectorAll('[data-cross-filter-remove^="analysis::"]').forEach((button) => {
+    button.addEventListener('click', () => {
+      if (!analysisComposer) {
+        return;
+      }
+
+      const encoded = (button as HTMLElement).dataset.crossFilterRemove;
+      const chipId = encoded?.split('::')[1];
+      if (!chipId) {
+        return;
+      }
+
+      const nextComposer = reconcileAnalysisComposerSelection({
+        ...analysisComposer,
+        crossFilters: removeCrossFilterChip(analysisComposer.crossFilters, chipId),
+        resultScrollTop: 0,
+        error: ''
+      } as AnalysisComposerState);
+      analysisComposer = nextComposer as AnalysisComposerState;
+      requestRender(true);
+    });
+  });
+
+  document.getElementById('analysis-composer-filter-clear-btn')?.addEventListener('click', () => {
+    if (!analysisComposer) {
+      return;
+    }
+
+    const nextComposer = reconcileAnalysisComposerSelection({
+      ...analysisComposer,
+      crossFilters: [],
+      filterDraftOpen: false,
+      filterDraftField: 'sampleCode',
+      filterDraftValue: '',
+      resultScrollTop: 0,
+      error: ''
+    } as AnalysisComposerState);
+    analysisComposer = nextComposer as AnalysisComposerState;
+    requestRender(true);
+  });
+
+  document.getElementById('analysis-composer-filter-field')?.addEventListener('change', (event) => {
+    if (!analysisComposer) {
+      return;
+    }
+
+    analysisComposer = {
+      ...analysisComposer,
+      filterDraftField: (event.target as HTMLSelectElement).value as CrossFilterField
+    } as AnalysisComposerState;
+    requestRender(true);
+  });
+
+  document.getElementById('analysis-composer-filter-value')?.addEventListener('input', (event) => {
+    if (!analysisComposer) {
+      return;
+    }
+
+    analysisComposer = {
+      ...analysisComposer,
+      filterDraftValue: (event.target as HTMLInputElement).value
+    } as AnalysisComposerState;
+  });
+
+  document.getElementById('analysis-composer-filter-apply-btn')?.addEventListener('click', () => {
+    applyAnalysisComposerFilterDraft();
+  });
+
+  document.getElementById('analysis-composer-filter-cancel-btn')?.addEventListener('click', () => {
+    closeAnalysisComposerFilterDraft();
+    requestRender(true);
+  });
+
+  document.getElementById('analysis-composer-filter-value')?.addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter') {
+      return;
+    }
+
+    event.preventDefault();
+    applyAnalysisComposerFilterDraft();
+  });
 }
 
 function bindAnalysisWorkspaceEvents() {
@@ -4312,6 +4792,8 @@ function bindAnalysisWorkspaceEvents() {
     return;
   }
 
+  bindAnalysisComposerFilterEvents();
+
   document.getElementById('analysis-composer-cancel-btn')?.addEventListener('click', () => {
     closeAnalysisComposer();
     requestRender(true);
@@ -4333,12 +4815,13 @@ function bindAnalysisWorkspaceEvents() {
       return;
     }
 
-    analysisComposer = {
+    const nextComposer = reconcileAnalysisComposerSelection({
       ...analysisComposer,
       appliedSearchQuery: analysisComposer.searchQuery.trim(),
       resultScrollTop: 0,
       error: ''
-    } as AnalysisComposerState;
+    } as AnalysisComposerState);
+    analysisComposer = nextComposer as AnalysisComposerState;
     requestRender(true);
   };
 
@@ -7435,51 +7918,15 @@ async function render() {
                   value="${escapeHtml(databaseSearchKeyword)}"
                 />
                 <button id="db-search-btn" class="primary-btn search-btn">搜索</button>
-                <button id="db-filter-btn" class="secondary-btn search-btn" type="button">筛选</button>
+                <button id="db-filter-add-btn" class="secondary-btn search-btn filter-add-btn" type="button" title="新增筛选条件">＋</button>
               </div>
-
-              ${databaseFilterPanelVisible
-        ? `
-              <div class="db-filter-panel">
-                <div class="db-filter-panel-header">
-                  <div class="db-filter-panel-title">筛选实验记录</div>
-                  <div class="db-filter-panel-subtitle">按字段缩小当前实验列表范围；不改变分组方式。</div>
-                </div>
-
-                <div class="step-form-grid db-filter-grid">
-                  <div class="form-group">
-                    <label class="form-label">测试项目</label>
-                    <input id="db-filter-test-project" class="form-input" value="${escapeHtml(databaseFilterTestProject)}" />
-                  </div>
-
-                  <div class="form-group">
-                    <label class="form-label">样品编号</label>
-                    <input id="db-filter-sample-code" class="form-input" value="${escapeHtml(databaseFilterSampleCode)}" />
-                  </div>
-
-                  <div class="form-group">
-                    <label class="form-label">测试人</label>
-                    <input id="db-filter-tester" class="form-input" value="${escapeHtml(databaseFilterTester)}" />
-                  </div>
-
-                  <div class="form-group">
-                    <label class="form-label">测试仪器</label>
-                    <input id="db-filter-instrument" class="form-input" value="${escapeHtml(databaseFilterInstrument)}" />
-                  </div>
-
-                  <div class="form-group">
-                    <label class="form-label">样品所属人员</label>
-                    <input id="db-filter-sample-owner" class="form-input" value="${escapeHtml(databaseFilterSampleOwner)}" />
-                  </div>
-                </div>
-
-                <div class="form-action-row db-filter-actions">
-                  <button id="db-filter-clear-btn" class="secondary-btn" type="button">清空筛选</button>
-                  <button id="db-filter-apply-btn" class="primary-btn" type="button">应用筛选</button>
-                </div>
-              </div>
-              `
-        : ''}
+              ${renderCrossFilterControls({
+                scope: 'database',
+                chips: databaseCrossFilters,
+                draftOpen: databaseFilterDraft.open,
+                draftField: databaseFilterDraft.field,
+                draftValue: databaseFilterDraft.value
+              })}
 
               <div class="group-tabs">
                 ${renderGroupTabs(databaseGroupBy)}
@@ -7545,37 +7992,7 @@ async function render() {
       void applyDatabaseSearch();
     });
 
-    document.getElementById('db-filter-btn')?.addEventListener('click', () => {
-      databaseFilterPanelVisible = !databaseFilterPanelVisible;
-      void renderPreservingContentScroll();
-    });
-
-    document.getElementById('db-filter-apply-btn')?.addEventListener('click', async () => {
-      databaseFilterSampleCode =
-        (document.getElementById('db-filter-sample-code') as HTMLInputElement | null)?.value.trim() || '';
-      databaseFilterTestProject =
-        (document.getElementById('db-filter-test-project') as HTMLInputElement | null)?.value.trim() || '';
-      databaseFilterInstrument =
-        (document.getElementById('db-filter-instrument') as HTMLInputElement | null)?.value.trim() || '';
-      databaseFilterTester =
-        (document.getElementById('db-filter-tester') as HTMLInputElement | null)?.value.trim() || '';
-      databaseFilterSampleOwner =
-        (document.getElementById('db-filter-sample-owner') as HTMLInputElement | null)?.value.trim() || '';
-      databaseFilterPanelVisible = false;
-      await loadDatabaseList();
-      void render();
-    });
-
-    document.getElementById('db-filter-clear-btn')?.addEventListener('click', async () => {
-      databaseFilterSampleCode = '';
-      databaseFilterTestProject = '';
-      databaseFilterInstrument = '';
-      databaseFilterTester = '';
-      databaseFilterSampleOwner = '';
-      databaseFilterPanelVisible = false;
-      await loadDatabaseList();
-      void render();
-    });
+    bindDatabaseCrossFilterEvents();
 
     document.getElementById('db-select-all-btn')?.addEventListener('click', () => {
       toggleSelectAllVisible();
@@ -9102,13 +9519,7 @@ async function loadDatabaseList(
   databaseGroups = await window.electronAPI.listExperiments({
     query,
     groupBy,
-    filters: {
-      sampleCode: databaseFilterSampleCode || undefined,
-      testProject: databaseFilterTestProject || undefined,
-      instrument: databaseFilterInstrument || undefined,
-      tester: databaseFilterTester || undefined,
-      sampleOwner: databaseFilterSampleOwner || undefined
-    },
+    crossFilters: databaseCrossFilters,
     sortOrder: databaseSortOrder
   });
 
@@ -9121,20 +9532,13 @@ async function loadDatabaseListView() {
 }
 
 function hasActiveDatabaseSearchOrFilters() {
-  return Boolean(
-    databaseSearchKeyword ||
-    databaseFilterSampleCode ||
-    databaseFilterTestProject ||
-    databaseFilterInstrument ||
-    databaseFilterTester ||
-    databaseFilterSampleOwner
-  );
+  return Boolean(databaseSearchKeyword || databaseCrossFilters.length);
 }
 
 function renderDatabaseGroups(groups: ExperimentGroup[]) {
   if (!groups.length) {
     return hasActiveDatabaseSearchOrFilters()
-      ? `<div class="empty-tip">当前搜索或筛选条件下没有符合条件的实验数据，可点击“重置”恢复默认列表</div>`
+      ? `<div class="empty-tip">当前搜索或筛选条件下没有符合条件的实验数据，可清空搜索词或筛选条件后重试</div>`
       : `<div class="empty-tip">当前没有符合条件的实验数据</div>`;
   }
 
