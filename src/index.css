@@ -261,6 +261,7 @@ body {
   border-radius: 18px;
   padding: 28px;
   box-shadow: 0 10px 24px rgba(0, 0, 0, 0.05);
+  border: 1px solid #e5edf5;
 }
 
 .welcome-card h2 {
@@ -472,6 +473,37 @@ body {
   color: #888;
   font-size: 14px;
   padding: 10px 0 4px;
+}
+
+.analysis-empty-state {
+  border: 1px dashed #d7e3ef;
+  border-radius: 16px;
+  background: linear-gradient(180deg, #fcfdff 0%, #f7fafc 100%);
+  padding: 18px 20px;
+  text-align: center;
+}
+
+.analysis-empty-state.compact {
+  padding: 18px 16px;
+}
+
+.analysis-empty-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #334155;
+}
+
+.analysis-empty-note {
+  margin-top: 6px;
+  font-size: 13px;
+  color: #64748b;
+}
+
+.analysis-picker-empty {
+  padding: 16px 12px;
+  text-align: center;
+  color: #64748b;
+  font-size: 13px;
 }
 
 .form-action-row {
@@ -1480,6 +1512,7 @@ body {
   align-items: center;
   gap: 8px;
   margin-top: 8px;
+  min-height: 28px;
 }
 
 .analysis-card-title-actions {
@@ -1524,6 +1557,7 @@ body {
   margin-top: 6px;
   color: #475569;
   font-size: 13px;
+  line-height: 1.5;
 }
 
 .analysis-card-actions {
@@ -1554,14 +1588,24 @@ body {
   right: 12px;
   opacity: 0;
   pointer-events: none;
-  transition: opacity 0.16s ease;
+  transform: translateY(-3px) scale(0.96);
+  transition:
+    opacity 0.16s ease,
+    transform 0.16s ease,
+    box-shadow 0.16s ease;
   z-index: 2;
 }
 
 .analysis-chart-shell:hover .analysis-expand-btn,
-.analysis-chart-card.expanded .analysis-expand-btn {
+.analysis-chart-card.expanded .analysis-expand-btn,
+.analysis-expand-btn:focus-visible {
   opacity: 1;
   pointer-events: auto;
+  transform: translateY(0) scale(1);
+}
+
+.analysis-expand-btn:hover {
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.14);
 }
 
 .analysis-export-menu-shell {
@@ -1605,6 +1649,10 @@ body {
   user-select: none;
 }
 
+.analysis-chart-shell:hover {
+  border-color: #c7d5e6;
+}
+
 .analysis-chart-shell:active {
   cursor: grabbing;
 }
@@ -1612,6 +1660,11 @@ body {
 .analysis-chart-shell [data-analysis-scalar-point],
 .analysis-chart-shell [data-analysis-structured-series] {
   cursor: pointer;
+}
+
+.analysis-chart-shell [data-analysis-scalar-point]:hover,
+.analysis-chart-shell [data-analysis-structured-series]:hover {
+  filter: saturate(1.08);
 }
 
 .analysis-chart-svg {
@@ -1662,6 +1715,7 @@ body {
   cursor: pointer;
   font: inherit;
   min-width: 0;
+  transition: background 0.14s ease, color 0.14s ease;
 }
 
 .analysis-legend-actions {
@@ -1669,6 +1723,13 @@ body {
   align-items: center;
   gap: 3px;
   flex-wrap: wrap;
+}
+
+.analysis-legend-main,
+.analysis-legend-color-label,
+.analysis-legend-icon-btn,
+.analysis-legend-remove {
+  cursor: pointer;
 }
 
 .analysis-legend-main:hover {
@@ -1794,11 +1855,12 @@ body {
 }
 
 .analysis-status-item {
-  border-left: 4px solid #d97706;
-  background: #fff7ed;
-  color: #9a3412;
-  border-radius: 10px;
+  border-left: 3px solid #cbd5e1;
+  background: #f8fafc;
+  color: #475569;
+  border-radius: 12px;
   padding: 10px 12px;
+  line-height: 1.45;
 }
 
 .analysis-inspector-panel {

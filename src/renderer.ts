@@ -1310,7 +1310,7 @@ function buildAnalysisScalarSeries(
   });
 
   if (!points.length) {
-    return { error: '所选记录中没有可用于该标量图的有效数据点' };
+    return { error: '当前选择下没有可绘制的数据点，请更换记录或结果指标。' };
   }
 
   if (xUnits.size > 1 || yUnits.size > 1) {
@@ -1418,7 +1418,7 @@ function buildAnalysisStructuredSeries(
   composer: Extract<AnalysisComposerState, { chartType: 'structured' }>
 ): { seriesList?: AnalysisStructuredSeries[]; error?: string; skippedRecordIds: number[] } {
   if (!composer.selectedRecordIds.length || !composer.selectedBlockName.trim()) {
-    return { error: '请选择来源记录和结构化数据块', skippedRecordIds: [] };
+    return { error: '请先选择来源记录和结构化数据块。', skippedRecordIds: [] };
   }
 
   const seriesList: AnalysisStructuredSeries[] = [];
@@ -1453,7 +1453,7 @@ function buildAnalysisStructuredSeries(
   });
 
   if (!seriesList.length) {
-    return { error: '所选记录中没有可用于该结构化图的有效数据块', skippedRecordIds };
+    return { error: '当前选择下没有可绘制的结构化数据，请更换记录或数据块。', skippedRecordIds };
   }
 
   return { seriesList, skippedRecordIds };
@@ -1469,12 +1469,12 @@ function buildAnalysisChartStatusMessages(chart: AnalysisChartCard) {
   if (chart.chartType === 'scalar') {
     chart.scalarSeries.forEach((series) => {
       if (series.skippedRecordIds.length) {
-        messages.push(`序列“${series.name}”跳过了 ${series.skippedRecordIds.length} 条缺少有效数值的记录`);
+        messages.push(`序列“${series.name}”已跳过 ${series.skippedRecordIds.length} 条不含可用数值的记录`);
       }
     });
 
     if (hiddenSeriesCount === chart.scalarSeries.length && chart.scalarSeries.length) {
-      messages.push('当前图表的所有序列均已隐藏');
+      messages.push('当前序列都已隐藏，可在图例中重新显示。');
     }
 
     return messages;
@@ -1508,7 +1508,7 @@ function buildAnalysisChartStatusMessages(chart: AnalysisChartCard) {
   }
 
   if (hiddenSeriesCount === chart.structuredSeries.length && chart.structuredSeries.length) {
-    messages.push('当前图表的所有序列均已隐藏');
+    messages.push('当前序列都已隐藏，可在图例中重新显示。');
   }
 
   return messages;
@@ -1576,7 +1576,7 @@ function restoreAnalysisChartFromPersistedConfig(
 
       if (buildResult.skippedRecordIds.length) {
         selectionNotices.push(
-          `当前结构化图跳过了 ${buildResult.skippedRecordIds.length} 条缺少所选结构化数据块的记录`
+          `已跳过 ${buildResult.skippedRecordIds.length} 条不含所选结构化数据块的记录`
         );
       }
 
@@ -2220,7 +2220,7 @@ async function confirmAddAnalysisSeries() {
       structuredSeries: [...currentChart.structuredSeries, ...buildResult.seriesList],
       viewport: null,
       selectionNotice: buildResult.skippedRecordIds.length
-        ? `当前结构化图跳过了 ${buildResult.skippedRecordIds.length} 条缺少所选结构化数据块的记录`
+        ? `已跳过 ${buildResult.skippedRecordIds.length} 条不含所选结构化数据块的记录`
         : ''
     }));
   }
@@ -2997,6 +2997,15 @@ function renderAnalysisDataList(
   `;
 }
 
+function renderAnalysisEmptyState(title: string, note?: string, compact = false) {
+  return `
+    <div class="analysis-empty-state ${compact ? 'compact' : ''}">
+      <div class="analysis-empty-title">${escapeHtml(title)}</div>
+      ${note ? `<div class="analysis-empty-note">${escapeHtml(note)}</div>` : ''}
+    </div>
+  `;
+}
+
 function renderAnalysisSection(title: string, body: string) {
   return `
     <section class="analysis-detail-section">
@@ -3360,7 +3369,7 @@ function renderAnalysisChartCard(chart: AnalysisChartCard, expanded = false) {
                 `
               )
               .join('')
-          : '<div class="empty-tip">当前图表尚未添加数据</div>'}
+          : renderAnalysisEmptyState('这张图还没有序列。', '点击右上角 + 添加数据。', true)}
       </div>
     </section>
   `;
@@ -3582,10 +3591,10 @@ function renderAnalysisComposerModal() {
     const composer = analysisComposer;
     const scalarMetricOptions = getAnalysisScalarMetricOptions(composer.selectedRecordIds);
     const scalarMetricPrompt = !composer.selectedRecordIds.length
-      ? '请先勾选来源记录'
+      ? '先勾选来源记录。'
       : scalarMetricOptions.length
         ? ''
-        : '当前所选记录没有可用的数值结果指标';
+        : '所选记录里没有可绘制的数值结果，请更换记录或改选其他记录。';
     const canConfirm =
       !composer.pending &&
       composer.selectedRecordIds.length > 0 &&
@@ -3621,20 +3630,22 @@ function renderAnalysisComposerModal() {
             </button>
           </div>
           <div id="analysis-record-picker" class="analysis-record-picker">
-            ${filteredRecords
-              .map(
-                (entry) => `
-                  <label class="analysis-record-option">
-                    <input
-                      type="checkbox"
-                      data-analysis-composer-record-id="${entry.listItem.id}"
-                      ${composer.selectedRecordIds.includes(entry.listItem.id) ? 'checked' : ''}
-                    />
-                    <span>${escapeHtml(entry.listItem.displayName)}</span>
-                  </label>
-                `
-              )
-              .join('')}
+            ${filteredRecords.length
+              ? filteredRecords
+                  .map(
+                    (entry) => `
+                      <label class="analysis-record-option">
+                        <input
+                          type="checkbox"
+                          data-analysis-composer-record-id="${entry.listItem.id}"
+                          ${composer.selectedRecordIds.includes(entry.listItem.id) ? 'checked' : ''}
+                        />
+                        <span>${escapeHtml(entry.listItem.displayName)}</span>
+                      </label>
+                    `
+                  )
+                  .join('')
+              : `<div class="analysis-picker-empty">当前筛选没有匹配记录，可清空搜索后重试。</div>`}
           </div>
           <div class="template-block-grid">
             <div class="form-group">
@@ -3681,10 +3692,10 @@ function renderAnalysisComposerModal() {
   const composer = analysisComposer;
   const structuredBlockOptions = getAnalysisStructuredBlockNameOptions(composer.selectedRecordIds);
   const structuredBlockPrompt = !composer.selectedRecordIds.length
-    ? '请先勾选来源记录'
+    ? '先勾选来源记录。'
     : structuredBlockOptions.length
       ? ''
-      : '当前所选记录没有可用的结构化数据块';
+      : '所选记录里没有可比较的结构化数据，请更换记录或改选其他记录。';
   const canConfirm =
     !composer.pending &&
     composer.selectedRecordIds.length > 0 &&
@@ -3720,20 +3731,22 @@ function renderAnalysisComposerModal() {
           </button>
         </div>
         <div id="analysis-record-picker" class="analysis-record-picker">
-          ${filteredRecords
-            .map(
-              (entry) => `
-                <label class="analysis-record-option">
-                  <input
-                    type="checkbox"
-                    data-analysis-composer-structured-record-id="${entry.listItem.id}"
-                    ${composer.selectedRecordIds.includes(entry.listItem.id) ? 'checked' : ''}
-                  />
-                  <span>${escapeHtml(entry.listItem.displayName)}</span>
-                </label>
-              `
-            )
-            .join('')}
+          ${filteredRecords.length
+            ? filteredRecords
+                .map(
+                  (entry) => `
+                    <label class="analysis-record-option">
+                      <input
+                        type="checkbox"
+                        data-analysis-composer-structured-record-id="${entry.listItem.id}"
+                        ${composer.selectedRecordIds.includes(entry.listItem.id) ? 'checked' : ''}
+                      />
+                      <span>${escapeHtml(entry.listItem.displayName)}</span>
+                    </label>
+                  `
+                )
+                .join('')
+            : `<div class="analysis-picker-empty">当前筛选没有匹配记录，可清空搜索后重试。</div>`}
         </div>
         <div class="form-group">
           <label class="form-label">结构化数据块</label>
@@ -7072,15 +7085,15 @@ async function render() {
             <div class="analysis-workspace-layout ${analysisInspectorCollapsed ? 'inspector-collapsed' : ''}">
               <div class="analysis-main-panel">
                 ${analysisLoading
-                  ? `<div class="empty-tip">正在加载分析数据...</div>`
+                  ? renderAnalysisEmptyState('正在准备分析数据...', '请稍候。')
                   : analysisLoadError
                     ? `<div class="error-message large-error">${escapeHtml(analysisLoadError)}</div>`
                     : analysisCharts.length
                       ? analysisCharts.map((chart) => renderAnalysisChartCard(chart)).join('')
                       : `
                           <div class="welcome-card">
-                            <h2>开始数据分析</h2>
-                            <p class="subtitle">V1 仅支持标量图和结构化图，且所有操作均保持对源记录只读。</p>
+                            <h2>还没有分析图</h2>
+                            <p class="subtitle">先创建一张标量图或结构化图，开始查看现有实验数据。分析视图始终保持对源记录只读。</p>
                             <div class="form-action-row">
                               <button id="analysis-add-scalar-chart-btn-empty" class="primary-btn action-btn" type="button">创建标量图</button>
                               <button id="analysis-add-structured-chart-btn-empty" class="secondary-btn" type="button">创建结构化图</button>
