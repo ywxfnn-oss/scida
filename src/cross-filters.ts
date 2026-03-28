@@ -135,7 +135,23 @@ export function normalizeCrossFilterText(value: string | null | undefined) {
 }
 
 export function formatCrossFilterChipLabel(chip: CrossFilterChip) {
-  return `${getCrossFilterFieldLabel(chip.field)}：${chip.value.trim()}`;
+  const operator = chip.operator || 'eq';
+  const normalizedValue = chip.value.trim();
+  const normalizedValue2 = (chip.value2 || '').trim();
+
+  if (operator === 'gte') {
+    return `${getCrossFilterFieldLabel(chip.field)}：>= ${normalizedValue}`;
+  }
+
+  if (operator === 'lte') {
+    return `${getCrossFilterFieldLabel(chip.field)}：<= ${normalizedValue}`;
+  }
+
+  if (operator === 'between') {
+    return `${getCrossFilterFieldLabel(chip.field)}：${normalizedValue} ~ ${normalizedValue2}`;
+  }
+
+  return `${getCrossFilterFieldLabel(chip.field)}：${normalizedValue}`;
 }
 
 export function getStructuredBlockPurposeFilterLabel(purposeType?: string | null) {
@@ -163,6 +179,17 @@ export function getStructuredBlockDisplayNameForFilter(block: CrossFilterStructu
 
 function matchesExactText(left: string | null | undefined, right: string) {
   return normalizeCrossFilterText(left) === normalizeCrossFilterText(right);
+}
+
+function parsePlainNumericValue(value: string | null | undefined) {
+  const trimmed = (value || '').trim();
+
+  if (!trimmed || !/^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i.test(trimmed)) {
+    return null;
+  }
+
+  const parsed = Number(trimmed);
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 function inferLegacyScalarRole(itemName: string): 'condition' | 'metric' {
@@ -202,6 +229,49 @@ function matchesScalarValueExact(item: CrossFilterScalarItemLike, target: string
   );
 }
 
+function supportsNumericRange(field: CrossFilterField) {
+  return field === 'conditionValue' || field === 'metricValue' || field === 'secondaryValue';
+}
+
+function matchesScalarValueNumeric(item: CrossFilterScalarItemLike, chip: CrossFilterChip) {
+  if (!supportsNumericRange(chip.field)) {
+    return false;
+  }
+
+  const left = parsePlainNumericValue(item.itemValue);
+  const right = parsePlainNumericValue(chip.value);
+  const operator = chip.operator || 'eq';
+
+  if (left === null || right === null) {
+    return false;
+  }
+
+  if (operator === 'gte') {
+    return left >= right;
+  }
+
+  if (operator === 'lte') {
+    return left <= right;
+  }
+
+  if (operator === 'between') {
+    const right2 = parsePlainNumericValue(chip.value2);
+    if (right2 === null) {
+      return false;
+    }
+
+    const min = Math.min(right, right2);
+    const max = Math.max(right, right2);
+    return left >= min && left <= max;
+  }
+
+  return false;
+}
+
+function isExactMatchChip(chip: CrossFilterChip) {
+  return (chip.operator || 'eq') === 'eq';
+}
+
 function matchesTopLevelField(record: CrossFilterRecordLike, chip: CrossFilterChip) {
   switch (chip.field) {
     case 'sampleCode':
@@ -230,7 +300,11 @@ function matchesScalarItemField(record: CrossFilterRecordLike, chip: CrossFilter
 
   if (chip.field === 'conditionValue') {
     return record.dataItems.some(
-      (item) => resolveScalarItemRole(item) === 'condition' && matchesScalarValueExact(item, chip.value)
+      (item) =>
+        resolveScalarItemRole(item) === 'condition' &&
+        (isExactMatchChip(chip)
+          ? matchesScalarValueExact(item, chip.value)
+          : matchesScalarValueNumeric(item, chip))
     );
   }
 
@@ -242,7 +316,11 @@ function matchesScalarItemField(record: CrossFilterRecordLike, chip: CrossFilter
 
   if (chip.field === 'metricValue') {
     return record.dataItems.some(
-      (item) => resolveScalarItemRole(item) === 'metric' && matchesScalarValueExact(item, chip.value)
+      (item) =>
+        resolveScalarItemRole(item) === 'metric' &&
+        (isExactMatchChip(chip)
+          ? matchesScalarValueExact(item, chip.value)
+          : matchesScalarValueNumeric(item, chip))
     );
   }
 
@@ -251,7 +329,11 @@ function matchesScalarItemField(record: CrossFilterRecordLike, chip: CrossFilter
   }
 
   if (chip.field === 'secondaryValue') {
-    return record.dataItems.some((item) => matchesScalarValueExact(item, chip.value));
+    return record.dataItems.some((item) =>
+      isExactMatchChip(chip)
+        ? matchesScalarValueExact(item, chip.value)
+        : matchesScalarValueNumeric(item, chip)
+    );
   }
 
   return false;
@@ -290,5 +372,27 @@ export function matchesCrossFilterSet(
   record: CrossFilterRecordLike,
   chips: CrossFilterChip[]
 ) {
-  return chips.every((chip) => matchesCrossFilterChip(record, chip));
+  const exactGroups = new Map<CrossFilterField, CrossFilterChip[]>();
+  const nonExactChips: CrossFilterChip[] = [];
+
+  for (const chip of chips) {
+    if (isExactMatchChip(chip)) {
+      const existing = exactGroups.get(chip.field) || [];
+      existing.push(chip);
+      exactGroups.set(chip.field, existing);
+      continue;
+    }
+
+    nonExactChips.push(chip);
+  }
+
+  const exactGroupsMatch = Array.from(exactGroups.values()).every((group) =>
+    group.some((chip) => matchesCrossFilterChip(record, chip))
+  );
+
+  if (!exactGroupsMatch) {
+    return false;
+  }
+
+  return nonExactChips.every((chip) => matchesCrossFilterChip(record, chip));
 }

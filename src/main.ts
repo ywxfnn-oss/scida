@@ -926,7 +926,9 @@ app.whenReady().then(async () => {
             | 'secondaryName'
             | 'secondaryValue'
             | 'structuredBlockName';
+          operator?: 'eq' | 'gte' | 'lte' | 'between';
           value: string;
+          value2?: string;
         }>;
         sortOrder?: 'newest' | 'oldest';
       }

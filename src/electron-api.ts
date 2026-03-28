@@ -28,8 +28,12 @@ export type CrossFilterField =
 export type CrossFilterChip = {
   id: string;
   field: CrossFilterField;
+  operator?: CrossFilterOperator;
   value: string;
+  value2?: string;
 };
+
+export type CrossFilterOperator = 'eq' | 'gte' | 'lte' | 'between';
 
 export type ActionResult = {
   success: boolean;

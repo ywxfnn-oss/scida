@@ -4,6 +4,7 @@ import type {
   AppSettings,
   CrossFilterChip,
   CrossFilterField,
+  CrossFilterOperator,
   DictionaryItemsByType,
   DictionaryType,
   DuplicateExperimentMatch,
@@ -313,7 +314,9 @@ type AnalysisComposerState =
       crossFilters: CrossFilterChip[];
       filterDraftOpen: boolean;
       filterDraftField: CrossFilterField;
+      filterDraftOperator: CrossFilterOperator;
       filterDraftValue: string;
+      filterDraftValue2: string;
       selectedRecordIds: number[];
       step1FieldKey: AnalysisStep1FieldKey;
       yItemName: string;
@@ -329,7 +332,9 @@ type AnalysisComposerState =
       crossFilters: CrossFilterChip[];
       filterDraftOpen: boolean;
       filterDraftField: CrossFilterField;
+      filterDraftOperator: CrossFilterOperator;
       filterDraftValue: string;
+      filterDraftValue2: string;
       selectedRecordIds: number[];
       selectedBlockName: string;
       pending: boolean;
@@ -339,7 +344,9 @@ type AnalysisComposerState =
 type CrossFilterDraftState = {
   open: boolean;
   field: CrossFilterField;
+  operator: CrossFilterOperator;
   value: string;
+  value2: string;
 };
 
 type AppSidebarItem = {
@@ -396,6 +403,15 @@ const CROSS_FILTER_FIELD_OPTIONS: Array<{
   { field: 'metricName', label: '结果指标名称' },
   { field: 'metricValue', label: '结果指标值' },
   { field: 'structuredBlockName', label: '结构化数据块名称' }
+];
+const CROSS_FILTER_OPERATOR_OPTIONS: Array<{
+  operator: CrossFilterOperator;
+  label: string;
+}> = [
+  { operator: 'eq', label: '等于' },
+  { operator: 'gte', label: '>=' },
+  { operator: 'lte', label: '<=' },
+  { operator: 'between', label: '区间' }
 ];
 const CONDITION_NAME_KEYWORDS = [
   '温度',
@@ -635,7 +651,9 @@ let databaseCrossFilters: CrossFilterChip[] = [];
 let databaseFilterDraft: CrossFilterDraftState = {
   open: false,
   field: 'sampleCode',
-  value: ''
+  operator: 'eq',
+  value: '',
+  value2: ''
 };
 let databaseGroups: ExperimentGroup[] = [];
 let currentDetail: ExperimentDetail | null = null;
@@ -1057,29 +1075,48 @@ function buildDefaultCrossFilterDraft(): CrossFilterDraftState {
   return {
     open: false,
     field: 'sampleCode',
-    value: ''
+    operator: 'eq',
+    value: '',
+    value2: ''
   };
 }
 
-function createCrossFilterChip(field: CrossFilterField, value: string): CrossFilterChip {
+function supportsCrossFilterRangeOperator(field: CrossFilterField) {
+  return field === 'conditionValue' || field === 'metricValue';
+}
+
+function createCrossFilterChip(
+  field: CrossFilterField,
+  value: string,
+  operator: CrossFilterOperator = 'eq',
+  value2 = ''
+): CrossFilterChip {
   return {
     id: generateId(),
     field,
-    value: value.trim()
+    operator,
+    value: value.trim(),
+    value2: value2.trim() || undefined
   };
 }
 
 function addCrossFilterChip(
   chips: CrossFilterChip[],
   field: CrossFilterField,
-  value: string
+  value: string,
+  operator: CrossFilterOperator = 'eq',
+  value2 = ''
 ) {
   const trimmedValue = value.trim();
   if (!trimmedValue) {
     return chips;
   }
 
-  return [...chips, createCrossFilterChip(field, trimmedValue)];
+  if (operator === 'between' && !value2.trim()) {
+    return chips;
+  }
+
+  return [...chips, createCrossFilterChip(field, trimmedValue, operator, value2)];
 }
 
 function removeCrossFilterChip(chips: CrossFilterChip[], chipId: string) {
@@ -1091,9 +1128,12 @@ function renderCrossFilterControls(params: {
   chips: CrossFilterChip[];
   draftOpen: boolean;
   draftField: CrossFilterField;
+  draftOperator: CrossFilterOperator;
   draftValue: string;
+  draftValue2: string;
 }) {
   const prefix = params.scope === 'database' ? 'db' : 'analysis-composer';
+  const supportsRange = supportsCrossFilterRangeOperator(params.draftField);
 
   return `
     <div class="cross-filter-chip-row">
@@ -1145,12 +1185,37 @@ function renderCrossFilterControls(params: {
                   `
                 ).join('')}
               </select>
+              ${supportsRange
+                ? `
+                    <select id="${prefix}-filter-operator" class="form-input cross-filter-operator-select">
+                      ${CROSS_FILTER_OPERATOR_OPTIONS.map(
+                        (option) => `
+                          <option value="${option.operator}" ${params.draftOperator === option.operator ? 'selected' : ''}>
+                            ${option.label}
+                          </option>
+                        `
+                      ).join('')}
+                    </select>
+                  `
+                : ''}
               <input
                 id="${prefix}-filter-value"
                 class="form-input cross-filter-value-input"
                 placeholder="${escapeHtml(getCrossFilterFieldPlaceholder(params.draftField))}"
                 value="${escapeHtml(params.draftValue)}"
               />
+              ${
+                supportsRange && params.draftOperator === 'between'
+                  ? `
+                      <input
+                        id="${prefix}-filter-value2"
+                        class="form-input cross-filter-value-input"
+                        placeholder="输入区间上限"
+                        value="${escapeHtml(params.draftValue2)}"
+                      />
+                    `
+                  : ''
+              }
               <button id="${prefix}-filter-apply-btn" class="primary-btn" type="button">添加条件</button>
               <button id="${prefix}-filter-cancel-btn" class="secondary-btn" type="button">取消</button>
             </div>
@@ -1176,10 +1241,16 @@ async function applyDatabaseFilterDraft() {
     return;
   }
 
+  if (databaseFilterDraft.operator === 'between' && !databaseFilterDraft.value2.trim()) {
+    return;
+  }
+
   databaseCrossFilters = addCrossFilterChip(
     databaseCrossFilters,
     databaseFilterDraft.field,
-    databaseFilterDraft.value
+    databaseFilterDraft.value,
+    databaseFilterDraft.operator,
+    databaseFilterDraft.value2
   );
   closeDatabaseFilterDraft();
   await loadDatabaseList();
@@ -1206,7 +1277,9 @@ function closeAnalysisComposerFilterDraft() {
     ...analysisComposer,
     filterDraftOpen: false,
     filterDraftField: 'sampleCode',
+    filterDraftOperator: 'eq',
     filterDraftValue: '',
+    filterDraftValue2: '',
     error: ''
   } as AnalysisComposerState;
 }
@@ -1220,16 +1293,24 @@ function applyAnalysisComposerFilterDraft() {
     return;
   }
 
+  if (analysisComposer.filterDraftOperator === 'between' && !analysisComposer.filterDraftValue2.trim()) {
+    return;
+  }
+
   const nextComposer = reconcileAnalysisComposerSelection({
     ...analysisComposer,
     crossFilters: addCrossFilterChip(
       analysisComposer.crossFilters,
       analysisComposer.filterDraftField,
-      analysisComposer.filterDraftValue
+      analysisComposer.filterDraftValue,
+      analysisComposer.filterDraftOperator,
+      analysisComposer.filterDraftValue2
     ),
     filterDraftOpen: false,
     filterDraftField: 'sampleCode' as CrossFilterField,
+    filterDraftOperator: 'eq' as CrossFilterOperator,
     filterDraftValue: '',
+    filterDraftValue2: '',
     resultScrollTop: 0,
     error: ''
   } as AnalysisComposerState);
@@ -1856,7 +1937,9 @@ function restoreAnalysisChartFromPersistedConfig(
         crossFilters: [],
         filterDraftOpen: false,
         filterDraftField: 'sampleCode',
+        filterDraftOperator: 'eq',
         filterDraftValue: '',
+        filterDraftValue2: '',
         selectedRecordIds: [...seriesConfig.selectedRecordIds],
         step1FieldKey: seriesConfig.xFieldKey,
         yItemName: seriesConfig.yMetricName,
@@ -1895,7 +1978,9 @@ function restoreAnalysisChartFromPersistedConfig(
         crossFilters: [],
         filterDraftOpen: false,
         filterDraftField: 'sampleCode',
+        filterDraftOperator: 'eq',
         filterDraftValue: '',
+        filterDraftValue2: '',
         selectedRecordIds: [...seriesConfig.selectedRecordIds],
         selectedBlockName: seriesConfig.blockDisplayName,
         pending: false,
@@ -1965,7 +2050,9 @@ function refreshAnalysisChartsFromCatalog() {
             crossFilters: [],
             filterDraftOpen: false,
             filterDraftField: 'sampleCode',
+            filterDraftOperator: 'eq',
             filterDraftValue: '',
+            filterDraftValue2: '',
             selectedRecordIds: [...series.recordIds],
             step1FieldKey: series.xSourceValue.startsWith('step1:')
               ? (series.xSourceValue.replace('step1:', '') as AnalysisStep1FieldKey)
@@ -2143,7 +2230,9 @@ function openAnalysisComposer(chartId: string, chartType: AnalysisChartType) {
           crossFilters: [],
           filterDraftOpen: false,
           filterDraftField: 'sampleCode',
+          filterDraftOperator: 'eq',
           filterDraftValue: '',
+          filterDraftValue2: '',
           selectedRecordIds: [],
           step1FieldKey: 'testTime',
           yItemName: '',
@@ -2159,7 +2248,9 @@ function openAnalysisComposer(chartId: string, chartType: AnalysisChartType) {
           crossFilters: [],
           filterDraftOpen: false,
           filterDraftField: 'sampleCode',
+          filterDraftOperator: 'eq',
           filterDraftValue: '',
+          filterDraftValue2: '',
           selectedRecordIds: [],
           selectedBlockName: '',
           pending: false,
@@ -3951,7 +4042,9 @@ function renderAnalysisComposerModal() {
             chips: composer.crossFilters,
             draftOpen: composer.filterDraftOpen,
             draftField: composer.filterDraftField,
-            draftValue: composer.filterDraftValue
+            draftOperator: composer.filterDraftOperator,
+            draftValue: composer.filterDraftValue,
+            draftValue2: composer.filterDraftValue2
           })}
           <div class="analysis-modal-toolbar">
             <div class="analysis-filter-result-summary">当前结果 ${filteredRecords.length} 条，已选择 ${selectedCount} 条</div>
@@ -4063,7 +4156,9 @@ function renderAnalysisComposerModal() {
           chips: composer.crossFilters,
           draftOpen: composer.filterDraftOpen,
           draftField: composer.filterDraftField,
-          draftValue: composer.filterDraftValue
+          draftOperator: composer.filterDraftOperator,
+          draftValue: composer.filterDraftValue,
+          draftValue2: composer.filterDraftValue2
         })}
         <div class="analysis-modal-toolbar">
           <div class="analysis-filter-result-summary">当前结果 ${filteredRecords.length} 条，已选择 ${selectedCount} 条</div>
@@ -4155,9 +4250,20 @@ function bindDatabaseCrossFilterEvents() {
   });
 
   document.getElementById('db-filter-field')?.addEventListener('change', (event) => {
+    const nextField = (event.target as HTMLSelectElement).value as CrossFilterField;
     databaseFilterDraft = {
       ...databaseFilterDraft,
-      field: (event.target as HTMLSelectElement).value as CrossFilterField
+      field: nextField,
+      operator: supportsCrossFilterRangeOperator(nextField) ? databaseFilterDraft.operator : 'eq',
+      value2: supportsCrossFilterRangeOperator(nextField) ? databaseFilterDraft.value2 : ''
+    };
+    void renderPreservingContentScroll();
+  });
+
+  document.getElementById('db-filter-operator')?.addEventListener('change', (event) => {
+    databaseFilterDraft = {
+      ...databaseFilterDraft,
+      operator: (event.target as HTMLSelectElement).value as CrossFilterOperator
     };
     void renderPreservingContentScroll();
   });
@@ -4179,6 +4285,22 @@ function bindDatabaseCrossFilterEvents() {
   });
 
   document.getElementById('db-filter-value')?.addEventListener('keydown', async (event) => {
+    if (event.key !== 'Enter') {
+      return;
+    }
+
+    event.preventDefault();
+    await applyDatabaseFilterDraft();
+  });
+
+  document.getElementById('db-filter-value2')?.addEventListener('input', (event) => {
+    databaseFilterDraft = {
+      ...databaseFilterDraft,
+      value2: (event.target as HTMLInputElement).value
+    };
+  });
+
+  document.getElementById('db-filter-value2')?.addEventListener('keydown', async (event) => {
     if (event.key !== 'Enter') {
       return;
     }
@@ -4231,7 +4353,9 @@ function bindAnalysisComposerFilterEvents() {
       crossFilters: [],
       filterDraftOpen: false,
       filterDraftField: 'sampleCode',
+      filterDraftOperator: 'eq',
       filterDraftValue: '',
+      filterDraftValue2: '',
       resultScrollTop: 0,
       error: ''
     } as AnalysisComposerState);
@@ -4244,9 +4368,28 @@ function bindAnalysisComposerFilterEvents() {
       return;
     }
 
+    const nextField = (event.target as HTMLSelectElement).value as CrossFilterField;
     analysisComposer = {
       ...analysisComposer,
-      filterDraftField: (event.target as HTMLSelectElement).value as CrossFilterField
+      filterDraftField: nextField,
+      filterDraftOperator: supportsCrossFilterRangeOperator(nextField)
+        ? analysisComposer.filterDraftOperator
+        : 'eq',
+      filterDraftValue2: supportsCrossFilterRangeOperator(nextField)
+        ? analysisComposer.filterDraftValue2
+        : ''
+    } as AnalysisComposerState;
+    requestRender(true);
+  });
+
+  document.getElementById('analysis-composer-filter-operator')?.addEventListener('change', (event) => {
+    if (!analysisComposer) {
+      return;
+    }
+
+    analysisComposer = {
+      ...analysisComposer,
+      filterDraftOperator: (event.target as HTMLSelectElement).value as CrossFilterOperator
     } as AnalysisComposerState;
     requestRender(true);
   });
@@ -4272,6 +4415,26 @@ function bindAnalysisComposerFilterEvents() {
   });
 
   document.getElementById('analysis-composer-filter-value')?.addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter') {
+      return;
+    }
+
+    event.preventDefault();
+    applyAnalysisComposerFilterDraft();
+  });
+
+  document.getElementById('analysis-composer-filter-value2')?.addEventListener('input', (event) => {
+    if (!analysisComposer) {
+      return;
+    }
+
+    analysisComposer = {
+      ...analysisComposer,
+      filterDraftValue2: (event.target as HTMLInputElement).value
+    } as AnalysisComposerState;
+  });
+
+  document.getElementById('analysis-composer-filter-value2')?.addEventListener('keydown', (event) => {
     if (event.key !== 'Enter') {
       return;
     }
@@ -7949,7 +8112,9 @@ async function render() {
                 chips: databaseCrossFilters,
                 draftOpen: databaseFilterDraft.open,
                 draftField: databaseFilterDraft.field,
-                draftValue: databaseFilterDraft.value
+                draftOperator: databaseFilterDraft.operator,
+                draftValue: databaseFilterDraft.value,
+                draftValue2: databaseFilterDraft.value2
               })}
 
               <div class="group-tabs">
