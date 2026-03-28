@@ -515,6 +515,13 @@ function inferScalarItemRole(itemName: string): ScalarItemRole {
   return 'metric';
 }
 
+function resolveScalarItemRole(item: {
+  itemName: string;
+  scalarRole?: ScalarItemRole | null;
+}): ScalarItemRole {
+  return item.scalarRole || inferScalarItemRole(item.itemName);
+}
+
 function isScalarValueLikelyNumeric(value: string) {
   const trimmed = value.trim();
   if (!trimmed) {
@@ -1504,7 +1511,7 @@ function getAnalysisScalarMetricOptions(recordIds: number[]) {
     .forEach((entry) => {
       entry.detail.dataItems.forEach((item) => {
         if (!item.itemName.trim()) return;
-        if (inferScalarItemRole(item.itemName) !== 'metric') return;
+        if (resolveScalarItemRole(item) !== 'metric') return;
         if (!isScalarValueLikelyNumeric(item.itemValue)) return;
         nameSet.add(item.itemName.trim());
       });
@@ -1599,7 +1606,7 @@ function buildAnalysisScalarSeries(
     const yItem = entry.detail.dataItems.find(
       (item) =>
         item.itemName.trim() === composer.yItemName.trim() &&
-        inferScalarItemRole(item.itemName) === 'metric' &&
+        resolveScalarItemRole(item) === 'metric' &&
         isScalarValueLikelyNumeric(item.itemValue)
     );
 
@@ -3352,7 +3359,7 @@ function renderAnalysisScalarSummaryList(
   items: ExperimentDetail['dataItems'],
   activeName?: string
 ) {
-  const metrics = items.filter((item) => inferScalarItemRole(item.itemName) === 'metric');
+  const metrics = items.filter((item) => resolveScalarItemRole(item) === 'metric');
 
   if (!metrics.length) {
     return '<div class="empty-tip">暂无结果指标</div>';
@@ -3748,7 +3755,7 @@ function renderAnalysisInspector() {
   const detail = entry.detail;
   const inspector = analysisInspector;
   const conditionItems = detail.dataItems
-    .filter((item) => inferScalarItemRole(item.itemName) === 'condition')
+    .filter((item) => resolveScalarItemRole(item) === 'condition')
     .map((item) => ({
       label: item.itemName,
       value: `${item.itemValue}${item.itemUnit ? ` ${item.itemUnit}` : ''}`
@@ -8354,11 +8361,11 @@ async function render() {
             ${renderStep2TemplateContextHint('detail-readonly')}
             ${renderReadonlyScalarSection(
               'condition',
-              currentDetail.dataItems.filter((item) => inferScalarItemRole(item.itemName) === 'condition')
+              currentDetail.dataItems.filter((item) => resolveScalarItemRole(item) === 'condition')
             )}
             ${renderReadonlyScalarSection(
               'metric',
-              currentDetail.dataItems.filter((item) => inferScalarItemRole(item.itemName) === 'metric')
+              currentDetail.dataItems.filter((item) => resolveScalarItemRole(item) === 'metric')
             )}
           `}
 
@@ -9615,7 +9622,7 @@ function prepareDetailEditState() {
   detailEditStep2 = currentDetail.dataItems.map((item) => ({
     id: `detail_item_${item.id}`,
     dataItemId: item.id,
-    scalarRole: inferScalarItemRole(item.itemName),
+    scalarRole: resolveScalarItemRole(item),
     itemName: item.itemName,
     itemValue: item.itemValue,
     itemUnit: item.itemUnit || '',

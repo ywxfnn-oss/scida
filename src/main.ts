@@ -102,6 +102,10 @@ const PASSWORD_HASH_PREFIX = 'scrypt';
 
 type SqliteDatabase = InstanceType<typeof Database>;
 
+function normalizeScalarRole(role?: string | null) {
+  return role === 'condition' || role === 'metric' ? role : null;
+}
+
 function getDefaultStorageRoot() {
   return path.join(app.getPath('userData'), 'storage', 'raw_files');
 }
@@ -820,6 +824,7 @@ app.whenReady().then(async () => {
               },
               dataItems: {
                 create: scalarFileResult.resolvedStep2.map((item, index) => ({
+                  scalarRole: normalizeScalarRole(item.scalarRole) || 'metric',
                   itemName: item.itemName,
                   itemValue: item.itemValue,
                   itemUnit: item.itemUnit || null,
@@ -1120,6 +1125,19 @@ app.whenReady().then(async () => {
 
     return {
       ...rest,
+      dataItems: experiment.dataItems.map((item) => ({
+        id: item.id,
+        scalarRole: normalizeScalarRole(item.scalarRole),
+        itemName: item.itemName,
+        itemValue: item.itemValue,
+        itemUnit: item.itemUnit,
+        sourceFileName: item.sourceFileName,
+        sourceFilePath: item.sourceFilePath,
+        originalFileName: item.originalFileName,
+        originalFilePath: item.originalFilePath,
+        rowOrder: item.rowOrder,
+        createdAt: item.createdAt.toISOString()
+      })),
       templateBlocks: templateBlocks.map((block) => {
         const points = parseXYBlockPoints(block.dataJson);
 

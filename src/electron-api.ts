@@ -414,6 +414,7 @@ export type ExperimentDetail = {
   }[];
   dataItems: {
     id: number;
+    scalarRole: ScalarItemRole | null;
     itemName: string;
     itemValue: string;
     itemUnit: string | null;

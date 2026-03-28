@@ -45,6 +45,7 @@ model ExperimentCustomField {
 model ExperimentDataItem {
   id                Int        @id @default(autoincrement())
   experimentId      Int
+  scalarRole        String?
   itemName          String
   itemValue         String
   itemUnit          String?

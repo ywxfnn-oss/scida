@@ -54,6 +54,7 @@ type OldExperimentRecord = {
   }>;
   dataItems: Array<{
     id: number;
+    scalarRole: string | null;
     itemName: string;
     itemValue: string;
     itemUnit: string | null;
@@ -73,6 +74,10 @@ function getScalarSectionLabel(role?: ScalarItemRole): ManagedSectionLabel {
   return role === 'condition' ? '实验条件' : '结果指标';
 }
 
+function normalizeScalarRole(role?: string | null): ScalarItemRole | null {
+  return role === 'condition' || role === 'metric' ? role : null;
+}
+
 function buildWarningMessage(warnings: Set<string>) {
   return warnings.size ? Array.from(warnings).join('\n') : '';
 }
@@ -80,6 +85,7 @@ function buildWarningMessage(warnings: Set<string>) {
 function normalizeStep2Items(payload: UpdateExperimentPayload) {
   return payload.step2.map((item) => ({
     ...item,
+    scalarRole: normalizeScalarRole(item.scalarRole) || 'metric',
     sourceFileName: item.sourceFileName || '',
     sourceFilePath: item.sourceFilePath || '',
     originalFileName: item.originalFileName || '',
@@ -106,6 +112,7 @@ function buildOldSnapshot(oldExperiment: OldExperimentRecord | null) {
       sortOrder: field.sortOrder
     })),
     dataItems: oldExperiment.dataItems.map((item) => ({
+      scalarRole: normalizeScalarRole(item.scalarRole),
       itemName: item.itemName,
       itemValue: item.itemValue,
       itemUnit: item.itemUnit,
@@ -143,6 +150,7 @@ function buildNewSnapshot(
       sortOrder: index + 1
     })),
     dataItems: resolvedStep2.map((item, index) => ({
+      scalarRole: normalizeScalarRole(item.scalarRole),
       itemName: item.itemName,
       itemValue: item.itemValue,
       itemUnit: item.itemUnit || null,
@@ -509,6 +517,7 @@ export async function updateExperimentWithManagedFiles(
         await tx.experimentDataItem.createMany({
           data: resolvedStep2.map((item, index) => ({
             experimentId: payload.experimentId,
+            scalarRole: normalizeScalarRole(item.scalarRole) || 'metric',
             itemName: item.itemName,
             itemValue: item.itemValue,
             itemUnit: item.itemUnit || null,
