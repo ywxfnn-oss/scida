@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v1.3.0 - 2026-03-29
+
 ### Added
 
 - Added unified chip-based cross-filtering across `数据` and `数据分析`, with a persistent `+` entry point, removable chips, and `清空全部`.
@@ -23,6 +25,18 @@
   - `<=`
   - `between`
 - Added filter value candidate picking so exact-value filters can be built from current data rather than manual typing only.
+- Added a first-run onboarding flow before login for:
+  - welcome
+  - license / privacy acknowledgement
+  - storage-root setup
+  - local admin username / password setup
+  - initialization progress
+  - completion
+- Added a minimal formal-release shell with:
+  - visible app version on onboarding/login shell
+  - `关于` entry for version info
+  - placeholder update / changelog info
+  - placeholder third-party notices info
 
 ### Changed
 
@@ -30,6 +44,7 @@
 - Changed the filter-building workflow so exact-value multi-select and candidate-value picking still resolve to the same applied chip model.
 - Changed candidate-value collection to narrow from the current result set and current semantic context where practical, such as `实验条件名称=温度` before choosing multiple temperature values.
 - Kept export selection and analysis chart behavior unchanged while making filtered-result workflows easier to use.
+- Changed packaged-build runtime asset handling so `dev.db` and Prisma migrations are bundled for clean first-start bootstrap.
 
 ## v1.2.2 - 2026-03-28
 
