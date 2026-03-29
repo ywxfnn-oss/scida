@@ -1,10 +1,30 @@
 # Scida
 
-Scida is a local-first Electron desktop application for managing scientific and experimental data.
+Scida is a local-first desktop application for managing scientific and experimental data.
 
-The app stores structured experiment records in SQLite through Prisma, keeps raw files on disk, and exports experiment data to Excel or ZIP bundles.
+I built it around my own graduate and future PhD research workflow: recording experiments, keeping raw files organized on disk, and being able to come back later to search, compare, and export results without pushing the data into a cloud service first.
 
-On a true first launch, the app now shows a local-only onboarding flow before login to collect legal acknowledgement, storage-root setup, and the initial local admin account.
+My research background is in photodetectors and optoelectronic experiments, so the current semantic templates and workflow defaults are centered on that direction. The app is still general enough to be useful outside that area, but that research context is what shaped the first practical release.
+
+AI tools helped a lot during development, especially Codex. I still treat Scida as a personal research tool that I want to make solid and genuinely useful, not as a generic demo project.
+
+The app stores structured experiment records in SQLite through Prisma, keeps managed raw files on disk, and exports experiment data to Excel or ZIP bundles.
+
+On a true first launch, Scida shows a local-only onboarding flow before login to collect legal acknowledgement, storage-root setup, and the initial local admin account.
+
+## What Scida Focuses On
+
+- local-first experiment record management
+- managed raw-file storage with a configurable storage root
+- guided Step 1 / Step 2 data entry for structured lab workflows
+- read-only analysis views for comparing existing results
+- export to practical local files instead of a hosted dashboard
+
+## Current Status
+
+- The current public releases are focused on macOS first, with automated build preparation for both macOS and Windows.
+- The packaged app is designed to stay local-first: no cloud account, no activation, and no forced online dependency.
+- Analysis remains read-only by design, and export behavior stays file-oriented.
 
 ## Tech Stack
 
@@ -42,6 +62,11 @@ On a true first launch, the app now shows a local-only onboarding flow before lo
 
 - The login/onboarding shell shows the visible app version.
 - Settings includes a minimal `关于` page for version info plus placeholders for changelog/update info and third-party notices.
+
+## Releases
+
+- GitHub Actions can build release artifacts for macOS and Windows and upload them as workflow artifacts.
+- Code signing and notarization are not configured in this repository yet, so generated binaries should currently be treated as unsigned build artifacts.
 
 ## Useful Commands
 
