@@ -34,16 +34,22 @@ Responsibilities:
   - runtime database preparation and Prisma initialization
   - IPC registration
   - remaining high-risk startup, delete, and update-file-mutation flows
+  - cross-filter list and filter-candidate IPC handlers
 - `src/main/auth-settings.ts`
   - login verification
   - settings reads and writes
   - password hashing and verification helpers
+  - first-run onboarding state and completion handling
 - `src/main/export-helpers.ts`
   - Excel workbook generation
   - ZIP creation
   - full export and item-name export flows
 - `src/main/ui-state-settings.ts`
   - lightweight UI-state persistence for global shell state and analysis workspace config
+- `src/cross-filters.ts`
+  - shared filter matching rules used by both database and analysis flows
+  - strict semantic scalar-role matching with safe legacy fallback
+  - candidate-value collection helpers for exact-value filter building
 - `src/main/file-helpers.ts`
   - path building
   - filesystem helper utilities
@@ -69,6 +75,7 @@ Startup database flow:
 3. inspect and apply pending SQL migrations from `prisma/migrations/`
 4. migrate legacy auth settings to hashed password storage
 5. connect Prisma
+6. gate fresh installs behind renderer onboarding before normal login
 
 Important current reality:
 
@@ -85,6 +92,7 @@ Responsibilities:
 - forward renderer requests to main-process IPC handlers
 - include additive APIs for duplicate checks and file integrity scan results
 - include additive APIs for read/write of persisted analysis UI configuration
+- include additive bootstrap/onboarding APIs for first-run detection and completion
 
 ### Renderer
 **Files:** `src/renderer.ts`, `src/renderer/render-helpers.ts`
@@ -96,13 +104,17 @@ Responsibilities:
   - event binding
   - DOM/state collection
   - preload API usage
+  - thin first-run onboarding gate before the existing login flow
   - read-only analysis workspace state and chart interaction
+  - chip-based database and analysis cross-filter UX
+  - minimal formal-release shell surface for version/about placeholders
 - `src/renderer/render-helpers.ts`
   - pure formatting helpers
   - parameterized HTML string builders used by the renderer
 
 Current user-facing safety features:
 
+- fresh installs require main-process-backed onboarding completion before login
 - Settings includes a minimal file integrity scan report for the configured `storageRoot`.
 - create and update save flows include a non-blocking duplicate-record warning.
 - analysis remains chart-config-only and does not edit or delete source records.
@@ -117,6 +129,12 @@ Current user-facing safety features:
 
 Prisma is initialized once in the main process and all database access goes through main-process IPC handlers.
 Prisma Client generation is part of repository setup through `npm run prisma:generate` and `postinstall`.
+
+Current scalar semantic note:
+
+- scalar data items now persist nullable `scalarRole`
+- persisted role is authoritative when present
+- null-role legacy rows still rely on compatibility fallback at read/filter time
 
 ## Data Storage
 
@@ -135,7 +153,7 @@ Current managed raw-file naming behavior:
 
 - Vite builds `main`, `preload`, and `renderer` entrypoints.
 - Electron Forge packages the app.
-- `forge.config.ts` copies required Prisma and `better-sqlite3` runtime assets into packaged output.
+- `forge.config.ts` copies required Prisma, migration, bundled `dev.db`, and `better-sqlite3` runtime assets into packaged output.
 
 ## Current Structure Notes
 

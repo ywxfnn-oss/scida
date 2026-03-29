@@ -2,6 +2,35 @@
 
 ## Unreleased
 
+### Added
+
+- Added unified chip-based cross-filtering across `数据` and `数据分析`, with a persistent `+` entry point, removable chips, and `清空全部`.
+- Added Stage 1 additive cross-filter fields for:
+  - Step 1 fields
+  - `二级名称`
+  - `二级值`
+  - `结构化数据块名称`
+- Added Stage 2 filtered-workflow polish so filtered source-record candidates flow more directly into scalar and structured comparison, and filtered database results are easier to bulk-select for export.
+- Added nullable persisted `scalarRole` on scalar data items as the strict semantic foundation for `实验条件` and `结果指标`.
+- Added strict semantic scalar-role filters for:
+  - `实验条件名称`
+  - `实验条件值`
+  - `结果指标名称`
+  - `结果指标值`
+- Added same-field multi-value filtering so multiple exact-value chips on the same field behave as one any-match group.
+- Added numeric range filtering v1 for scalar condition/metric values with:
+  - `>=`
+  - `<=`
+  - `between`
+- Added filter value candidate picking so exact-value filters can be built from current data rather than manual typing only.
+
+### Changed
+
+- Changed filter matching to treat persisted DB `scalarRole` as authoritative when present, while still allowing safe legacy fallback for null-role records.
+- Changed the filter-building workflow so exact-value multi-select and candidate-value picking still resolve to the same applied chip model.
+- Changed candidate-value collection to narrow from the current result set and current semantic context where practical, such as `实验条件名称=温度` before choosing multiple temperature values.
+- Kept export selection and analysis chart behavior unchanged while making filtered-result workflows easier to use.
+
 ## v1.2.2 - 2026-03-28
 
 ### Changed

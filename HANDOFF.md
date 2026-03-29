@@ -1,6 +1,6 @@
 # HANDOFF.md
 
-Release handoff for the current Scidata Manager analysis-module milestone.
+Release handoff for the current Scidata Manager analysis and filtering milestone.
 
 ## Current Product State
 
@@ -13,6 +13,7 @@ Scidata Manager currently has three distinct user-facing areas:
 - `数据分析`
   - read-only visual comparison of existing records
   - chart configuration, inspection, and local UI persistence only
+- shared cross-filter UX for analysis source-record narrowing
 - `导出`
   - record-driven workbook and ZIP export
   - still owned by the existing database/export workflow
@@ -47,6 +48,43 @@ Current analysis-module milestone delivers:
 - compact chart-local legend controls
 - cleaner empty / weak-state wording for no-chart, empty-chart, all-hidden, and no-usable-data cases
 
+## Filtering Milestone Capabilities
+
+Current branch state also delivers a unified additive filter system shared by `数据` and `数据分析`:
+
+- chip-based filter UX with:
+  - persistent `+`
+  - removable chips
+  - `清空全部`
+- Step 1 field filtering for:
+  - `样品编号`
+  - `测试时间`
+  - `测试项目`
+  - `测试人`
+  - `仪器`
+  - `样品所属人员`
+- strict semantic scalar filters for:
+  - `实验条件名称`
+  - `实验条件值`
+  - `结果指标名称`
+  - `结果指标值`
+- separate `结构化数据块名称` filtering using user-visible block names rather than low-level template type
+- same-field multi-value filtering for exact-value chips
+- numeric range filtering v1 for scalar condition/metric values
+- candidate-value picking from the current filtered result set for exact-value filter building
+
+Current database-side filtering behavior:
+
+- filters the record list
+- preserves the existing grouping/sorting view after filtering
+- keeps export selection record-driven
+
+Current analysis-side filtering behavior:
+
+- filters source-record candidates only
+- does not auto-mutate existing charts after filters change
+- keeps filtered candidate workflows aligned with current scalar/structured add-series flows
+
 Current scalar-chart rules:
 
 - X axis uses Step 1 fields only
@@ -70,6 +108,8 @@ Important release guardrails:
 - persistence does not store raw-data snapshots, point caches, copied records, or viewport caches
 - export semantics remain record/chart-state driven, not analysis-snapshot driven
 - `导出当前图数据` now exports only currently visible series
+- strict scalar semantics now come from persisted `scalarRole` when present
+- legacy null-role records remain readable/filterable through compatibility fallback only
 
 ## Current Persistence Scope
 
@@ -101,6 +141,19 @@ Persisted chart rebuild config currently includes:
   - source block display key
   - selected record ids
 
+## Current Semantic-Role State
+
+Scalar item roles now have a persisted foundation:
+
+- `ExperimentDataItem.scalarRole` is nullable and stores:
+  - `condition`
+  - `metric`
+- new saves and re-saves write `scalarRole`
+- read paths prefer DB role when present
+- legacy null-role rows still use fallback inference for compatibility
+
+This means strict semantic filters are now reliable for newly saved or re-saved records, while old records remain supported without forced bulk backfill.
+
 ## Remaining Limitations
 
 - only `标量图` and `结构化图` are supported
@@ -111,6 +164,9 @@ Persisted chart rebuild config currently includes:
 - unit handling is still lightweight blocking/warning, not full normalization
 - structured semantic alignment is still caution-oriented, not normalization-oriented
 - no saved chart templates or cross-project analysis presets yet
+- numeric range filtering is still plain-numeric only and does not do unit conversion
+- legacy null-role rows can still rely on fallback inference until they are re-saved
+- filter candidate picking is lightweight and current-result-set based; it is not a full saved dictionary or facet-count system
 
 ## Sensible Next Steps
 
@@ -121,3 +177,5 @@ Reasonable next-step options after this release:
 3. Add chart duplication or reusable analysis templates without changing source-data ownership.
 4. Add richer detail-to-record navigation and optional chart annotation workflows.
 5. Add more structured semantic helpers only if they remain additive and do not require schema redesign.
+6. Decide when to retire legacy null-role fallback after enough records have been re-saved or safely migrated.
+7. Consider lightweight date-range and unit-aware filtering only after the current exact/range baseline is proven stable.

@@ -26,6 +26,7 @@ Current helper modules:
   - login verification
   - app settings reads and writes
   - password hashing and verification helpers
+  - first-run onboarding state detection and completion writes
 - `delete-helpers.ts`
   - managed-file-aware experiment delete flow
   - shared-reference protection during delete
@@ -61,6 +62,10 @@ Current helper modules:
 - `ui-state-settings.ts`
   - lightweight persistence of global shell UI state
   - lightweight persistence of analysis workspace chart configuration
+- `cross-filters.ts`
+  - shared chip-filter matching and label helpers
+  - strict semantic scalar-role resolution with legacy fallback
+  - current-result-set candidate-value collection for filter pickers
 - `managed-file-conflicts.ts`
   - collision checks for managed-file save/update paths
 - `template-block-file-helpers.ts`
@@ -84,10 +89,12 @@ Current responsibilities:
 
 Current additive safety-related APIs include:
 
+- first-run bootstrap state lookup and onboarding completion
 - duplicate check before save/update warning
 - file integrity scan report
 - structured-block import preview and manual remap preview
 - analysis UI state load/save for chart-configuration persistence
+- database filter candidate-value lookup for current-result-set picker UX
 
 ## Shared IPC Contract
 
@@ -113,10 +120,13 @@ Current renderer responsibilities:
 - manage view state and form state
 - call preload APIs
 - surface user-visible success and error states
+- gate clean first launches through a thin onboarding flow before the existing login view
 - apply Step 1 `testProject`-driven default template guidance in Step 2 for recommended conditions, metrics, and structured data starting points
 - keep create Step 2 and detail-edit aligned around the same secondary-item editing model
 - host the read-only `数据分析` workspace for scalar and structured comparison charts
 - keep analysis interactions chart-config-only, without modifying experiment source records
+- host the shared chip-based cross-filter UX used by both database and analysis source-record narrowing
+- expose a minimal about/release-info surface without changing product boundaries
 
 Current renderer helper responsibilities:
 
@@ -147,6 +157,12 @@ Current user-facing areas should be treated as separate responsibilities:
 - `导出`
   - still follows the existing export model from record data and selected analysis-visible series where applicable
 
+Current filter boundary:
+
+- database filters narrow record-list results
+- analysis filters narrow source-record candidates only
+- export remains selection-driven and does not become a new filter-owned export mode
+
 When extending analysis behavior, keep database mutation logic, managed-file naming, and export-system semantics unchanged unless the change explicitly targets those areas.
 
 ## Database and Runtime DB Layer
@@ -168,8 +184,15 @@ Current runtime behavior:
 3. inspect and apply pending SQL migrations from `prisma/migrations/`
 4. migrate legacy auth settings to hashed-password storage
 5. connect Prisma
+6. decide between onboarding gate and normal login based on existing local state
 
 Database access stays in the main process. Startup and migration safety remain high-risk areas.
+
+Current semantic-role note:
+
+- scalar rows now persist nullable `scalarRole`
+- newly written or re-saved rows carry strict `condition | metric` semantics
+- legacy null-role rows remain compatible through read-time fallback
 
 ## Runtime Storage and File Operations
 
@@ -197,7 +220,7 @@ Key current behavior:
 Current responsibilities:
 
 - build each Electron target
-- preserve Prisma and native SQLite runtime compatibility in packaged builds
+- preserve Prisma, migration assets, bundled `dev.db`, and native SQLite runtime compatibility in packaged builds
 
 Packaging changes should be treated as high-risk because they can break startup, Prisma resolution, or native module loading.
 
