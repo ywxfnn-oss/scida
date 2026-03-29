@@ -5,6 +5,7 @@ const electronAPI: ElectronAPI = {
     getAppVersion: (): Promise<string> => ipcRenderer.invoke('system:getAppVersion'),
     getAppName: (): Promise<string> => ipcRenderer.invoke('system:getAppName'),
     getAppBootstrapState: () => ipcRenderer.invoke('system:getAppBootstrapState'),
+    getAppRuntimeInfo: () => ipcRenderer.invoke('system:getAppRuntimeInfo'),
 
     authenticate: (payload) => ipcRenderer.invoke('auth:authenticate', payload),
 

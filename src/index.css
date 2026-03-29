@@ -313,6 +313,8 @@ body {
 
 .onboarding-note-card,
 .about-placeholder-card,
+.about-info-card,
+.backup-reminder-card,
 .onboarding-progress-card {
   margin-top: 16px;
   padding: 16px 18px;
@@ -1659,6 +1661,70 @@ body {
 .about-modal-subtitle {
   margin-top: 6px;
   color: #667085;
+}
+
+.about-info-title,
+.backup-reminder-title {
+  font-size: 16px;
+  font-weight: 700;
+  color: #1f2937;
+}
+
+.about-info-text,
+.backup-reminder-text,
+.third-party-notice-text {
+  margin-top: 8px;
+  color: #475467;
+  line-height: 1.7;
+}
+
+.about-info-footnote {
+  margin-top: 10px;
+  color: #667085;
+  font-size: 13px;
+}
+
+.about-action-row {
+  margin-top: 14px;
+}
+
+.backup-reminder-path {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: #eef4fb;
+  border: 1px solid #d9e3f0;
+  color: #1d4f91;
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  word-break: break-all;
+}
+
+.third-party-notices-list {
+  display: grid;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.third-party-notice-card {
+  padding: 14px 16px;
+  border: 1px solid #e5edf5;
+  border-radius: 14px;
+  background: #fbfdff;
+}
+
+.third-party-notice-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.third-party-notice-header span {
+  color: #667085;
+  font-size: 13px;
 }
 
 .export-modal-title {

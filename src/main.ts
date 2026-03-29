@@ -99,6 +99,8 @@ import { collectCrossFilterCandidateValues, matchesCrossFilterSet } from './cros
 
 let prisma!: PrismaClient;
 
+const USER_FACING_APP_NAME = 'Scida';
+const LEGACY_USER_DATA_DIR_NAME = 'Scidata Manager';
 const DEFAULT_LOGIN_USERNAME = 'admin';
 const DEFAULT_LOGIN_PASSWORD = '123456';
 const PASSWORD_HASH_PREFIX = 'scrypt';
@@ -443,13 +445,17 @@ if (started) {
   app.quit();
 }
 
+if (!app.commandLine.hasSwitch('user-data-dir')) {
+  app.setPath('userData', path.join(app.getPath('appData'), LEGACY_USER_DATA_DIR_NAME));
+}
+
 const createWindow = (): void => {
   const mainWindow = new BrowserWindow({
     width: 1280,
     height: 840,
     minWidth: 1100,
     minHeight: 720,
-    title: 'SciData Manager',
+    title: USER_FACING_APP_NAME,
     autoHideMenuBar: true,
     show: false,
     backgroundColor: '#ffffff',
@@ -495,7 +501,11 @@ app.whenReady().then(async () => {
   }
 
   ipcMain.handle('system:getAppVersion', () => app.getVersion());
-  ipcMain.handle('system:getAppName', () => 'SciData Manager');
+  ipcMain.handle('system:getAppName', () => USER_FACING_APP_NAME);
+  ipcMain.handle('system:getAppRuntimeInfo', () => ({
+    runtimeDbPath: getRuntimeDbPath(),
+    userDataPath: app.getPath('userData')
+  }));
   ipcMain.handle('system:getAppBootstrapState', async () => {
     try {
       return await getAppBootstrapState(prisma, {

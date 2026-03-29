@@ -2,6 +2,7 @@ import './index.css';
 import type {
   AnalysisStep1FieldKey,
   AppBootstrapState,
+  AppRuntimeInfo,
   AppSettings,
   CrossFilterChip,
   CrossFilterField,
@@ -81,8 +82,44 @@ let appSettings: AppSettings = {
 };
 let appBootstrapState: AppBootstrapState | null = null;
 let appBootstrapStateLoadPromise: Promise<void> | null = null;
+let appRuntimeInfo: AppRuntimeInfo | null = null;
+let appRuntimeInfoLoadPromise: Promise<void> | null = null;
 let currentAppVersion = '';
 let aboutDialogVisible = false;
+let thirdPartyNoticesVisible = false;
+
+const ABOUT_PRODUCT_DESCRIPTION =
+  '本地优先的桌面科学数据管理工具，用于整理实验记录、托管原始文件并保持分析工作区只读。';
+const ABOUT_RELEASE_SUMMARY =
+  '当前正式发布延续本地桌面交付方式，提供首启初始化流程、正式 About 壳和稳定的本地运行时资产打包。';
+const ABOUT_CHANGELOG_POINTER = '详细版本变更与发布说明请参阅项目 CHANGELOG 和发布归档。';
+const THIRD_PARTY_NOTICE_ENTRIES = [
+  {
+    name: 'Electron',
+    purpose: '桌面应用运行时与窗口壳层',
+    notice: 'Electron 项目采用 MIT License。'
+  },
+  {
+    name: 'Electron Forge',
+    purpose: '应用打包与发布构建流程',
+    notice: 'Electron Forge 项目采用 MIT License。'
+  },
+  {
+    name: 'Vite',
+    purpose: 'Renderer 构建与开发时资源编排',
+    notice: 'Vite 项目采用 MIT License。'
+  },
+  {
+    name: 'Prisma',
+    purpose: '运行数据库访问与迁移执行',
+    notice: 'Prisma 项目采用 Apache License 2.0。'
+  },
+  {
+    name: 'better-sqlite3',
+    purpose: '本地 SQLite 访问绑定',
+    notice: 'better-sqlite3 项目采用 MIT License。'
+  }
+] as const;
 
 type ViewType =
   | 'onboarding'
@@ -829,6 +866,24 @@ async function ensureAppSettingsLoaded() {
 
     syncOnboardingDefaults();
   }
+}
+
+async function ensureRuntimeInfoLoaded() {
+  if (appRuntimeInfoLoadPromise) {
+    await appRuntimeInfoLoadPromise;
+    return;
+  }
+
+  appRuntimeInfoLoadPromise = (async () => {
+    try {
+      appRuntimeInfo = await window.electronAPI.getAppRuntimeInfo();
+    } catch (error) {
+      console.error('load runtime info failed:', error);
+      appRuntimeInfo = null;
+    }
+  })();
+
+  await appRuntimeInfoLoadPromise;
 }
 
 function buildPersistedAnalysisUIStateSnapshot(): PersistedAnalysisUIState {
@@ -1922,30 +1977,94 @@ function renderAboutDialog(appName: string, version: string) {
           <button id="about-dialog-close-btn" class="secondary-btn" type="button">关闭</button>
         </div>
 
-        <div class="detail-section">
-          <div class="detail-section-title">版本信息</div>
-          <div class="info-row">
-            <span>应用名称</span>
-            <strong>${escapeHtml(appName)}</strong>
+        ${renderAboutSurface(appName, version)}
+      </div>
+    </div>
+  `;
+}
+
+function renderAboutSurface(appName: string, version: string) {
+  return `
+    <div class="detail-section">
+      <div class="detail-section-title">产品信息</div>
+      <div class="about-info-card">
+        <div class="about-info-title">${escapeHtml(appName)}</div>
+        <div class="about-info-text">${escapeHtml(ABOUT_PRODUCT_DESCRIPTION)}</div>
+      </div>
+      <div class="info-row">
+        <span>应用名称</span>
+        <strong>${escapeHtml(appName)}</strong>
+      </div>
+      <div class="info-row">
+        <span>当前版本</span>
+        <strong>${escapeHtml(version)}</strong>
+      </div>
+    </div>
+
+    <div class="detail-section">
+      <div class="detail-section-title">发布说明</div>
+      <div class="about-info-card">
+        <div class="about-info-title">当前版本摘要</div>
+        <div class="about-info-text">${escapeHtml(ABOUT_RELEASE_SUMMARY)}</div>
+        <div class="about-info-footnote">${escapeHtml(ABOUT_CHANGELOG_POINTER)}</div>
+      </div>
+    </div>
+
+    <div class="detail-section">
+      <div class="detail-section-title">第三方 notices</div>
+      <div class="about-info-card">
+        <div class="about-info-text">
+          Scida 基于多项开源组件构建。此处提供当前整理的 notices 摘要，用于正式发布材料展示。
+        </div>
+        <div class="form-action-row about-action-row">
+          <button type="button" class="secondary-btn action-btn" data-open-third-party-notices>
+            查看第三方 notices
+          </button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderThirdPartyNoticesDialog() {
+  if (!thirdPartyNoticesVisible) {
+    return '';
+  }
+
+  return `
+    <div class="about-modal-mask" id="third-party-notices-mask">
+      <div
+        class="about-modal-card"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="third-party-notices-title"
+      >
+        <div class="about-modal-header">
+          <div>
+            <div id="third-party-notices-title" class="about-modal-title">第三方 notices</div>
+            <div class="about-modal-subtitle">当前发布中使用的核心开源组件摘要</div>
           </div>
-          <div class="info-row">
-            <span>当前版本</span>
-            <strong>${escapeHtml(version)}</strong>
+          <button id="third-party-notices-close-btn" class="secondary-btn" type="button">关闭</button>
+        </div>
+
+        <div class="about-info-card">
+          <div class="about-info-text">
+            以下内容为当前发布切片整理的静态 notices 摘要。完整依赖信息仍以项目锁文件与正式发布归档为准。
           </div>
         </div>
 
-        <div class="detail-section">
-          <div class="detail-section-title">更新与发布</div>
-          <div class="about-placeholder-card">
-            更新日志 / 版本更新信息入口预留中。当前版本发布说明可在后续正式发布流程中补充。
-          </div>
-        </div>
-
-        <div class="detail-section">
-          <div class="detail-section-title">第三方组件</div>
-          <div class="about-placeholder-card">
-            第三方许可与 notices 入口预留中，后续可在正式发布材料中补充。
-          </div>
+        <div class="third-party-notices-list">
+          ${THIRD_PARTY_NOTICE_ENTRIES.map(
+            (entry) => `
+              <div class="third-party-notice-card">
+                <div class="third-party-notice-header">
+                  <strong>${escapeHtml(entry.name)}</strong>
+                  <span>${escapeHtml(entry.purpose)}</span>
+                </div>
+                <div class="third-party-notice-text">${escapeHtml(entry.notice)}</div>
+              </div>
+            `
+          ).join('')}
         </div>
       </div>
     </div>
@@ -1962,6 +2081,20 @@ function bindAboutDialogEvents() {
     if (event.target === event.currentTarget) {
       aboutDialogVisible = false;
       requestRender(true);
+    }
+  });
+}
+
+function bindThirdPartyNoticesEvents(preserveContentScroll = false) {
+  document.getElementById('third-party-notices-close-btn')?.addEventListener('click', () => {
+    thirdPartyNoticesVisible = false;
+    requestRender(preserveContentScroll);
+  });
+
+  document.getElementById('third-party-notices-mask')?.addEventListener('click', (event) => {
+    if (event.target === event.currentTarget) {
+      thirdPartyNoticesVisible = false;
+      requestRender(preserveContentScroll);
     }
   });
 }
@@ -8217,8 +8350,20 @@ function bindAboutEntryEvents(preserveContentScroll = false) {
     });
   });
 
+  document.querySelectorAll('[data-open-third-party-notices]').forEach((button) => {
+    button.addEventListener('click', () => {
+      thirdPartyNoticesVisible = true;
+      aboutDialogVisible = false;
+      requestRender(preserveContentScroll);
+    });
+  });
+
   if (aboutDialogVisible) {
     bindAboutDialogEvents();
+  }
+
+  if (thirdPartyNoticesVisible) {
+    bindThirdPartyNoticesEvents(preserveContentScroll);
   }
 }
 
@@ -8267,9 +8412,9 @@ function renderOnboardingPage(appName: string, version: string) {
       <div class="onboarding-hero">
         <div class="onboarding-step-tag">${stepIndicator}</div>
         <h1>${escapeHtml(appName)}</h1>
-        <p class="subtitle">欢迎使用 Scidata Manager。首次启动需要完成一次本地初始化。</p>
+        <p class="subtitle">欢迎使用 Scida。首次启动将完成一次本地初始化，用于确认你的本机存储与登录设置。</p>
         <div class="onboarding-note-card">
-          初始化只会配置本地存储目录与本地管理员账号，不会启用云账户、激活或序列号机制。
+          初始化只会配置本地存储目录与本地管理员账号，不会启用云账户、在线激活、序列号或机器绑定。
         </div>
       </div>
       <div class="form-action-row onboarding-actions">
@@ -8287,12 +8432,12 @@ function renderOnboardingPage(appName: string, version: string) {
 
       <div class="onboarding-note-card">
         <strong>许可说明</strong>
-        <div>Scidata Manager 当前按本地桌面软件方式交付，不包含在线注册、激活或云端账号流程。</div>
+        <div>Scida 当前按本地桌面软件方式交付，不包含在线注册、激活、订阅绑定或云端账号流程。</div>
       </div>
 
       <div class="onboarding-note-card">
         <strong>隐私说明</strong>
-        <div>实验数据、登录配置与运行数据库默认保存在本机；应用不会在本流程中上传数据到云端。</div>
+        <div>实验数据、登录配置与运行数据库默认保存在本机；本初始化流程不会将数据上传到云端服务。</div>
       </div>
 
       <label class="checkbox-row onboarding-checkbox">
@@ -8317,7 +8462,7 @@ function renderOnboardingPage(appName: string, version: string) {
       <div class="onboarding-hero">
         <div class="onboarding-step-tag">${stepIndicator}</div>
         <h1>配置原始文件根目录</h1>
-        <p class="subtitle">该目录将作为托管原始文件的本地保存根目录。</p>
+        <p class="subtitle">该目录将作为原始文件的本地保存根目录，后续托管文件和导出流程仍会沿用当前产品边界。</p>
       </div>
 
       <div class="form-group">
@@ -8331,7 +8476,7 @@ function renderOnboardingPage(appName: string, version: string) {
       </div>
 
       <div class="onboarding-note-card">
-        初始化时会在主进程中校验该路径并尝试创建目录；无权限或路径指向文件时会被阻止。
+        初始化时会在主进程中校验该路径并尝试创建目录；无权限、路径指向文件或不可写目录时会被阻止。
       </div>
 
       <div id="onboarding-error" class="error-message large-error">${escapeHtml(onboardingState.error)}</div>
@@ -8346,7 +8491,7 @@ function renderOnboardingPage(appName: string, version: string) {
       <div class="onboarding-hero">
         <div class="onboarding-step-tag">${stepIndicator}</div>
         <h1>创建本地管理员账号</h1>
-        <p class="subtitle">该账号只用于本机登录，密码哈希由主进程写入本地设置。</p>
+        <p class="subtitle">该账号只用于本机登录。密码不会明文回传给界面，密码哈希由主进程写入本地设置。</p>
       </div>
 
       <div class="step-form-grid">
@@ -8393,11 +8538,11 @@ function renderOnboardingPage(appName: string, version: string) {
       <div class="onboarding-hero">
         <div class="onboarding-step-tag">${stepIndicator}</div>
         <h1>正在初始化</h1>
-        <p class="subtitle">正在创建本地目录并写入初始化设置，请稍候。</p>
+        <p class="subtitle">正在创建本地目录、校验设置并写入首次初始化状态，请稍候。</p>
       </div>
       <div class="onboarding-progress-card">
         <div class="onboarding-progress-spinner" aria-hidden="true"></div>
-        <div>正在校验存储根目录、写入本地管理员设置并完成首次初始化。</div>
+        <div>正在校验存储根目录、写入本地管理员设置，并记录首启完成状态。</div>
       </div>
     `;
   } else {
@@ -8405,11 +8550,15 @@ function renderOnboardingPage(appName: string, version: string) {
       <div class="onboarding-hero">
         <div class="onboarding-step-tag">${stepIndicator}</div>
         <h1>初始化完成</h1>
-        <p class="subtitle">首次启动初始化已完成。后续启动将直接进入登录页。</p>
+        <p class="subtitle">首次启动初始化已完成。后续启动将直接进入登录页，并继续使用本机保存的数据与设置。</p>
       </div>
 
       <div class="onboarding-note-card">
         当前本地管理员账号：<strong>${escapeHtml(onboardingState.loginUsername.trim())}</strong>
+      </div>
+
+      <div class="onboarding-note-card">
+        建议在版本升级、批量整理或重要修改前手动备份本机运行数据库与原始文件目录。
       </div>
 
       <div class="form-action-row onboarding-actions">
@@ -8427,6 +8576,7 @@ function renderOnboardingPage(appName: string, version: string) {
       </div>
     </div>
     ${renderAboutDialog(appName, version)}
+    ${renderThirdPartyNoticesDialog()}
   `;
 }
 
@@ -8441,6 +8591,7 @@ async function render() {
   currentAppVersion = version;
   await ensureBootstrapStateLoaded();
   await ensureAppSettingsLoaded();
+  await ensureRuntimeInfoLoaded();
   await ensurePersistedAnalysisUIStateLoaded();
 
   if (currentView === 'onboarding') {
@@ -8580,6 +8731,7 @@ async function render() {
         </div>
       </div>
       ${renderAboutDialog(appName, version)}
+      ${renderThirdPartyNoticesDialog()}
     `;
 
     bindAboutEntryEvents();
@@ -9942,6 +10094,7 @@ async function render() {
     const recentOperationLogsHtml = recentOperationLogs
       ? renderRecentOperationLogs(recentOperationLogs)
       : `<div class="detail-value">点击“查看最近操作日志”加载最近 30 条操作日志</div>`;
+    const runtimeDbPath = appRuntimeInfo?.runtimeDbPath || '';
     const generalSettingsHtml = `
       <div class="detail-section">
         <div class="detail-section-title">原始文件根目录</div>
@@ -9967,6 +10120,29 @@ async function render() {
               type="password"
               placeholder="留空则保持当前密码不变"
             />
+          </div>
+        </div>
+      </div>
+
+      <div class="detail-section">
+        <div class="detail-section-title">数据库备份提醒</div>
+        <div class="backup-reminder-card">
+          <div class="backup-reminder-title">运行数据库位置</div>
+          <div class="backup-reminder-text">
+            Scida 的运行数据库保存在本机。建议在版本升级、批量导入导出前或重要修改前，先手动备份数据库文件和原始文件根目录。
+          </div>
+          <div class="backup-reminder-path" title="${escapeHtml(runtimeDbPath || '当前未读取到运行数据库路径')}">
+            ${escapeHtml(runtimeDbPath || '当前未读取到运行数据库路径')}
+          </div>
+          <div class="form-action-row about-action-row">
+            <button
+              id="settings-open-runtime-db-folder-btn"
+              class="secondary-btn action-btn"
+              type="button"
+              ${runtimeDbPath ? '' : 'disabled'}
+            >
+              打开数据库所在目录
+            </button>
           </div>
         </div>
       </div>
@@ -10079,31 +10255,7 @@ async function render() {
       ).join('')}
     `;
     const aboutSettingsHtml = `
-      <div class="detail-section">
-        <div class="detail-section-title">产品信息</div>
-        <div class="info-row">
-          <span>应用名称</span>
-          <strong>${escapeHtml(appName)}</strong>
-        </div>
-        <div class="info-row">
-          <span>当前版本</span>
-          <strong>${escapeHtml(version)}</strong>
-        </div>
-      </div>
-
-      <div class="detail-section">
-        <div class="detail-section-title">更新与发布</div>
-        <div class="about-placeholder-card">
-          更新日志 / 版本更新信息入口预留中。后续正式发布时可在此接入 changelog 或更新提示。
-        </div>
-      </div>
-
-      <div class="detail-section">
-        <div class="detail-section-title">第三方组件</div>
-        <div class="about-placeholder-card">
-          第三方许可与 notices 入口预留中，后续可在此补充正式发布材料。
-        </div>
-      </div>
+      ${renderAboutSurface(appName, version)}
     `;
 
     root.innerHTML = `
@@ -10127,10 +10279,10 @@ async function render() {
               <p class="subtitle">
                 ${
                   settingsSubView === 'general'
-                    ? '当前阶段支持原始文件根目录和登录账号密码设置'
+                    ? '当前阶段支持原始文件根目录、登录账号密码，以及本机运行数据库位置与备份提醒。'
                     : settingsSubView === 'dictionary'
                       ? '维护一级字段建议词典。删除仅影响后续建议，不会修改历史记录。'
-                      : '查看当前版本、正式发布信息占位与第三方 notices 入口占位。'
+                      : '查看当前版本、产品说明、发布摘要，以及第三方 notices 入口。'
                 }
               </p>
 
@@ -10146,9 +10298,11 @@ async function render() {
           </section>
         </main>
       </div>
+      ${renderThirdPartyNoticesDialog()}
     `;
 
     bindAppSidebarEvents();
+    bindAboutEntryEvents(true);
     document.getElementById('settings-menu-home')?.addEventListener('click', () => {
       currentView = 'home';
       void render();
@@ -10403,6 +10557,15 @@ async function render() {
       }
 
       await openPathLocation(appSettings.storageRoot);
+    });
+
+    document.getElementById('settings-open-runtime-db-folder-btn')?.addEventListener('click', async () => {
+      if (!appRuntimeInfo?.runtimeDbPath) {
+        alert('当前没有可打开的运行数据库路径');
+        return;
+      }
+
+      await openPathLocation(appRuntimeInfo.runtimeDbPath);
     });
 
     document.querySelectorAll('[data-open-integrity-path]').forEach((button) => {

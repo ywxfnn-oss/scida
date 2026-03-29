@@ -51,6 +51,11 @@ export type AppBootstrapState = {
   appSettings: AppSettings;
 };
 
+export type AppRuntimeInfo = {
+  runtimeDbPath: string;
+  userDataPath: string;
+};
+
 export type AnalysisStep1FieldKey =
   | 'testProject'
   | 'sampleCode'
@@ -609,6 +614,7 @@ export interface ElectronAPI {
   getAppVersion: () => Promise<string>;
   getAppName: () => Promise<string>;
   getAppBootstrapState: () => Promise<AppBootstrapState>;
+  getAppRuntimeInfo: () => Promise<AppRuntimeInfo>;
   authenticate: (payload: AuthenticatePayload) => Promise<ActionResult>;
   getAppSettings: () => Promise<AppSettings>;
   saveAppSettings: (payload: SaveAppSettingsPayload) => Promise<ActionResult>;

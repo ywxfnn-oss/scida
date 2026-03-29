@@ -73,6 +73,7 @@ const config: ForgeConfig = {
   packagerConfig: {
     asar: false,
     prune: true,
+    icon: path.join(process.cwd(), 'assets', 'icons', 'scida'),
     afterPrune: [
       (
         buildPath: string,

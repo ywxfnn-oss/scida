@@ -1,6 +1,6 @@
-# Scidata Manager
+# Scida
 
-Scidata Manager is a local-first Electron desktop application for managing scientific and experimental data.
+Scida is a local-first Electron desktop application for managing scientific and experimental data.
 
 The app stores structured experiment records in SQLite through Prisma, keeps raw files on disk, and exports experiment data to Excel or ZIP bundles.
 
