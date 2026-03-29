@@ -17,6 +17,8 @@ jobs:
   build:
     name: Build ${{ matrix.label }}
     runs-on: ${{ matrix.os }}
+    env:
+      DATABASE_URL: file:./dev.db
     strategy:
       fail-fast: false
       matrix:
