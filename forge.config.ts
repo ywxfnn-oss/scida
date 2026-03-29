@@ -115,6 +115,18 @@ const config: ForgeConfig = {
             path.join(targetNodeModules, 'file-uri-to-path')
           );
 
+          // 运行时数据库与迁移资源
+          copyDirIfExists(
+            path.join(projectRoot, 'prisma'),
+            path.join(buildPath, 'prisma')
+          );
+
+          const devDbSourcePath = path.join(projectRoot, 'dev.db');
+          const devDbTargetPath = path.join(buildPath, 'dev.db');
+          if (fs.existsSync(devDbSourcePath)) {
+            fs.copyFileSync(devDbSourcePath, devDbTargetPath);
+          }
+
           done();
         } catch (error) {
           done(error as Error);

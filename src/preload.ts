@@ -4,12 +4,15 @@ import type { ElectronAPI } from './electron-api';
 const electronAPI: ElectronAPI = {
     getAppVersion: (): Promise<string> => ipcRenderer.invoke('system:getAppVersion'),
     getAppName: (): Promise<string> => ipcRenderer.invoke('system:getAppName'),
+    getAppBootstrapState: () => ipcRenderer.invoke('system:getAppBootstrapState'),
 
     authenticate: (payload) => ipcRenderer.invoke('auth:authenticate', payload),
 
     getAppSettings: () => ipcRenderer.invoke('settings:getAppSettings'),
 
     saveAppSettings: (payload) => ipcRenderer.invoke('settings:saveAppSettings', payload),
+
+    completeOnboarding: (payload) => ipcRenderer.invoke('settings:completeOnboarding', payload),
 
     getPersistedAnalysisUIState: () => ipcRenderer.invoke('ui:getPersistedAnalysisUIState'),
 

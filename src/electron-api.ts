@@ -46,6 +46,11 @@ export type AppSettings = {
   loginUsername: string;
 };
 
+export type AppBootstrapState = {
+  requiresOnboarding: boolean;
+  appSettings: AppSettings;
+};
+
 export type AnalysisStep1FieldKey =
   | 'testProject'
   | 'sampleCode'
@@ -100,6 +105,14 @@ export type SaveAppSettingsPayload = {
   storageRoot: string;
   loginUsername: string;
   newPassword?: string;
+};
+
+export type CompleteOnboardingPayload = {
+  storageRoot: string;
+  loginUsername: string;
+  password: string;
+  acceptedLicense: boolean;
+  acceptedPrivacy: boolean;
 };
 
 export type DictionaryType = 'testProject' | 'tester' | 'instrument';
@@ -595,9 +608,11 @@ export type RecentOperationLogEntry = {
 export interface ElectronAPI {
   getAppVersion: () => Promise<string>;
   getAppName: () => Promise<string>;
+  getAppBootstrapState: () => Promise<AppBootstrapState>;
   authenticate: (payload: AuthenticatePayload) => Promise<ActionResult>;
   getAppSettings: () => Promise<AppSettings>;
   saveAppSettings: (payload: SaveAppSettingsPayload) => Promise<ActionResult>;
+  completeOnboarding: (payload: CompleteOnboardingPayload) => Promise<ActionResult>;
   getPersistedAnalysisUIState: () => Promise<PersistedAnalysisUIState>;
   savePersistedAnalysisUIState: (payload: PersistedAnalysisUIState) => Promise<ActionResult>;
   listDictionaryItems: (

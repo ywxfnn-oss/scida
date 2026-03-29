@@ -1,6 +1,7 @@
 import './index.css';
 import type {
   AnalysisStep1FieldKey,
+  AppBootstrapState,
   AppSettings,
   CrossFilterChip,
   CrossFilterField,
@@ -78,8 +79,13 @@ let appSettings: AppSettings = {
   storageRoot: '',
   loginUsername: 'admin'
 };
+let appBootstrapState: AppBootstrapState | null = null;
+let appBootstrapStateLoadPromise: Promise<void> | null = null;
+let currentAppVersion = '';
+let aboutDialogVisible = false;
 
 type ViewType =
+  | 'onboarding'
   | 'login'
   | 'home'
   | 'analysis'
@@ -195,7 +201,8 @@ type DuplicateWarningState =
       payload: UpdateExperimentPayload;
     };
 
-type SettingsSubView = 'general' | 'dictionary';
+type SettingsSubView = 'general' | 'dictionary' | 'about';
+type OnboardingStep = 'welcome' | 'legal' | 'storage' | 'admin' | 'progress' | 'complete';
 
 type AnalysisChartType = 'scalar' | 'structured';
 type AnalysisScalarAxisMode = 'numeric' | 'categorical';
@@ -360,6 +367,17 @@ type AppSidebarItem = {
   label: string;
   icon: string;
   active?: boolean;
+};
+
+type OnboardingFormState = {
+  step: OnboardingStep;
+  acceptedLicense: boolean;
+  acceptedPrivacy: boolean;
+  storageRoot: string;
+  loginUsername: string;
+  password: string;
+  confirmPassword: string;
+  error: string;
 };
 
 type AnalysisChartDragState = {
@@ -649,6 +667,16 @@ function getScalarSectionLabel(role?: ScalarItemRole) {
 let currentView: ViewType = 'login';
 let lastSavedExperimentId: number | null = null;
 let settingsSubView: SettingsSubView = 'general';
+const onboardingState: OnboardingFormState = {
+  step: 'welcome',
+  acceptedLicense: false,
+  acceptedPrivacy: false,
+  storageRoot: '',
+  loginUsername: 'admin',
+  password: '',
+  confirmPassword: '',
+  error: ''
+};
 
 let databaseSearchKeyword = '';
 let databaseGroupBy: GroupByType = 'sampleCode';
@@ -757,9 +785,49 @@ function handleAsyncError(error: unknown, fallbackMessage = '操作失败，请�
   alert(`${fallbackMessage}\n${getErrorMessage(error)}`);
 }
 
+function syncOnboardingDefaults() {
+  if (!appSettings.storageRoot) {
+    return;
+  }
+
+  if (!onboardingState.storageRoot) {
+    onboardingState.storageRoot = appSettings.storageRoot;
+  }
+
+  if (!onboardingState.loginUsername) {
+    onboardingState.loginUsername = appSettings.loginUsername || 'admin';
+  }
+}
+
+async function ensureBootstrapStateLoaded() {
+  if (appBootstrapState) {
+    return;
+  }
+
+  if (!appBootstrapStateLoadPromise) {
+    appBootstrapStateLoadPromise = (async () => {
+      appBootstrapState = await window.electronAPI.getAppBootstrapState();
+      appSettings = appBootstrapState.appSettings;
+      syncOnboardingDefaults();
+
+      if (appBootstrapState.requiresOnboarding && currentView === 'login') {
+        currentView = 'onboarding';
+      }
+    })();
+  }
+
+  await appBootstrapStateLoadPromise;
+}
+
 async function ensureAppSettingsLoaded() {
   if (!appSettings.storageRoot) {
-    appSettings = await window.electronAPI.getAppSettings();
+    if (appBootstrapState?.appSettings) {
+      appSettings = appBootstrapState.appSettings;
+    } else {
+      appSettings = await window.electronAPI.getAppSettings();
+    }
+
+    syncOnboardingDefaults();
   }
 }
 
@@ -1825,6 +1893,7 @@ function renderAppSidebar(appName: string, items: AppSidebarItem[]) {
           )
           .join('')}
       </div>
+      <div class="sidebar-footer">${sidebarCollapsed ? escapeHtml(currentAppVersion) : `版本 ${escapeHtml(currentAppVersion)}`}</div>
     </aside>
   `;
 }
@@ -1834,6 +1903,66 @@ function bindAppSidebarEvents() {
     sidebarCollapsed = !sidebarCollapsed;
     schedulePersistedAnalysisUIStateSave();
     void render();
+  });
+}
+
+function renderAboutDialog(appName: string, version: string) {
+  if (!aboutDialogVisible) {
+    return '';
+  }
+
+  return `
+    <div class="about-modal-mask" id="about-dialog-mask">
+      <div class="about-modal-card" role="dialog" aria-modal="true" aria-labelledby="about-dialog-title">
+        <div class="about-modal-header">
+          <div>
+            <div id="about-dialog-title" class="about-modal-title">关于 ${escapeHtml(appName)}</div>
+            <div class="about-modal-subtitle">本地优先的桌面科学数据管理工具</div>
+          </div>
+          <button id="about-dialog-close-btn" class="secondary-btn" type="button">关闭</button>
+        </div>
+
+        <div class="detail-section">
+          <div class="detail-section-title">版本信息</div>
+          <div class="info-row">
+            <span>应用名称</span>
+            <strong>${escapeHtml(appName)}</strong>
+          </div>
+          <div class="info-row">
+            <span>当前版本</span>
+            <strong>${escapeHtml(version)}</strong>
+          </div>
+        </div>
+
+        <div class="detail-section">
+          <div class="detail-section-title">更新与发布</div>
+          <div class="about-placeholder-card">
+            更新日志 / 版本更新信息入口预留中。当前版本发布说明可在后续正式发布流程中补充。
+          </div>
+        </div>
+
+        <div class="detail-section">
+          <div class="detail-section-title">第三方组件</div>
+          <div class="about-placeholder-card">
+            第三方许可与 notices 入口预留中，后续可在正式发布材料中补充。
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function bindAboutDialogEvents() {
+  document.getElementById('about-dialog-close-btn')?.addEventListener('click', () => {
+    aboutDialogVisible = false;
+    requestRender(true);
+  });
+
+  document.getElementById('about-dialog-mask')?.addEventListener('click', (event) => {
+    if (event.target === event.currentTarget) {
+      aboutDialogVisible = false;
+      requestRender(true);
+    }
   });
 }
 
@@ -7982,7 +8111,8 @@ function bindStep1SuggestionInput(params: {
 function renderSettingsSubViewTabs() {
   const subViews: Array<{ key: SettingsSubView; label: string }> = [
     { key: 'general', label: '常规设置' },
-    { key: 'dictionary', label: '词典管理' }
+    { key: 'dictionary', label: '词典管理' },
+    { key: 'about', label: '关于' }
   ];
 
   return `
@@ -8060,6 +8190,246 @@ function renderDictionaryManagementSection(dictionaryType: DictionaryType, label
   `;
 }
 
+function getOnboardingStepIndex(step: OnboardingStep) {
+  switch (step) {
+    case 'welcome':
+      return 1;
+    case 'legal':
+      return 2;
+    case 'storage':
+      return 3;
+    case 'admin':
+      return 4;
+    case 'progress':
+      return 5;
+    case 'complete':
+      return 6;
+    default:
+      return 1;
+  }
+}
+
+function bindAboutEntryEvents(preserveContentScroll = false) {
+  document.querySelectorAll('[data-open-about-dialog]').forEach((button) => {
+    button.addEventListener('click', () => {
+      aboutDialogVisible = true;
+      requestRender(preserveContentScroll);
+    });
+  });
+
+  if (aboutDialogVisible) {
+    bindAboutDialogEvents();
+  }
+}
+
+async function startOnboardingInitialization() {
+  onboardingState.step = 'progress';
+  onboardingState.error = '';
+  requestRender();
+
+  try {
+    const result = await window.electronAPI.completeOnboarding({
+      storageRoot: onboardingState.storageRoot,
+      loginUsername: onboardingState.loginUsername,
+      password: onboardingState.password,
+      acceptedLicense: onboardingState.acceptedLicense,
+      acceptedPrivacy: onboardingState.acceptedPrivacy
+    });
+
+    if (!result.success) {
+      onboardingState.step = 'admin';
+      onboardingState.error = result.error || '初始化失败，请稍后重试';
+      requestRender();
+      return;
+    }
+
+    appBootstrapState = await window.electronAPI.getAppBootstrapState();
+    appSettings = appBootstrapState.appSettings;
+    onboardingState.step = 'complete';
+    onboardingState.password = '';
+    onboardingState.confirmPassword = '';
+    onboardingState.error = '';
+    requestRender();
+  } catch (error) {
+    onboardingState.step = 'admin';
+    onboardingState.error = getErrorMessage(error) || '初始化失败，请稍后重试';
+    requestRender();
+  }
+}
+
+function renderOnboardingPage(appName: string, version: string) {
+  const stepIndex = getOnboardingStepIndex(onboardingState.step);
+  const stepIndicator = `步骤 ${stepIndex} / 6`;
+  let contentHtml = '';
+
+  if (onboardingState.step === 'welcome') {
+    contentHtml = `
+      <div class="onboarding-hero">
+        <div class="onboarding-step-tag">${stepIndicator}</div>
+        <h1>${escapeHtml(appName)}</h1>
+        <p class="subtitle">欢迎使用 Scidata Manager。首次启动需要完成一次本地初始化。</p>
+        <div class="onboarding-note-card">
+          初始化只会配置本地存储目录与本地管理员账号，不会启用云账户、激活或序列号机制。
+        </div>
+      </div>
+      <div class="form-action-row onboarding-actions">
+        <button id="onboarding-welcome-next-btn" class="primary-btn action-btn">开始初始化</button>
+        <button type="button" class="secondary-btn action-btn" data-open-about-dialog>关于产品</button>
+      </div>
+    `;
+  } else if (onboardingState.step === 'legal') {
+    contentHtml = `
+      <div class="onboarding-hero">
+        <div class="onboarding-step-tag">${stepIndicator}</div>
+        <h1>许可与隐私确认</h1>
+        <p class="subtitle">继续前请确认你已知悉本地使用边界。</p>
+      </div>
+
+      <div class="onboarding-note-card">
+        <strong>许可说明</strong>
+        <div>Scidata Manager 当前按本地桌面软件方式交付，不包含在线注册、激活或云端账号流程。</div>
+      </div>
+
+      <div class="onboarding-note-card">
+        <strong>隐私说明</strong>
+        <div>实验数据、登录配置与运行数据库默认保存在本机；应用不会在本流程中上传数据到云端。</div>
+      </div>
+
+      <label class="checkbox-row onboarding-checkbox">
+        <input id="onboarding-accept-license" type="checkbox" ${onboardingState.acceptedLicense ? 'checked' : ''} />
+        <span>我已阅读并接受当前许可说明</span>
+      </label>
+
+      <label class="checkbox-row onboarding-checkbox">
+        <input id="onboarding-accept-privacy" type="checkbox" ${onboardingState.acceptedPrivacy ? 'checked' : ''} />
+        <span>我已阅读并理解当前隐私说明</span>
+      </label>
+
+      <div id="onboarding-error" class="error-message large-error">${escapeHtml(onboardingState.error)}</div>
+
+      <div class="form-action-row onboarding-actions">
+        <button id="onboarding-legal-back-btn" class="secondary-btn action-btn" type="button">上一步</button>
+        <button id="onboarding-legal-next-btn" class="primary-btn action-btn" type="button">继续</button>
+      </div>
+    `;
+  } else if (onboardingState.step === 'storage') {
+    contentHtml = `
+      <div class="onboarding-hero">
+        <div class="onboarding-step-tag">${stepIndicator}</div>
+        <h1>配置原始文件根目录</h1>
+        <p class="subtitle">该目录将作为托管原始文件的本地保存根目录。</p>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">保存根目录</label>
+        <input
+          id="onboarding-storage-root"
+          class="form-input"
+          value="${escapeHtml(onboardingState.storageRoot)}"
+          placeholder="请输入可读写的本地目录"
+        />
+      </div>
+
+      <div class="onboarding-note-card">
+        初始化时会在主进程中校验该路径并尝试创建目录；无权限或路径指向文件时会被阻止。
+      </div>
+
+      <div id="onboarding-error" class="error-message large-error">${escapeHtml(onboardingState.error)}</div>
+
+      <div class="form-action-row onboarding-actions">
+        <button id="onboarding-storage-back-btn" class="secondary-btn action-btn" type="button">上一步</button>
+        <button id="onboarding-storage-next-btn" class="primary-btn action-btn" type="button">继续</button>
+      </div>
+    `;
+  } else if (onboardingState.step === 'admin') {
+    contentHtml = `
+      <div class="onboarding-hero">
+        <div class="onboarding-step-tag">${stepIndicator}</div>
+        <h1>创建本地管理员账号</h1>
+        <p class="subtitle">该账号只用于本机登录，密码哈希由主进程写入本地设置。</p>
+      </div>
+
+      <div class="step-form-grid">
+        <div class="form-group">
+          <label class="form-label">管理员账号</label>
+          <input
+            id="onboarding-login-username"
+            class="form-input"
+            value="${escapeHtml(onboardingState.loginUsername)}"
+            placeholder="请输入本地管理员账号"
+          />
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">管理员密码</label>
+          <input
+            id="onboarding-login-password"
+            class="form-input"
+            type="password"
+            placeholder="至少 6 位"
+          />
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">确认密码</label>
+        <input
+          id="onboarding-login-password-confirm"
+          class="form-input"
+          type="password"
+          placeholder="请再次输入密码"
+        />
+      </div>
+
+      <div id="onboarding-error" class="error-message large-error">${escapeHtml(onboardingState.error)}</div>
+
+      <div class="form-action-row onboarding-actions">
+        <button id="onboarding-admin-back-btn" class="secondary-btn action-btn" type="button">上一步</button>
+        <button id="onboarding-admin-submit-btn" class="primary-btn action-btn" type="button">开始初始化</button>
+      </div>
+    `;
+  } else if (onboardingState.step === 'progress') {
+    contentHtml = `
+      <div class="onboarding-hero">
+        <div class="onboarding-step-tag">${stepIndicator}</div>
+        <h1>正在初始化</h1>
+        <p class="subtitle">正在创建本地目录并写入初始化设置，请稍候。</p>
+      </div>
+      <div class="onboarding-progress-card">
+        <div class="onboarding-progress-spinner" aria-hidden="true"></div>
+        <div>正在校验存储根目录、写入本地管理员设置并完成首次初始化。</div>
+      </div>
+    `;
+  } else {
+    contentHtml = `
+      <div class="onboarding-hero">
+        <div class="onboarding-step-tag">${stepIndicator}</div>
+        <h1>初始化完成</h1>
+        <p class="subtitle">首次启动初始化已完成。后续启动将直接进入登录页。</p>
+      </div>
+
+      <div class="onboarding-note-card">
+        当前本地管理员账号：<strong>${escapeHtml(onboardingState.loginUsername.trim())}</strong>
+      </div>
+
+      <div class="form-action-row onboarding-actions">
+        <button id="onboarding-complete-login-btn" class="primary-btn action-btn" type="button">进入登录</button>
+        <button type="button" class="secondary-btn action-btn" data-open-about-dialog>关于产品</button>
+      </div>
+    `;
+  }
+
+  return `
+    <div class="page-shell onboarding-shell">
+      <div class="card onboarding-card">
+        ${contentHtml}
+        <div class="footer-tip">当前版本：${escapeHtml(version)}</div>
+      </div>
+    </div>
+    ${renderAboutDialog(appName, version)}
+  `;
+}
+
 async function render() {
   if (!root) return;
 
@@ -8068,8 +8438,116 @@ async function render() {
     window.electronAPI.getAppVersion()
   ]);
 
+  currentAppVersion = version;
+  await ensureBootstrapStateLoaded();
   await ensureAppSettingsLoaded();
   await ensurePersistedAnalysisUIStateLoaded();
+
+  if (currentView === 'onboarding') {
+    root.innerHTML = renderOnboardingPage(appName, version);
+
+    bindAboutEntryEvents();
+
+    document.getElementById('onboarding-welcome-next-btn')?.addEventListener('click', () => {
+      onboardingState.step = 'legal';
+      onboardingState.error = '';
+      void render();
+    });
+
+    document.getElementById('onboarding-legal-back-btn')?.addEventListener('click', () => {
+      onboardingState.step = 'welcome';
+      onboardingState.error = '';
+      void render();
+    });
+
+    document.getElementById('onboarding-legal-next-btn')?.addEventListener('click', () => {
+      const acceptedLicense = (document.getElementById('onboarding-accept-license') as HTMLInputElement | null)?.checked || false;
+      const acceptedPrivacy = (document.getElementById('onboarding-accept-privacy') as HTMLInputElement | null)?.checked || false;
+
+      onboardingState.acceptedLicense = acceptedLicense;
+      onboardingState.acceptedPrivacy = acceptedPrivacy;
+
+      if (!acceptedLicense || !acceptedPrivacy) {
+        onboardingState.error = '请先完成许可与隐私确认';
+        requestRender();
+        return;
+      }
+
+      onboardingState.step = 'storage';
+      onboardingState.error = '';
+      void render();
+    });
+
+    document.getElementById('onboarding-storage-back-btn')?.addEventListener('click', () => {
+      onboardingState.step = 'legal';
+      onboardingState.error = '';
+      void render();
+    });
+
+    document.getElementById('onboarding-storage-next-btn')?.addEventListener('click', () => {
+      const storageRoot =
+        (document.getElementById('onboarding-storage-root') as HTMLInputElement | null)?.value.trim() || '';
+
+      onboardingState.storageRoot = storageRoot;
+
+      if (!storageRoot) {
+        onboardingState.error = '请填写原始文件根目录';
+        requestRender();
+        return;
+      }
+
+      onboardingState.step = 'admin';
+      onboardingState.error = '';
+      void render();
+    });
+
+    document.getElementById('onboarding-admin-back-btn')?.addEventListener('click', () => {
+      onboardingState.step = 'storage';
+      onboardingState.error = '';
+      void render();
+    });
+
+    document.getElementById('onboarding-admin-submit-btn')?.addEventListener('click', () => {
+      const loginUsername =
+        (document.getElementById('onboarding-login-username') as HTMLInputElement | null)?.value.trim() || '';
+      const password =
+        (document.getElementById('onboarding-login-password') as HTMLInputElement | null)?.value || '';
+      const confirmPassword =
+        (document.getElementById('onboarding-login-password-confirm') as HTMLInputElement | null)?.value || '';
+
+      onboardingState.loginUsername = loginUsername;
+      onboardingState.password = password;
+      onboardingState.confirmPassword = confirmPassword;
+
+      if (!loginUsername) {
+        onboardingState.error = '请填写本地管理员账号';
+        requestRender();
+        return;
+      }
+
+      if (password.length < 6) {
+        onboardingState.error = '密码长度至少为 6 位';
+        requestRender();
+        return;
+      }
+
+      if (password !== confirmPassword) {
+        onboardingState.error = '两次输入的密码不一致';
+        requestRender();
+        return;
+      }
+
+      void startOnboardingInitialization();
+    });
+
+    document.getElementById('onboarding-complete-login-btn')?.addEventListener('click', () => {
+      currentView = 'login';
+      aboutDialogVisible = false;
+      void render();
+    });
+
+    return;
+  }
 
   if (currentView === 'login') {
     root.innerHTML = `
@@ -8095,9 +8573,16 @@ async function render() {
           <div class="footer-tip">
             当前版本：${version}
           </div>
+
+          <div class="form-action-row login-secondary-actions">
+            <button type="button" class="secondary-btn action-btn" data-open-about-dialog>关于产品</button>
+          </div>
         </div>
       </div>
+      ${renderAboutDialog(appName, version)}
     `;
+
+    bindAboutEntryEvents();
 
     const loginBtn = document.getElementById('login-btn');
     const usernameInput = document.getElementById('username') as HTMLInputElement | null;
@@ -9593,6 +10078,33 @@ async function render() {
         renderDictionaryManagementSection(type, label)
       ).join('')}
     `;
+    const aboutSettingsHtml = `
+      <div class="detail-section">
+        <div class="detail-section-title">产品信息</div>
+        <div class="info-row">
+          <span>应用名称</span>
+          <strong>${escapeHtml(appName)}</strong>
+        </div>
+        <div class="info-row">
+          <span>当前版本</span>
+          <strong>${escapeHtml(version)}</strong>
+        </div>
+      </div>
+
+      <div class="detail-section">
+        <div class="detail-section-title">更新与发布</div>
+        <div class="about-placeholder-card">
+          更新日志 / 版本更新信息入口预留中。后续正式发布时可在此接入 changelog 或更新提示。
+        </div>
+      </div>
+
+      <div class="detail-section">
+        <div class="detail-section-title">第三方组件</div>
+        <div class="about-placeholder-card">
+          第三方许可与 notices 入口预留中，后续可在此补充正式发布材料。
+        </div>
+      </div>
+    `;
 
     root.innerHTML = `
       <div class="home-layout">
@@ -9611,17 +10123,25 @@ async function render() {
 
           <section class="content-area">
             <div class="welcome-card">
-              <h2>${settingsSubView === 'general' ? '系统设置' : '词典管理'}</h2>
+              <h2>${settingsSubView === 'general' ? '系统设置' : settingsSubView === 'dictionary' ? '词典管理' : '关于'}</h2>
               <p class="subtitle">
                 ${
                   settingsSubView === 'general'
                     ? '当前阶段支持原始文件根目录和登录账号密码设置'
-                    : '维护一级字段建议词典。删除仅影响后续建议，不会修改历史记录。'
+                    : settingsSubView === 'dictionary'
+                      ? '维护一级字段建议词典。删除仅影响后续建议，不会修改历史记录。'
+                      : '查看当前版本、正式发布信息占位与第三方 notices 入口占位。'
                 }
               </p>
 
               ${renderSettingsSubViewTabs()}
-              ${settingsSubView === 'general' ? generalSettingsHtml : dictionaryManagementHtml}
+              ${
+                settingsSubView === 'general'
+                  ? generalSettingsHtml
+                  : settingsSubView === 'dictionary'
+                    ? dictionaryManagementHtml
+                    : aboutSettingsHtml
+              }
             </div>
           </section>
         </main>
