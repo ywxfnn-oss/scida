@@ -10,6 +10,7 @@ import type {
   ActionResult,
   AddDictionaryItemPayload,
   AuthenticatePayload,
+  CompleteOnboardingPayload,
   CopyFileToStoragePayload,
   CopyFileToStorageResult,
   DeactivateDictionaryItemPayload,
@@ -59,6 +60,8 @@ import {
   tableExists
 } from './main/runtime-db-helpers';
 import {
+  completeOnboarding,
+  getAppBootstrapState,
   getAppSettingsForRenderer,
   getSettingValue,
   saveAppSettings,
@@ -256,6 +259,35 @@ function hasLegacyPasswordSetting(db: SqliteDatabase) {
   return !!row?.settingValue;
 }
 
+function getSettingRowValue(
+  db: SqliteDatabase,
+  key: string
+) {
+  if (!tableExists(db, 'AppSetting')) {
+    return '';
+  }
+
+  const row = db
+    .prepare(
+      `SELECT settingValue FROM "AppSetting" WHERE settingKey = ? LIMIT 1`
+    )
+    .get(key) as { settingValue: string } | undefined;
+
+  return row?.settingValue?.trim() || '';
+}
+
+function getTableRowCount(db: SqliteDatabase, tableName: string) {
+  if (!tableExists(db, tableName)) {
+    return 0;
+  }
+
+  const row = db
+    .prepare(`SELECT COUNT(*) as count FROM "${tableName}"`)
+    .get() as { count: number } | undefined;
+
+  return Number(row?.count || 0);
+}
+
 function ensureSettingValue(
   db: SqliteDatabase,
   key: string,
@@ -284,7 +316,32 @@ function removeSettingValue(db: SqliteDatabase, key: string) {
   db.prepare(`DELETE FROM "AppSetting" WHERE "settingKey" = ?`).run(key);
 }
 
-function runAuthSettingsMigration(db: SqliteDatabase) {
+function shouldBootstrapDefaultAuth(
+  db: SqliteDatabase,
+  hadExistingRuntimeDb: boolean
+) {
+  if (!hadExistingRuntimeDb || !tableExists(db, 'AppSetting')) {
+    return false;
+  }
+
+  if (getSettingRowValue(db, 'loginPasswordHash') || getSettingRowValue(db, 'loginPassword')) {
+    return false;
+  }
+
+  return Boolean(
+    getSettingRowValue(db, 'storageRoot') ||
+      getSettingRowValue(db, 'loginUsername') ||
+      getTableRowCount(db, 'Experiment') > 0 ||
+      getTableRowCount(db, 'User') > 0
+  );
+}
+
+function runAuthSettingsMigration(
+  db: SqliteDatabase,
+  options?: {
+    bootstrapDefaultAuth?: boolean;
+  }
+) {
   if (!tableExists(db, 'AppSetting')) {
     return false;
   }
@@ -307,13 +364,16 @@ function runAuthSettingsMigration(db: SqliteDatabase) {
 
   let changed = false;
 
-  if (!loginUsernameRow?.settingValue) {
+  if (!loginUsernameRow?.settingValue && (options?.bootstrapDefaultAuth || legacyPasswordRow?.settingValue)) {
     ensureSettingValue(db, 'loginUsername', DEFAULT_LOGIN_USERNAME);
     changed = true;
   }
 
-  if (!loginPasswordHashRow?.settingValue) {
-    const passwordToHash = legacyPasswordRow?.settingValue || DEFAULT_LOGIN_PASSWORD;
+  if (!loginPasswordHashRow?.settingValue && legacyPasswordRow?.settingValue) {
+    ensureSettingValue(db, 'loginPasswordHash', hashPassword(legacyPasswordRow.settingValue));
+    changed = true;
+  } else if (!loginPasswordHashRow?.settingValue && options?.bootstrapDefaultAuth) {
+    const passwordToHash = DEFAULT_LOGIN_PASSWORD;
     ensureSettingValue(db, 'loginPasswordHash', hashPassword(passwordToHash));
     changed = true;
   }
@@ -348,13 +408,7 @@ function prepareRuntimeDatabase(runtimeDbPath: string) {
   const migrations = getMigrationFiles();
   const pendingMigrations = getPendingMigrations(db, migrations);
   const needsAuthMigration = hasLegacyPasswordSetting(db);
-  const needsDefaultAuthBootstrap =
-    tableExists(db, 'AppSetting') &&
-    !db
-      .prepare(
-        `SELECT 1 FROM "AppSetting" WHERE settingKey = 'loginPasswordHash' LIMIT 1`
-      )
-      .get();
+  const needsDefaultAuthBootstrap = shouldBootstrapDefaultAuth(db, hadExistingRuntimeDb);
 
   if ((pendingMigrations.length || needsAuthMigration || needsDefaultAuthBootstrap) && hadExistingRuntimeDb) {
     backupRuntimeDb(runtimeDbPath);
@@ -364,7 +418,9 @@ function prepareRuntimeDatabase(runtimeDbPath: string) {
     applyPendingMigrations(db, pendingMigrations);
   }
 
-  runAuthSettingsMigration(db);
+  runAuthSettingsMigration(db, {
+    bootstrapDefaultAuth: needsDefaultAuthBootstrap
+  });
   db.close();
 }
 
@@ -440,13 +496,35 @@ app.whenReady().then(async () => {
 
   ipcMain.handle('system:getAppVersion', () => app.getVersion());
   ipcMain.handle('system:getAppName', () => 'SciData Manager');
+  ipcMain.handle('system:getAppBootstrapState', async () => {
+    try {
+      return await getAppBootstrapState(prisma, {
+        defaultLoginUsername: DEFAULT_LOGIN_USERNAME,
+        defaultLoginPassword: DEFAULT_LOGIN_PASSWORD,
+        getDefaultStorageRoot,
+        ensureDir,
+        appVersion: app.getVersion()
+      });
+    } catch (error) {
+      console.error('getAppBootstrapState failed:', error);
+
+      return {
+        requiresOnboarding: false,
+        appSettings: {
+          storageRoot: getDefaultStorageRoot(),
+          loginUsername: DEFAULT_LOGIN_USERNAME
+        }
+      };
+    }
+  });
   ipcMain.handle('auth:authenticate', async (_event, payload: AuthenticatePayload) => {
     try {
       return await verifyLogin(prisma, payload, {
         defaultLoginUsername: DEFAULT_LOGIN_USERNAME,
         defaultLoginPassword: DEFAULT_LOGIN_PASSWORD,
         getDefaultStorageRoot,
-        ensureDir
+        ensureDir,
+        appVersion: app.getVersion()
       });
     } catch (error) {
       console.error('authenticate failed:', error);
@@ -460,7 +538,8 @@ app.whenReady().then(async () => {
         defaultLoginUsername: DEFAULT_LOGIN_USERNAME,
         defaultLoginPassword: DEFAULT_LOGIN_PASSWORD,
         getDefaultStorageRoot,
-        ensureDir
+        ensureDir,
+        appVersion: app.getVersion()
       });
     } catch (error) {
       console.error('getAppSettings failed:', error);
@@ -480,11 +559,30 @@ app.whenReady().then(async () => {
           defaultLoginUsername: DEFAULT_LOGIN_USERNAME,
           defaultLoginPassword: DEFAULT_LOGIN_PASSWORD,
           getDefaultStorageRoot,
-          ensureDir
+          ensureDir,
+          appVersion: app.getVersion()
         });
       } catch (error) {
         console.error('saveAppSettings failed:', error);
         return { success: false, error: '保存设置失败，请检查目录权限' };
+      }
+    }
+  );
+
+  ipcMain.handle(
+    'settings:completeOnboarding',
+    async (_event, payload: CompleteOnboardingPayload): Promise<ActionResult> => {
+      try {
+        return await completeOnboarding(prisma, payload, {
+          defaultLoginUsername: DEFAULT_LOGIN_USERNAME,
+          defaultLoginPassword: DEFAULT_LOGIN_PASSWORD,
+          getDefaultStorageRoot,
+          ensureDir,
+          appVersion: app.getVersion()
+        });
+      } catch (error) {
+        console.error('completeOnboarding failed:', error);
+        return { success: false, error: '初始化失败，请检查目录权限后重试' };
       }
     }
   );

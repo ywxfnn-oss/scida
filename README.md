@@ -4,6 +4,8 @@ Scidata Manager is a local-first Electron desktop application for managing scien
 
 The app stores structured experiment records in SQLite through Prisma, keeps raw files on disk, and exports experiment data to Excel or ZIP bundles.
 
+On a true first launch, the app now shows a local-only onboarding flow before login to collect legal acknowledgement, storage-root setup, and the initial local admin account.
+
 ## Tech Stack
 
 - Electron
@@ -31,9 +33,15 @@ The app stores structured experiment records in SQLite through Prisma, keeps raw
 
 ## Authentication
 
+- Fresh installs complete onboarding before the login screen is used.
 - Login verification happens in the main process.
 - The renderer does not receive stored password material.
 - App settings store `loginUsername` plus a hashed `loginPasswordHash`.
+
+## Release Shell
+
+- The login/onboarding shell shows the visible app version.
+- Settings includes a minimal `关于` page for version info plus placeholders for changelog/update info and third-party notices.
 
 ## Useful Commands
 
