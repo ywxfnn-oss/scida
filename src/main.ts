@@ -9,6 +9,7 @@ import started from 'electron-squirrel-startup';
 import type {
   ActionResult,
   AddDictionaryItemPayload,
+  AppLanguage,
   AuthenticatePayload,
   CompleteOnboardingPayload,
   CopyFileToStoragePayload,
@@ -64,6 +65,7 @@ import {
   getAppBootstrapState,
   getAppSettingsForRenderer,
   getSettingValue,
+  saveAppLanguage,
   saveAppSettings,
   verifyLogin
 } from './main/auth-settings';
@@ -113,6 +115,10 @@ function normalizeScalarRole(role?: string | null) {
 
 function getDefaultStorageRoot() {
   return path.join(app.getPath('userData'), 'storage', 'raw_files');
+}
+
+function getDefaultAppLanguage(): AppLanguage {
+  return app.getLocale().toLowerCase().startsWith('zh') ? 'zh-CN' : 'en';
 }
 
 function hashPassword(password: string) {
@@ -512,6 +518,7 @@ app.whenReady().then(async () => {
         defaultLoginUsername: DEFAULT_LOGIN_USERNAME,
         defaultLoginPassword: DEFAULT_LOGIN_PASSWORD,
         getDefaultStorageRoot,
+        getDefaultAppLanguage,
         ensureDir,
         appVersion: app.getVersion()
       });
@@ -522,7 +529,8 @@ app.whenReady().then(async () => {
         requiresOnboarding: false,
         appSettings: {
           storageRoot: getDefaultStorageRoot(),
-          loginUsername: DEFAULT_LOGIN_USERNAME
+          loginUsername: DEFAULT_LOGIN_USERNAME,
+          appLanguage: getDefaultAppLanguage()
         }
       };
     }
@@ -533,12 +541,19 @@ app.whenReady().then(async () => {
         defaultLoginUsername: DEFAULT_LOGIN_USERNAME,
         defaultLoginPassword: DEFAULT_LOGIN_PASSWORD,
         getDefaultStorageRoot,
+        getDefaultAppLanguage,
         ensureDir,
         appVersion: app.getVersion()
       });
     } catch (error) {
       console.error('authenticate failed:', error);
-      return { success: false, error: '登录失败，请稍后重试' };
+      return {
+        success: false,
+        error:
+          getDefaultAppLanguage() === 'zh-CN'
+            ? '登录失败，请稍后重试'
+            : 'Login failed. Please try again later.'
+      };
     }
   });
 
@@ -548,6 +563,7 @@ app.whenReady().then(async () => {
         defaultLoginUsername: DEFAULT_LOGIN_USERNAME,
         defaultLoginPassword: DEFAULT_LOGIN_PASSWORD,
         getDefaultStorageRoot,
+        getDefaultAppLanguage,
         ensureDir,
         appVersion: app.getVersion()
       });
@@ -556,10 +572,36 @@ app.whenReady().then(async () => {
 
       return {
         storageRoot: getDefaultStorageRoot(),
-        loginUsername: DEFAULT_LOGIN_USERNAME
+        loginUsername: DEFAULT_LOGIN_USERNAME,
+        appLanguage: getDefaultAppLanguage()
       };
     }
   });
+
+  ipcMain.handle(
+    'settings:setAppLanguage',
+    async (_event, payload: { appLanguage: AppLanguage }): Promise<ActionResult> => {
+      try {
+        return await saveAppLanguage(prisma, payload, {
+          defaultLoginUsername: DEFAULT_LOGIN_USERNAME,
+          defaultLoginPassword: DEFAULT_LOGIN_PASSWORD,
+          getDefaultStorageRoot,
+          getDefaultAppLanguage,
+          ensureDir,
+          appVersion: app.getVersion()
+        });
+      } catch (error) {
+        console.error('setAppLanguage failed:', error);
+        return {
+          success: false,
+          error:
+            getDefaultAppLanguage() === 'zh-CN'
+              ? '保存语言设置失败，请稍后重试'
+              : 'Failed to save the language setting. Please try again later.'
+        };
+      }
+    }
+  );
 
   ipcMain.handle(
     'settings:saveAppSettings',
@@ -569,12 +611,19 @@ app.whenReady().then(async () => {
           defaultLoginUsername: DEFAULT_LOGIN_USERNAME,
           defaultLoginPassword: DEFAULT_LOGIN_PASSWORD,
           getDefaultStorageRoot,
+          getDefaultAppLanguage,
           ensureDir,
           appVersion: app.getVersion()
         });
       } catch (error) {
         console.error('saveAppSettings failed:', error);
-        return { success: false, error: '保存设置失败，请检查目录权限' };
+        return {
+          success: false,
+          error:
+            getDefaultAppLanguage() === 'zh-CN'
+              ? '保存设置失败，请检查目录权限'
+              : 'Failed to save settings. Please check directory permissions.'
+        };
       }
     }
   );
@@ -587,12 +636,19 @@ app.whenReady().then(async () => {
           defaultLoginUsername: DEFAULT_LOGIN_USERNAME,
           defaultLoginPassword: DEFAULT_LOGIN_PASSWORD,
           getDefaultStorageRoot,
+          getDefaultAppLanguage,
           ensureDir,
           appVersion: app.getVersion()
         });
       } catch (error) {
         console.error('completeOnboarding failed:', error);
-        return { success: false, error: '初始化失败，请检查目录权限后重试' };
+        return {
+          success: false,
+          error:
+            getDefaultAppLanguage() === 'zh-CN'
+              ? '初始化失败，请检查目录权限后重试'
+              : 'Initialization failed. Please check directory permissions and try again.'
+        };
       }
     }
   );

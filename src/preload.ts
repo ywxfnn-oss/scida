@@ -11,6 +11,8 @@ const electronAPI: ElectronAPI = {
 
     getAppSettings: () => ipcRenderer.invoke('settings:getAppSettings'),
 
+    setAppLanguage: (payload) => ipcRenderer.invoke('settings:setAppLanguage', payload),
+
     saveAppSettings: (payload) => ipcRenderer.invoke('settings:saveAppSettings', payload),
 
     completeOnboarding: (payload) => ipcRenderer.invoke('settings:completeOnboarding', payload),

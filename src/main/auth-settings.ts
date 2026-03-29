@@ -4,15 +4,18 @@ import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 import type { PrismaClient } from '@prisma/client';
 import type {
   ActionResult,
+  AppLanguage,
   AppBootstrapState,
   AppSettings,
   AuthenticatePayload,
   CompleteOnboardingPayload,
-  SaveAppSettingsPayload
+  SaveAppSettingsPayload,
+  SetAppLanguagePayload
 } from '../electron-api';
 
 const PASSWORD_HASH_PREFIX = 'scrypt';
 const ONBOARDING_STATE_SETTING_KEY = 'onboardingStateV1';
+const APP_LANGUAGE_SETTING_KEY = 'appLanguage';
 const LEGACY_USER_SETTING_KEYS = [
   'storageRoot',
   'loginUsername',
@@ -25,6 +28,7 @@ type AuthSettingsOptions = {
   defaultLoginPassword: string;
   appVersion?: string;
   getDefaultStorageRoot: () => string;
+  getDefaultAppLanguage: () => AppLanguage;
   ensureDir: (dirPath: string) => void;
 };
 
@@ -60,6 +64,21 @@ function normalizeStoredValue(value: string | null | undefined) {
   return value?.trim() || '';
 }
 
+function normalizeStoredAppLanguage(value: string | null | undefined): AppLanguage | null {
+  return value === 'zh-CN' || value === 'en' ? value : null;
+}
+
+function resolveAppLanguage(
+  storedValue: string | null | undefined,
+  options: AuthSettingsOptions
+) {
+  return normalizeStoredAppLanguage(storedValue) || options.getDefaultAppLanguage();
+}
+
+function getLocalizedText(language: AppLanguage, zhCN: string, en: string) {
+  return language === 'zh-CN' ? zhCN : en;
+}
+
 function parseCompletedOnboardingState(value: string) {
   if (!value.trim()) {
     return null;
@@ -88,11 +107,17 @@ function parseCompletedOnboardingState(value: string) {
   }
 }
 
-function validateStorageRoot(storageRootInput: string, ensureDir: (dirPath: string) => void) {
+function validateStorageRoot(
+  storageRootInput: string,
+  ensureDir: (dirPath: string) => void,
+  language: AppLanguage
+) {
   const trimmedStorageRoot = storageRootInput.trim();
 
   if (!trimmedStorageRoot) {
-    throw new Error('请填写原始文件根目录');
+    throw new Error(
+      getLocalizedText(language, '请填写原始文件根目录', 'Please enter the raw file root directory.')
+    );
   }
 
   const storageRoot = path.resolve(trimmedStorageRoot);
@@ -101,7 +126,13 @@ function validateStorageRoot(storageRootInput: string, ensureDir: (dirPath: stri
 
   const stat = fs.statSync(storageRoot);
   if (!stat.isDirectory()) {
-    throw new Error('原始文件根目录必须是文件夹');
+    throw new Error(
+      getLocalizedText(
+        language,
+        '原始文件根目录必须是文件夹',
+        'The raw file root path must be a folder.'
+      )
+    );
   }
 
   fs.accessSync(storageRoot, fs.constants.R_OK | fs.constants.W_OK);
@@ -178,6 +209,8 @@ export async function getAppSettingsForRenderer(
   prisma: PrismaClient,
   options: AuthSettingsOptions
 ): Promise<AppSettings> {
+  const storedAppLanguage = await getStoredSettingValue(prisma, APP_LANGUAGE_SETTING_KEY);
+
   return {
     storageRoot: await getSettingValue(
       prisma,
@@ -188,7 +221,8 @@ export async function getAppSettingsForRenderer(
       prisma,
       'loginUsername',
       options.defaultLoginUsername
-    )
+    ),
+    appLanguage: resolveAppLanguage(storedAppLanguage, options)
   };
 }
 
@@ -213,27 +247,47 @@ export async function verifyLogin(
   payload: AuthenticatePayload,
   options: AuthSettingsOptions
 ): Promise<ActionResult> {
+  const appLanguage = resolveAppLanguage(
+    await getStoredSettingValue(prisma, APP_LANGUAGE_SETTING_KEY),
+    options
+  );
   const username = payload.username.trim();
 
   if (!username || !payload.password) {
-    return { success: false, error: '请输入账号和密码' };
+    return {
+      success: false,
+      error: getLocalizedText(appLanguage, '请输入账号和密码', 'Please enter both username and password.')
+    };
   }
 
   const bootstrapState = await getAppBootstrapState(prisma, options);
 
   if (bootstrapState.requiresOnboarding) {
-    return { success: false, error: '请先完成首次初始化' };
+    return {
+      success: false,
+      error: getLocalizedText(appLanguage, '请先完成首次初始化', 'Please complete first-run setup first.')
+    };
   }
 
   const savedUsername = await getStoredSettingValue(prisma, 'loginUsername');
   const savedPasswordHash = await getStoredSettingValue(prisma, 'loginPasswordHash');
 
   if (!savedUsername || !savedPasswordHash) {
-    return { success: false, error: '系统尚未配置登录账号，请先完成初始化' };
+    return {
+      success: false,
+      error: getLocalizedText(
+        appLanguage,
+        '系统尚未配置登录账号，请先完成初始化',
+        'The app has not been initialized yet. Please complete setup first.'
+      )
+    };
   }
 
   if (username !== savedUsername || !verifyPassword(payload.password, savedPasswordHash)) {
-    return { success: false, error: '账号或密码错误' };
+    return {
+      success: false,
+      error: getLocalizedText(appLanguage, '账号或密码错误', 'Incorrect username or password.')
+    };
   }
 
   return { success: true };
@@ -244,20 +298,46 @@ export async function completeOnboarding(
   payload: CompleteOnboardingPayload,
   options: AuthSettingsOptions
 ): Promise<ActionResult> {
+  const appLanguage = resolveAppLanguage(
+    await getStoredSettingValue(prisma, APP_LANGUAGE_SETTING_KEY),
+    options
+  );
+
   if (!payload.acceptedLicense || !payload.acceptedPrivacy) {
-    return { success: false, error: '请先确认许可与隐私说明' };
+    return {
+      success: false,
+      error: getLocalizedText(
+        appLanguage,
+        '请先确认许可与隐私说明',
+        'Please acknowledge the license and privacy notices first.'
+      )
+    };
   }
 
-  const storageRoot = validateStorageRoot(payload.storageRoot, options.ensureDir);
+  const storageRoot = validateStorageRoot(payload.storageRoot, options.ensureDir, appLanguage);
   const loginUsername = payload.loginUsername.trim();
   const password = payload.password;
 
   if (!loginUsername) {
-    return { success: false, error: '请填写本地管理员账号' };
+    return {
+      success: false,
+      error: getLocalizedText(
+        appLanguage,
+        '请填写本地管理员账号',
+        'Please enter a local administrator username.'
+      )
+    };
   }
 
   if (password.length < 6) {
-    return { success: false, error: '密码长度至少为 6 位' };
+    return {
+      success: false,
+      error: getLocalizedText(
+        appLanguage,
+        '密码长度至少为 6 位',
+        'Password must be at least 6 characters long.'
+      )
+    };
   }
 
   const completedAt = new Date().toISOString();
@@ -315,10 +395,24 @@ export async function saveAppSettings(
   payload: SaveAppSettingsPayload,
   options: AuthSettingsOptions
 ): Promise<ActionResult> {
-  options.ensureDir(payload.storageRoot);
+  const appLanguage = normalizeStoredAppLanguage(payload.appLanguage) || options.getDefaultAppLanguage();
+  const storageRoot = validateStorageRoot(payload.storageRoot, options.ensureDir, appLanguage);
+  const loginUsername = payload.loginUsername.trim();
 
-  await upsertSetting(prisma, 'storageRoot', payload.storageRoot);
-  await upsertSetting(prisma, 'loginUsername', payload.loginUsername);
+  if (!loginUsername) {
+    return {
+      success: false,
+      error: getLocalizedText(
+        appLanguage,
+        '请填写登录账号',
+        'Please enter the username.'
+      )
+    };
+  }
+
+  await upsertSetting(prisma, 'storageRoot', storageRoot);
+  await upsertSetting(prisma, 'loginUsername', loginUsername);
+  await upsertSetting(prisma, APP_LANGUAGE_SETTING_KEY, appLanguage);
 
   if (payload.newPassword) {
     await upsertSetting(
@@ -330,5 +424,27 @@ export async function saveAppSettings(
 
   await deleteSetting(prisma, 'loginPassword');
 
+  return { success: true };
+}
+
+export async function saveAppLanguage(
+  prisma: PrismaClient,
+  payload: SetAppLanguagePayload,
+  options: AuthSettingsOptions
+): Promise<ActionResult> {
+  const appLanguage = normalizeStoredAppLanguage(payload.appLanguage);
+
+  if (!appLanguage) {
+    return {
+      success: false,
+      error: getLocalizedText(
+        options.getDefaultAppLanguage(),
+        '语言选项无效',
+        'Invalid language selection.'
+      )
+    };
+  }
+
+  await upsertSetting(prisma, APP_LANGUAGE_SETTING_KEY, appLanguage);
   return { success: true };
 }

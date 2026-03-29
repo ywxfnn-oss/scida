@@ -41,9 +41,12 @@ export type ActionResult = {
   warning?: string;
 };
 
+export type AppLanguage = 'zh-CN' | 'en';
+
 export type AppSettings = {
   storageRoot: string;
   loginUsername: string;
+  appLanguage: AppLanguage;
 };
 
 export type AppBootstrapState = {
@@ -109,7 +112,12 @@ export type AuthenticatePayload = {
 export type SaveAppSettingsPayload = {
   storageRoot: string;
   loginUsername: string;
+  appLanguage: AppLanguage;
   newPassword?: string;
+};
+
+export type SetAppLanguagePayload = {
+  appLanguage: AppLanguage;
 };
 
 export type CompleteOnboardingPayload = {
@@ -617,6 +625,7 @@ export interface ElectronAPI {
   getAppRuntimeInfo: () => Promise<AppRuntimeInfo>;
   authenticate: (payload: AuthenticatePayload) => Promise<ActionResult>;
   getAppSettings: () => Promise<AppSettings>;
+  setAppLanguage: (payload: SetAppLanguagePayload) => Promise<ActionResult>;
   saveAppSettings: (payload: SaveAppSettingsPayload) => Promise<ActionResult>;
   completeOnboarding: (payload: CompleteOnboardingPayload) => Promise<ActionResult>;
   getPersistedAnalysisUIState: () => Promise<PersistedAnalysisUIState>;

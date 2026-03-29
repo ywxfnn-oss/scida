@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+## v1.4.0 - 2026-03-29
+
+### Added
+
+- Added `Scida` bilingual UI support with persisted `zh-CN` / `en` shell language selection.
+- Added broader English-facing localization across the main guided workflows, including:
+  - login
+  - onboarding
+  - Step 1 / Step 2 guidance text
+  - database search / filter / grouping workflow text
+  - analysis chart / modal / inspector guidance text
+  - detail read-only / edit-history guidance text
+- Added a standalone `操作日志` Settings tab before `关于` for recent local operation-log review.
+
+### Changed
+
+- Changed the app branding from `Scidata Manager` to `Scida` in the packaged product shell.
+- Changed the mac app icon assets to the new clean polished Scida icon set.
+- Formalized the `关于` surface, the third-party notices surface, and the Settings backup reminder so the packaged app presents more like a formal desktop release.
+- Polished onboarding and first-run guidance copy for clearer local-first positioning.
+- Removed the last confirmed Chinese leakage from the English UI for:
+  - default scalar / structured analysis chart titles
+  - empty analysis chart guidance
+  - generic semantic-template naming
+
 ## v1.3.0 - 2026-03-29
 
 ### Added

@@ -1,6 +1,7 @@
 import './index.css';
 import type {
   AnalysisStep1FieldKey,
+  AppLanguage,
   AppBootstrapState,
   AppRuntimeInfo,
   AppSettings,
@@ -49,8 +50,6 @@ import {
 } from './renderer/render-helpers';
 import {
   collectCrossFilterCandidateValues,
-  formatCrossFilterChipLabel,
-  getCrossFilterFieldPlaceholder,
   matchesCrossFilterSet,
   supportsCrossFilterCandidatePicker,
   type CrossFilterRecordLike
@@ -75,10 +74,12 @@ import {
   type TemplateBlockType,
   XY_TEMPLATE_TYPE
 } from './template-blocks';
+import { getDictionarySectionLabel, translate } from './renderer/i18n';
 
 let appSettings: AppSettings = {
   storageRoot: '',
-  loginUsername: 'admin'
+  loginUsername: 'admin',
+  appLanguage: 'en'
 };
 let appBootstrapState: AppBootstrapState | null = null;
 let appBootstrapStateLoadPromise: Promise<void> | null = null;
@@ -87,39 +88,6 @@ let appRuntimeInfoLoadPromise: Promise<void> | null = null;
 let currentAppVersion = '';
 let aboutDialogVisible = false;
 let thirdPartyNoticesVisible = false;
-
-const ABOUT_PRODUCT_DESCRIPTION =
-  '本地优先的桌面科学数据管理工具，用于整理实验记录、托管原始文件并保持分析工作区只读。';
-const ABOUT_RELEASE_SUMMARY =
-  '当前正式发布延续本地桌面交付方式，提供首启初始化流程、正式 About 壳和稳定的本地运行时资产打包。';
-const ABOUT_CHANGELOG_POINTER = '详细版本变更与发布说明请参阅项目 CHANGELOG 和发布归档。';
-const THIRD_PARTY_NOTICE_ENTRIES = [
-  {
-    name: 'Electron',
-    purpose: '桌面应用运行时与窗口壳层',
-    notice: 'Electron 项目采用 MIT License。'
-  },
-  {
-    name: 'Electron Forge',
-    purpose: '应用打包与发布构建流程',
-    notice: 'Electron Forge 项目采用 MIT License。'
-  },
-  {
-    name: 'Vite',
-    purpose: 'Renderer 构建与开发时资源编排',
-    notice: 'Vite 项目采用 MIT License。'
-  },
-  {
-    name: 'Prisma',
-    purpose: '运行数据库访问与迁移执行',
-    notice: 'Prisma 项目采用 Apache License 2.0。'
-  },
-  {
-    name: 'better-sqlite3',
-    purpose: '本地 SQLite 访问绑定',
-    notice: 'better-sqlite3 项目采用 MIT License。'
-  }
-] as const;
 
 type ViewType =
   | 'onboarding'
@@ -238,7 +206,7 @@ type DuplicateWarningState =
       payload: UpdateExperimentPayload;
     };
 
-type SettingsSubView = 'general' | 'dictionary' | 'about';
+type SettingsSubView = 'general' | 'dictionary' | 'logs' | 'about';
 type OnboardingStep = 'welcome' | 'legal' | 'storage' | 'admin' | 'progress' | 'complete';
 
 type AnalysisChartType = 'scalar' | 'structured';
@@ -438,42 +406,44 @@ const ANALYSIS_CHART_COLORS = [
   '#c2410c',
   '#be185d'
 ];
-const ANALYSIS_STEP1_FIELD_OPTIONS: Array<{
-  key: AnalysisStep1FieldKey;
-  label: string;
-}> = [
-  { key: 'testProject', label: '测试项目' },
-  { key: 'sampleCode', label: '样品编号' },
-  { key: 'tester', label: '测试人' },
-  { key: 'instrument', label: '测试仪器' },
-  { key: 'testTime', label: '测试时间' },
-  { key: 'sampleOwner', label: '样品所属人员' }
+const ANALYSIS_STEP1_FIELD_OPTIONS: AnalysisStep1FieldKey[] = [
+  'testProject',
+  'sampleCode',
+  'tester',
+  'instrument',
+  'testTime',
+  'sampleOwner'
 ];
-const CROSS_FILTER_FIELD_OPTIONS: Array<{
+function getCrossFilterFieldOptions(): Array<{
   field: CrossFilterField;
   label: string;
-}> = [
-  { field: 'sampleCode', label: '样品编号' },
-  { field: 'testTime', label: '测试时间' },
-  { field: 'testProject', label: '测试项目' },
-  { field: 'tester', label: '测试人' },
-  { field: 'instrument', label: '仪器' },
-  { field: 'sampleOwner', label: '样品所属人员' },
-  { field: 'conditionName', label: '实验条件名称' },
-  { field: 'conditionValue', label: '实验条件值' },
-  { field: 'metricName', label: '结果指标名称' },
-  { field: 'metricValue', label: '结果指标值' },
-  { field: 'structuredBlockName', label: '结构化数据块名称' }
-];
-const CROSS_FILTER_OPERATOR_OPTIONS: Array<{
+}> {
+  return [
+    { field: 'sampleCode', label: t('database.filterField.sampleCode') },
+    { field: 'testTime', label: t('database.filterField.testTime') },
+    { field: 'testProject', label: t('database.filterField.testProject') },
+    { field: 'tester', label: t('database.filterField.tester') },
+    { field: 'instrument', label: t('database.filterField.instrument') },
+    { field: 'sampleOwner', label: t('database.filterField.sampleOwner') },
+    { field: 'conditionName', label: t('database.filterField.conditionName') },
+    { field: 'conditionValue', label: t('database.filterField.conditionValue') },
+    { field: 'metricName', label: t('database.filterField.metricName') },
+    { field: 'metricValue', label: t('database.filterField.metricValue') },
+    { field: 'structuredBlockName', label: t('database.filterField.structuredBlockName') }
+  ];
+}
+
+function getCrossFilterOperatorOptions(): Array<{
   operator: CrossFilterOperator;
   label: string;
-}> = [
-  { operator: 'eq', label: '等于' },
-  { operator: 'gte', label: '>=' },
-  { operator: 'lte', label: '<=' },
-  { operator: 'between', label: '区间' }
-];
+}> {
+  return [
+    { operator: 'eq', label: t('database.filterOperator.eq') },
+    { operator: 'gte', label: t('database.filterOperator.gte') },
+    { operator: 'lte', label: t('database.filterOperator.lte') },
+    { operator: 'between', label: t('database.filterOperator.between') }
+  ];
+}
 const CONDITION_NAME_KEYWORDS = [
   '温度',
   '偏压',
@@ -512,46 +482,7 @@ const METRIC_NAME_KEYWORDS = [
   '上升时间',
   '下降时间'
 ];
-const SCALAR_ROLE_META: Record<
-  ScalarItemRole,
-  {
-    title: string;
-    subtitle: string;
-    addButtonLabel: string;
-    recommendationLabel: string;
-    nameHeader: string;
-    valueHeader: string;
-    fileHeader: string;
-    emptyText: string;
-  }
-> = {
-  condition: {
-    title: '实验条件',
-    subtitle: '记录实验是如何进行的，如温度、偏压、光功率、波长、频率和测试气氛等条件。',
-    addButtonLabel: '新增实验条件',
-    recommendationLabel: '推荐实验条件',
-    nameHeader: '条件名称',
-    valueHeader: '条件值',
-    fileHeader: '来源文件（可选）',
-    emptyText: '当前还没有实验条件'
-  },
-  metric: {
-    title: '结果指标',
-    subtitle: '记录最终标量结果和关键测量指标，如 Rise time、Responsivity、D*、EQE 等。',
-    addButtonLabel: '新增结果指标',
-    recommendationLabel: '推荐结果指标',
-    nameHeader: '指标名称',
-    valueHeader: '指标值',
-    fileHeader: '来源文件（可选）',
-    emptyText: '当前还没有结果指标'
-  }
-};
-
-const DICTIONARY_SECTION_META: Array<{ type: DictionaryType; label: string }> = [
-  { type: 'testProject', label: '测试项目' },
-  { type: 'tester', label: '测试人' },
-  { type: 'instrument', label: '测试仪器' }
-];
+const DICTIONARY_SECTION_META: DictionaryType[] = ['testProject', 'tester', 'instrument'];
 
 function buildEmptyDictionaryItems(): DictionaryItemsByType {
   return {
@@ -665,7 +596,9 @@ function buildAnalysisPreparationWarnings(
 
     if (!primaryUnit || !secondaryUnit) {
       warnings.add(
-        `结构化数据块“${block.blockTitle}”已指定数据用途，但坐标单位不完整；后续分析比较可能受限。`
+        t('analysis.status.incompleteStructuredUnits', {
+          title: block.blockTitle
+        })
       );
     }
   });
@@ -679,7 +612,9 @@ function confirmAnalysisPreparationWarnings(warnings: string[]) {
   }
 
   return window.confirm(
-    `检测到以下分析准备提醒：\n\n${warnings.join('\n')}\n\n是否继续保存？`
+    t('analysis.status.confirmPreparation', {
+      warnings: warnings.join('\n')
+    })
   );
 }
 
@@ -816,6 +751,100 @@ let step2DataItems: DataItem[] = [];
 let step2TemplateBlocks: TemplateBlockFormData[] = [];
 
 const root = document.getElementById('app');
+
+function getCurrentLanguage(): AppLanguage {
+  return appSettings.appLanguage;
+}
+
+function t(key: Parameters<typeof translate>[1], variables?: Record<string, string | number>) {
+  return translate(getCurrentLanguage(), key, variables);
+}
+
+function getCrossFilterFieldLabel(field: CrossFilterField) {
+  const labels: Record<CrossFilterField, string> = {
+    sampleCode: t('database.filterField.sampleCode'),
+    testTime: t('database.filterField.testTime'),
+    testProject: t('database.filterField.testProject'),
+    tester: t('database.filterField.tester'),
+    instrument: t('database.filterField.instrument'),
+    sampleOwner: t('database.filterField.sampleOwner'),
+    conditionName: t('database.filterField.conditionName'),
+    conditionValue: t('database.filterField.conditionValue'),
+    metricName: t('database.filterField.metricName'),
+    metricValue: t('database.filterField.metricValue'),
+    secondaryName: t('database.filterField.secondaryName'),
+    secondaryValue: t('database.filterField.secondaryValue'),
+    structuredBlockName: t('database.filterField.structuredBlockName')
+  };
+
+  return labels[field];
+}
+
+function getLocalizedCrossFilterFieldPlaceholder(field: CrossFilterField) {
+  const placeholders: Record<CrossFilterField, string> = {
+    sampleCode: t('database.filterPlaceholder.sampleCode'),
+    testTime: t('database.filterPlaceholder.testTime'),
+    testProject: t('database.filterPlaceholder.testProject'),
+    tester: t('database.filterPlaceholder.tester'),
+    instrument: t('database.filterPlaceholder.instrument'),
+    sampleOwner: t('database.filterPlaceholder.sampleOwner'),
+    conditionName: t('database.filterPlaceholder.conditionName'),
+    conditionValue: t('database.filterPlaceholder.conditionValue'),
+    metricName: t('database.filterPlaceholder.metricName'),
+    metricValue: t('database.filterPlaceholder.metricValue'),
+    secondaryName: t('database.filterPlaceholder.secondaryName'),
+    secondaryValue: t('database.filterPlaceholder.secondaryValue'),
+    structuredBlockName: t('database.filterPlaceholder.structuredBlockName')
+  };
+
+  return placeholders[field];
+}
+
+function formatLocalizedCrossFilterChipLabel(chip: CrossFilterChip) {
+  const operator = chip.operator || 'eq';
+  const normalizedValue = chip.value.trim();
+  const normalizedValue2 = (chip.value2 || '').trim();
+
+  if (operator === 'gte') {
+    return `${getCrossFilterFieldLabel(chip.field)}: >= ${normalizedValue}`;
+  }
+
+  if (operator === 'lte') {
+    return `${getCrossFilterFieldLabel(chip.field)}: <= ${normalizedValue}`;
+  }
+
+  if (operator === 'between') {
+    return `${getCrossFilterFieldLabel(chip.field)}: ${normalizedValue} ~ ${normalizedValue2}`;
+  }
+
+  return `${getCrossFilterFieldLabel(chip.field)}: ${normalizedValue}`;
+}
+
+function getScalarRoleMeta(role: ScalarItemRole) {
+  if (role === 'condition') {
+    return {
+      title: t('step2.condition.title'),
+      subtitle: t('step2.condition.subtitle'),
+      addButtonLabel: t('step2.condition.addButton'),
+      recommendationLabel: t('step2.condition.recommendationLabel'),
+      nameHeader: t('step2.table.nameHeader'),
+      valueHeader: t('step2.condition.valueHeader'),
+      fileHeader: t('step2.table.fileHeader'),
+      emptyText: t('step2.condition.empty')
+    };
+  }
+
+  return {
+    title: t('step2.metric.title'),
+    subtitle: t('step2.metric.subtitle'),
+    addButtonLabel: t('step2.metric.addButton'),
+    recommendationLabel: t('step2.metric.recommendationLabel'),
+    nameHeader: t('step2.table.nameHeader'),
+    valueHeader: t('step2.metric.valueHeader'),
+    fileHeader: t('step2.table.fileHeader'),
+    emptyText: t('step2.metric.empty')
+  };
+}
 
 function handleAsyncError(error: unknown, fallbackMessage = '操作失败，请稍后重试') {
   console.error(error);
@@ -1075,7 +1104,7 @@ async function switchSettingsSubView(nextSubView: SettingsSubView) {
   try {
     await reloadDictionaryItems();
   } catch (error) {
-    dictionaryLoadError = getErrorMessage(error) || '加载词典列表失败';
+    dictionaryLoadError = getErrorMessage(error) || t('dictionary.loadFailed');
   } finally {
     dictionaryLoading = false;
     requestRender(true);
@@ -1086,7 +1115,7 @@ async function openPathLocation(targetPath: string) {
   const result = await window.electronAPI.openPathLocation({ targetPath });
 
   if (!result.success) {
-    alert(result.error || '打开路径失败');
+    alert(result.error || t('common.openPathFailed'));
   }
 }
 
@@ -1201,9 +1230,22 @@ function normalizeAnalysisUnit(unit: string) {
 }
 
 function getAnalysisStep1FieldLabel(fieldKey: AnalysisStep1FieldKey) {
-  return (
-    ANALYSIS_STEP1_FIELD_OPTIONS.find((option) => option.key === fieldKey)?.label || fieldKey
-  );
+  switch (fieldKey) {
+    case 'testProject':
+      return t('step1.field.testProject');
+    case 'sampleCode':
+      return t('step1.field.sampleCode');
+    case 'tester':
+      return t('step1.field.tester');
+    case 'instrument':
+      return t('step1.field.instrument');
+    case 'testTime':
+      return t('step1.field.testTime');
+    case 'sampleOwner':
+      return t('step1.field.sampleOwner');
+    default:
+      return fieldKey;
+  }
 }
 
 function buildDefaultCrossFilterDraft(): CrossFilterDraftState {
@@ -1502,6 +1544,8 @@ function renderCrossFilterControls(params: {
   candidateLoading?: boolean;
 }) {
   const prefix = params.scope === 'database' ? 'db' : 'analysis-composer';
+  const fieldOptions = getCrossFilterFieldOptions();
+  const operatorOptions = getCrossFilterOperatorOptions();
   const supportsRange = supportsCrossFilterRangeOperator(params.draftField);
   const supportsPendingValues = supportsCrossFilterPendingMultiValue(params.draftOperator);
   const supportsCandidatePicker = supportsCrossFilterCandidatePicker(
@@ -1517,11 +1561,11 @@ function renderCrossFilterControls(params: {
               .map(
                 (chip) => `
                   <span class="cross-filter-chip">
-                    <span class="cross-filter-chip-label">${escapeHtml(formatCrossFilterChipLabel(chip))}</span>
+                    <span class="cross-filter-chip-label">${escapeHtml(formatLocalizedCrossFilterChipLabel(chip))}</span>
                     <button
                       class="cross-filter-chip-remove"
                       type="button"
-                      title="移除筛选条件"
+                      title="${escapeHtml(t('database.filter.removeCondition'))}"
                       data-cross-filter-remove="${params.scope}::${chip.id}"
                     >
                       ×
@@ -1530,7 +1574,7 @@ function renderCrossFilterControls(params: {
                 `
               )
               .join('')
-          : '<span class="cross-filter-chip-placeholder">当前没有附加筛选条件</span>'
+          : `<span class="cross-filter-chip-placeholder">${escapeHtml(t('database.filter.emptyConditions'))}</span>`
       }
       ${
         params.chips.length
@@ -1540,7 +1584,7 @@ function renderCrossFilterControls(params: {
                 class="text-btn cross-filter-clear-btn"
                 type="button"
               >
-                清空全部
+                ${escapeHtml(t('database.filter.clearAll'))}
               </button>
             `
           : ''
@@ -1551,7 +1595,7 @@ function renderCrossFilterControls(params: {
         ? `
             <div class="cross-filter-draft-row ${supportsRange ? 'cross-filter-draft-row-range' : ''}">
               <select id="${prefix}-filter-field" class="form-input cross-filter-field-select">
-                ${CROSS_FILTER_FIELD_OPTIONS.map(
+                ${fieldOptions.map(
                   (option) => `
                     <option value="${option.field}" ${params.draftField === option.field ? 'selected' : ''}>
                       ${option.label}
@@ -1562,7 +1606,7 @@ function renderCrossFilterControls(params: {
               ${supportsRange
                 ? `
                     <select id="${prefix}-filter-operator" class="form-input cross-filter-operator-select">
-                      ${CROSS_FILTER_OPERATOR_OPTIONS.map(
+                      ${operatorOptions.map(
                         (option) => `
                           <option value="${option.operator}" ${params.draftOperator === option.operator ? 'selected' : ''}>
                             ${option.label}
@@ -1578,9 +1622,9 @@ function renderCrossFilterControls(params: {
                 placeholder="${escapeHtml(
                   supportsRange && params.draftOperator !== 'eq'
                     ? params.draftOperator === 'between'
-                      ? '输入区间下限'
-                      : '输入数值阈值'
-                    : getCrossFilterFieldPlaceholder(params.draftField)
+                      ? t('database.filter.rangeStart')
+                      : t('database.filter.threshold')
+                    : getLocalizedCrossFilterFieldPlaceholder(params.draftField)
                 )}"
                 value="${escapeHtml(params.draftValue)}"
               />
@@ -1588,7 +1632,7 @@ function renderCrossFilterControls(params: {
                 supportsPendingValues
                   ? `
                       <button id="${prefix}-filter-pending-add-btn" class="secondary-btn cross-filter-pending-add-btn" type="button">
-                        加入值
+                        ${escapeHtml(t('database.filter.addValue'))}
                       </button>
                     `
                   : ''
@@ -1599,16 +1643,16 @@ function renderCrossFilterControls(params: {
                       <input
                         id="${prefix}-filter-value2"
                         class="form-input cross-filter-value-input"
-                        placeholder="输入区间上限"
+                        placeholder="${escapeHtml(t('database.filter.rangeEnd'))}"
                         value="${escapeHtml(params.draftValue2)}"
                       />
                     `
                   : ''
               }
               <button id="${prefix}-filter-apply-btn" class="primary-btn" type="button">
-                ${supportsPendingValues ? '应用筛选' : '添加条件'}
+                ${escapeHtml(supportsPendingValues ? t('database.filter.apply') : t('database.filter.addCondition'))}
               </button>
-              <button id="${prefix}-filter-cancel-btn" class="secondary-btn" type="button">取消</button>
+              <button id="${prefix}-filter-cancel-btn" class="secondary-btn" type="button">${escapeHtml(t('database.filter.cancel'))}</button>
             </div>
             ${
               supportsPendingValues
@@ -1616,8 +1660,8 @@ function renderCrossFilterControls(params: {
                     <div class="cross-filter-draft-hint">
                       ${
                         supportsCandidatePicker
-                          ? '可从候选值中多选，也可手动输入后加入值，再一次性应用。'
-                          : '可先连续加入多个值，再一次性应用为多个筛选条件。'
+                          ? escapeHtml(t('database.filter.multiValueHint'))
+                          : escapeHtml(t('database.filter.manualMultiValueHint'))
                       }
                     </div>
                     <div class="cross-filter-pending-row">
@@ -1631,7 +1675,7 @@ function renderCrossFilterControls(params: {
                                     <button
                                       class="cross-filter-chip-remove"
                                       type="button"
-                                      title="移除待加入的值"
+                                      title="${escapeHtml(t('database.filter.removePendingValue'))}"
                                       data-cross-filter-pending-remove="${params.scope}::${encodeURIComponent(value)}"
                                     >
                                       ×
@@ -1640,7 +1684,7 @@ function renderCrossFilterControls(params: {
                                 `
                               )
                               .join('')
-                          : '<span class="cross-filter-chip-placeholder">还没有待加入的值</span>'
+                          : `<span class="cross-filter-chip-placeholder">${escapeHtml(t('database.filter.emptyPendingValues'))}</span>`
                       }
                     </div>
                     ${
@@ -1651,15 +1695,15 @@ function renderCrossFilterControls(params: {
                                 <input
                                   id="${prefix}-filter-candidate-search"
                                   class="form-input cross-filter-candidate-search"
-                                  placeholder="筛选候选值"
+                                  placeholder="${escapeHtml(t('database.filter.candidateSearchPlaceholder'))}"
                                   value="${escapeHtml(params.draftCandidateQuery)}"
                                 />
-                                <span class="cross-filter-candidate-count">候选值 ${params.candidateValues.length} 个</span>
+                                <span class="cross-filter-candidate-count">${escapeHtml(t('database.filter.candidateCount', { count: params.candidateValues.length }))}</span>
                               </div>
                               <div class="cross-filter-candidate-list">
                                 ${
                                   params.candidateLoading
-                                    ? '<div class="cross-filter-candidate-empty">正在加载可选值...</div>'
+                                    ? `<div class="cross-filter-candidate-empty">${escapeHtml(t('database.filter.candidateLoading'))}</div>`
                                     : params.candidateValues.length
                                       ? params.candidateValues
                                           .map(
@@ -1675,7 +1719,7 @@ function renderCrossFilterControls(params: {
                                             `
                                           )
                                           .join('')
-                                      : '<div class="cross-filter-candidate-empty">当前结果中没有可选值，可继续手动输入。</div>'
+                                      : `<div class="cross-filter-candidate-empty">${escapeHtml(t('database.filter.candidateEmpty'))}</div>`
                                 }
                               </div>
                             </div>
@@ -1684,7 +1728,7 @@ function renderCrossFilterControls(params: {
                     }
                   `
                 : supportsRange
-                  ? '<div class="cross-filter-draft-hint">仅对可解析为纯数字的标量值进行比较，不做单位换算。</div>'
+                  ? `<div class="cross-filter-draft-hint">${escapeHtml(t('database.filter.numericHint'))}</div>`
                   : ''
             }
           `
@@ -1948,7 +1992,13 @@ function renderAppSidebar(appName: string, items: AppSidebarItem[]) {
           )
           .join('')}
       </div>
-      <div class="sidebar-footer">${sidebarCollapsed ? escapeHtml(currentAppVersion) : `版本 ${escapeHtml(currentAppVersion)}`}</div>
+      <div class="sidebar-footer">
+        ${
+          sidebarCollapsed
+            ? escapeHtml(currentAppVersion)
+            : escapeHtml(t('common.versionLabel', { version: currentAppVersion }))
+        }
+      </div>
     </aside>
   `;
 }
@@ -1971,10 +2021,10 @@ function renderAboutDialog(appName: string, version: string) {
       <div class="about-modal-card" role="dialog" aria-modal="true" aria-labelledby="about-dialog-title">
         <div class="about-modal-header">
           <div>
-            <div id="about-dialog-title" class="about-modal-title">关于 ${escapeHtml(appName)}</div>
-            <div class="about-modal-subtitle">本地优先的桌面科学数据管理工具</div>
+            <div id="about-dialog-title" class="about-modal-title">${escapeHtml(t('about.dialogTitle', { appName }))}</div>
+            <div class="about-modal-subtitle">${escapeHtml(t('about.dialogSubtitle'))}</div>
           </div>
-          <button id="about-dialog-close-btn" class="secondary-btn" type="button">关闭</button>
+          <button id="about-dialog-close-btn" class="secondary-btn" type="button">${escapeHtml(t('common.close'))}</button>
         </div>
 
         ${renderAboutSurface(appName, version)}
@@ -1986,39 +2036,39 @@ function renderAboutDialog(appName: string, version: string) {
 function renderAboutSurface(appName: string, version: string) {
   return `
     <div class="detail-section">
-      <div class="detail-section-title">产品信息</div>
+      <div class="detail-section-title">${escapeHtml(t('about.section.productInfo'))}</div>
       <div class="about-info-card">
         <div class="about-info-title">${escapeHtml(appName)}</div>
-        <div class="about-info-text">${escapeHtml(ABOUT_PRODUCT_DESCRIPTION)}</div>
+        <div class="about-info-text">${escapeHtml(t('about.productDescription'))}</div>
       </div>
       <div class="info-row">
-        <span>应用名称</span>
+        <span>${escapeHtml(t('about.productNameLabel'))}</span>
         <strong>${escapeHtml(appName)}</strong>
       </div>
       <div class="info-row">
-        <span>当前版本</span>
+        <span>${escapeHtml(t('about.versionLabel'))}</span>
         <strong>${escapeHtml(version)}</strong>
       </div>
     </div>
 
     <div class="detail-section">
-      <div class="detail-section-title">发布说明</div>
+      <div class="detail-section-title">${escapeHtml(t('about.section.releaseNotes'))}</div>
       <div class="about-info-card">
-        <div class="about-info-title">当前版本摘要</div>
-        <div class="about-info-text">${escapeHtml(ABOUT_RELEASE_SUMMARY)}</div>
-        <div class="about-info-footnote">${escapeHtml(ABOUT_CHANGELOG_POINTER)}</div>
+        <div class="about-info-title">${escapeHtml(t('about.releaseSummaryTitle'))}</div>
+        <div class="about-info-text">${escapeHtml(t('about.releaseSummary'))}</div>
+        <div class="about-info-footnote">${escapeHtml(t('about.changelogPointer'))}</div>
       </div>
     </div>
 
     <div class="detail-section">
-      <div class="detail-section-title">第三方 notices</div>
+      <div class="detail-section-title">${escapeHtml(t('about.section.thirdParty'))}</div>
       <div class="about-info-card">
         <div class="about-info-text">
-          Scida 基于多项开源组件构建。此处提供当前整理的 notices 摘要，用于正式发布材料展示。
+          ${escapeHtml(t('about.thirdPartyIntro'))}
         </div>
         <div class="form-action-row about-action-row">
           <button type="button" class="secondary-btn action-btn" data-open-third-party-notices>
-            查看第三方 notices
+            ${escapeHtml(t('about.thirdPartyButton'))}
           </button>
         </div>
       </div>
@@ -2031,6 +2081,34 @@ function renderThirdPartyNoticesDialog() {
     return '';
   }
 
+  const entries = [
+    {
+      name: 'Electron',
+      purpose: t('thirdParty.electron.purpose'),
+      notice: t('thirdParty.electron.notice')
+    },
+    {
+      name: 'Electron Forge',
+      purpose: t('thirdParty.forge.purpose'),
+      notice: t('thirdParty.forge.notice')
+    },
+    {
+      name: 'Vite',
+      purpose: t('thirdParty.vite.purpose'),
+      notice: t('thirdParty.vite.notice')
+    },
+    {
+      name: 'Prisma',
+      purpose: t('thirdParty.prisma.purpose'),
+      notice: t('thirdParty.prisma.notice')
+    },
+    {
+      name: 'better-sqlite3',
+      purpose: t('thirdParty.betterSqlite3.purpose'),
+      notice: t('thirdParty.betterSqlite3.notice')
+    }
+  ] as const;
+
   return `
     <div class="about-modal-mask" id="third-party-notices-mask">
       <div
@@ -2041,20 +2119,20 @@ function renderThirdPartyNoticesDialog() {
       >
         <div class="about-modal-header">
           <div>
-            <div id="third-party-notices-title" class="about-modal-title">第三方 notices</div>
-            <div class="about-modal-subtitle">当前发布中使用的核心开源组件摘要</div>
+            <div id="third-party-notices-title" class="about-modal-title">${escapeHtml(t('thirdParty.dialogTitle'))}</div>
+            <div class="about-modal-subtitle">${escapeHtml(t('thirdParty.dialogSubtitle'))}</div>
           </div>
-          <button id="third-party-notices-close-btn" class="secondary-btn" type="button">关闭</button>
+          <button id="third-party-notices-close-btn" class="secondary-btn" type="button">${escapeHtml(t('common.close'))}</button>
         </div>
 
         <div class="about-info-card">
           <div class="about-info-text">
-            以下内容为当前发布切片整理的静态 notices 摘要。完整依赖信息仍以项目锁文件与正式发布归档为准。
+            ${escapeHtml(t('thirdParty.summary'))}
           </div>
         </div>
 
         <div class="third-party-notices-list">
-          ${THIRD_PARTY_NOTICE_ENTRIES.map(
+          ${entries.map(
             (entry) => `
               <div class="third-party-notice-card">
                 <div class="third-party-notice-header">
@@ -2100,7 +2178,9 @@ function bindThirdPartyNoticesEvents(preserveContentScroll = false) {
 }
 
 function buildAnalysisChartTitle(chartType: AnalysisChartType) {
-  return chartType === 'scalar' ? '标量分析' : '结构化分析';
+  return chartType === 'scalar'
+    ? t('analysis.chartTitle.scalarDefault')
+    : t('analysis.chartTitle.structuredDefault');
 }
 
 function getAnalysisAutoChartTitle(chart: AnalysisChartCard, fallbackTitle = '') {
@@ -2372,12 +2452,12 @@ function buildAnalysisStructuredSeriesFromBlock(
 ): { series?: AnalysisStructuredSeries; error?: string } {
   const entry = getAnalysisRecordEntry(recordId);
   if (!entry?.detail) {
-    return { error: '未找到所选来源记录' };
+    return { error: t('analysis.composer.recordMissing') };
   }
 
   const block = entry.detail.templateBlocks.find((item) => item.id === blockId);
   if (!block) {
-    return { error: '未找到所选结构化数据块' };
+    return { error: t('analysis.composer.blockMissing') };
   }
 
   const xLabel = block.templateType === XY_TEMPLATE_TYPE ? block.xLabel : block.spectrumAxisLabel;
@@ -2417,7 +2497,7 @@ function buildAnalysisStructuredSeries(
   composer: Extract<AnalysisComposerState, { chartType: 'structured' }>
 ): { seriesList?: AnalysisStructuredSeries[]; error?: string; skippedRecordIds: number[] } {
   if (!composer.selectedRecordIds.length || !composer.selectedBlockName.trim()) {
-    return { error: '请先选择来源记录和结构化数据块。', skippedRecordIds: [] };
+    return { error: t('analysis.composer.selectionRequired'), skippedRecordIds: [] };
   }
 
   const seriesList: AnalysisStructuredSeries[] = [];
@@ -2589,7 +2669,9 @@ function restoreAnalysisChartFromPersistedConfig(
 
       if (buildResult.skippedRecordIds.length) {
         selectionNotices.push(
-          `已跳过 ${buildResult.skippedRecordIds.length} 条不含所选结构化数据块的记录`
+          t('analysis.composer.skippedMissingBlock', {
+            count: buildResult.skippedRecordIds.length
+          })
         );
       }
 
@@ -3227,7 +3309,7 @@ async function confirmAddAnalysisSeries() {
       analysisComposer = {
         ...composer,
         pending: false,
-        error: buildResult.error || '添加序列失败'
+        error: buildResult.error || t('analysis.composer.addSeriesFailed')
       };
       requestRender(true);
       return;
@@ -3245,7 +3327,7 @@ async function confirmAddAnalysisSeries() {
       analysisComposer = {
         ...composer,
         pending: false,
-        error: buildResult.error || '添加序列失败'
+        error: buildResult.error || t('analysis.composer.addSeriesFailed')
       };
       requestRender(true);
       return;
@@ -3256,7 +3338,9 @@ async function confirmAddAnalysisSeries() {
       structuredSeries: [...currentChart.structuredSeries, ...buildResult.seriesList],
       viewport: null,
       selectionNotice: buildResult.skippedRecordIds.length
-        ? `已跳过 ${buildResult.skippedRecordIds.length} 条不含所选结构化数据块的记录`
+        ? t('analysis.composer.skippedMissingBlock', {
+            count: buildResult.skippedRecordIds.length
+          })
         : ''
     }));
   }
@@ -3577,11 +3661,11 @@ function buildAnalysisChartSvg(chart: AnalysisChartCard, exportMode = false) {
           ${
             chart.chartType === 'scalar'
               ? chart.scalarSeries.length
-                ? '当前图表的序列已隐藏，恢复显示后即可查看'
-                : '当前图表尚未添加可显示的数据'
+                ? t('analysis.chartHiddenSeriesNote')
+                : t('analysis.chartNoVisibleData')
               : chart.structuredSeries.length
-                ? '当前图表的序列已隐藏，恢复显示后即可查看'
-                : '当前图表尚未添加可显示的数据'
+                ? t('analysis.chartHiddenSeriesNote')
+                : t('analysis.chartNoVisibleData')
           }
         </text>
       </svg>
@@ -4020,7 +4104,7 @@ function resetAnalysisChartViewport(chartId: string) {
 
 function renderAnalysisDataList(
   items: Array<{ label: string; value: string }>,
-  emptyText = '暂无'
+  emptyText = t('analysis.emptyGeneric')
 ) {
   if (!items.length) {
     return `<div class="empty-tip">${emptyText}</div>`;
@@ -4058,7 +4142,7 @@ function renderAnalysisScalarSummaryList(
   const metrics = items.filter((item) => resolveScalarItemRole(item) === 'metric');
 
   if (!metrics.length) {
-    return '<div class="empty-tip">暂无结果指标</div>';
+    return `<div class="empty-tip">${escapeHtml(t('analysis.emptyMetrics'))}</div>`;
   }
 
   return `
@@ -4085,7 +4169,7 @@ function renderAnalysisBlockSummaryList(
   activeBlockId?: number
 ) {
   if (!blocks.length) {
-    return '<div class="empty-tip">暂无结构化数据块</div>';
+    return `<div class="empty-tip">${escapeHtml(t('analysis.emptyBlocks'))}</div>`;
   }
 
   return `
@@ -4117,7 +4201,7 @@ function renderAnalysisBlockSummaryList(
 function renderAnalysisSourceInfo(pairs: Array<{ label: string; value: string }>) {
   return renderAnalysisDataList(
     pairs.filter((pair) => pair.value.trim()),
-    '当前数据未附带源文件信息'
+    t('analysis.sourceInfoEmpty')
   );
 }
 
@@ -4149,33 +4233,46 @@ function renderAnalysisChartCard(chart: AnalysisChartCard, expanded = false) {
   const axisSummary =
     chart.chartType === 'scalar'
       ? primaryScalarSeries
-        ? `横轴：${escapeHtml(primaryScalarSeries.xSourceLabel)}${
-            primaryScalarSeries.xUnit ? ` (${escapeHtml(primaryScalarSeries.xUnit)})` : ''
-          } · 纵轴：数值结果${
-            primaryScalarSeries.yUnit ? ` (${escapeHtml(primaryScalarSeries.yUnit)})` : ''
-          }`
-        : '添加数据后显示横纵轴定义'
+        ? t('analysis.axisSummary.scalar', {
+            xLabel: primaryScalarSeries.xSourceLabel,
+            xUnit: primaryScalarSeries.xUnit
+              ? ` (${primaryScalarSeries.xUnit})`
+              : '',
+            yUnit: primaryScalarSeries.yUnit
+              ? ` (${primaryScalarSeries.yUnit})`
+              : ''
+          })
+        : t('analysis.axisSummary.scalarEmpty')
       : primaryStructuredSeries
-        ? `横轴：${escapeHtml(primaryStructuredSeries.xLabel)}${
-            primaryStructuredSeries.xUnit ? ` (${escapeHtml(primaryStructuredSeries.xUnit)})` : ''
-          } · 纵轴：${escapeHtml(primaryStructuredSeries.yLabel)}${
-            primaryStructuredSeries.yUnit ? ` (${escapeHtml(primaryStructuredSeries.yUnit)})` : ''
-          }`
-        : '添加数据后显示结构化坐标元数据';
+        ? t('analysis.axisSummary.structured', {
+            xLabel: primaryStructuredSeries.xLabel,
+            xUnit: primaryStructuredSeries.xUnit
+              ? ` (${primaryStructuredSeries.xUnit})`
+              : '',
+            yLabel: primaryStructuredSeries.yLabel,
+            yUnit: primaryStructuredSeries.yUnit
+              ? ` (${primaryStructuredSeries.yUnit})`
+              : ''
+          })
+        : t('analysis.axisSummary.structuredEmpty');
 
   return `
     <section class="analysis-chart-card ${expanded ? 'expanded' : ''}">
       <div class="analysis-card-header">
         <div class="analysis-card-heading">
-          <div class="analysis-card-eyebrow">${chart.chartType === 'scalar' ? '标量' : '结构化'}</div>
+          <div class="analysis-card-eyebrow">${escapeHtml(
+            chart.chartType === 'scalar'
+              ? t('analysis.chartType.scalar')
+              : t('analysis.chartType.structured')
+          )}</div>
           <div class="analysis-card-title-row">
             <div class="analysis-card-title">${escapeHtml(chart.title)}</div>
             <div class="analysis-card-title-actions">
               <button
                 class="analysis-card-title-btn"
                 type="button"
-                title="编辑图表标题"
-                aria-label="编辑图表标题"
+                title="${escapeHtml(t('analysis.chart.editTitle'))}"
+                aria-label="${escapeHtml(t('analysis.chart.editTitle'))}"
                 data-analysis-chart-title-edit="${chart.id}"
               >
                 ✎
@@ -4185,8 +4282,8 @@ function renderAnalysisChartCard(chart: AnalysisChartCard, expanded = false) {
                     <button
                       class="analysis-card-title-btn"
                       type="button"
-                      title="恢复默认标题"
-                      aria-label="恢复默认标题"
+                      title="${escapeHtml(t('analysis.chart.resetTitle'))}"
+                      aria-label="${escapeHtml(t('analysis.chart.resetTitle'))}"
                       data-analysis-chart-title-reset="${chart.id}"
                     >
                       ↺
@@ -4208,21 +4305,21 @@ function renderAnalysisChartCard(chart: AnalysisChartCard, expanded = false) {
                     type="button"
                     data-analysis-chart-title-save="${chart.id}"
                   >
-                    保存
+                    ${escapeHtml(t('analysis.chartTitle.save'))}
                   </button>
                   <button
                     class="analysis-legend-cancel-btn"
                     type="button"
                     data-analysis-chart-title-cancel="${chart.id}"
                   >
-                    取消
+                    ${escapeHtml(t('analysis.chartTitle.cancel'))}
                   </button>
                   <button
                     class="analysis-legend-cancel-btn"
                     type="button"
                     data-analysis-chart-title-restore="${chart.id}"
                   >
-                    默认
+                    ${escapeHtml(t('analysis.chartTitle.default'))}
                   </button>
                 </div>
               `
@@ -4230,13 +4327,13 @@ function renderAnalysisChartCard(chart: AnalysisChartCard, expanded = false) {
           <div class="analysis-card-meta">${axisSummary}</div>
         </div>
         <div class="analysis-card-actions">
-          <button class="analysis-icon-btn" type="button" title="添加数据" data-analysis-add-series="${chart.id}">＋</button>
-          <button class="analysis-icon-btn" type="button" title="重置视图" data-analysis-reset="${chart.id}">↺</button>
+          <button class="analysis-icon-btn" type="button" title="${escapeHtml(t('analysis.chart.addSeries'))}" data-analysis-add-series="${chart.id}">＋</button>
+          <button class="analysis-icon-btn" type="button" title="${escapeHtml(t('analysis.chart.resetView'))}" data-analysis-reset="${chart.id}">↺</button>
           <div class="analysis-export-menu-shell">
             <button
               class="analysis-icon-btn"
               type="button"
-              title="导出"
+              title="${escapeHtml(t('analysis.chart.export'))}"
               data-analysis-export-toggle="${chart.id}"
             >
               ⤓
@@ -4244,8 +4341,8 @@ function renderAnalysisChartCard(chart: AnalysisChartCard, expanded = false) {
             ${analysisExportMenuChartId === chart.id
               ? `
                   <div class="analysis-export-menu">
-                    <button class="analysis-export-menu-item" type="button" data-analysis-export-image="${chart.id}">导出图</button>
-                    <button class="analysis-export-menu-item" type="button" data-analysis-export-data="${chart.id}">导出数据</button>
+                    <button class="analysis-export-menu-item" type="button" data-analysis-export-image="${chart.id}">${escapeHtml(t('analysis.chart.exportImage'))}</button>
+                    <button class="analysis-export-menu-item" type="button" data-analysis-export-data="${chart.id}">${escapeHtml(t('analysis.chart.exportData'))}</button>
                   </div>
                 `
               : ''}
@@ -4253,7 +4350,7 @@ function renderAnalysisChartCard(chart: AnalysisChartCard, expanded = false) {
           <button
             class="analysis-icon-btn danger"
             type="button"
-            title="删除图表"
+            title="${escapeHtml(t('analysis.chart.delete'))}"
             data-analysis-remove-chart="${chart.id}"
           >
             ×
@@ -4276,7 +4373,7 @@ function renderAnalysisChartCard(chart: AnalysisChartCard, expanded = false) {
           <button
             class="analysis-icon-btn analysis-expand-btn"
             type="button"
-            title="${expanded ? '退出单图展开' : '展开单图'}"
+            title="${escapeHtml(expanded ? t('analysis.chart.collapse') : t('analysis.chart.expand'))}"
             data-analysis-expand="${chart.id}"
           >
             ${expanded ? '⤡' : '⤢'}
@@ -4295,14 +4392,14 @@ function renderAnalysisChartCard(chart: AnalysisChartCard, expanded = false) {
                       <button
                         class="analysis-legend-main"
                         type="button"
-                        title="${series.hidden ? '显示该序列' : '隐藏该序列'}"
+                        title="${escapeHtml(series.hidden ? t('analysis.legend.showSeries') : t('analysis.legend.hideSeries'))}"
                         data-analysis-legend-toggle="${chart.id}::${series.id}"
                       >
                         <span class="analysis-legend-swatch" style="background:${series.color}"></span>
                         <span>${escapeHtml(series.name)}</span>
                       </button>
                       <div class="analysis-legend-actions">
-                        <label class="analysis-legend-color-label" title="调整系列颜色">
+                        <label class="analysis-legend-color-label" title="${escapeHtml(t('analysis.legend.adjustColor'))}">
                           <input
                             class="analysis-legend-color-input"
                             type="color"
@@ -4315,8 +4412,8 @@ function renderAnalysisChartCard(chart: AnalysisChartCard, expanded = false) {
                               <button
                                 class="analysis-legend-icon-btn"
                                 type="button"
-                                title="恢复默认颜色"
-                                aria-label="恢复默认颜色"
+                                title="${escapeHtml(t('analysis.legend.resetColor'))}"
+                                aria-label="${escapeHtml(t('analysis.legend.resetColor'))}"
                                 data-analysis-series-color-reset="${chart.id}::${series.id}"
                               >
                                 ↺
@@ -4326,8 +4423,8 @@ function renderAnalysisChartCard(chart: AnalysisChartCard, expanded = false) {
                         <button
                           class="analysis-legend-icon-btn"
                           type="button"
-                          title="上移"
-                          aria-label="上移"
+                          title="${escapeHtml(t('analysis.legend.moveUp'))}"
+                          aria-label="${escapeHtml(t('analysis.legend.moveUp'))}"
                           data-analysis-series-move-up="${chart.id}::${series.id}"
                           ${index === 0 ? 'disabled' : ''}
                         >
@@ -4336,8 +4433,8 @@ function renderAnalysisChartCard(chart: AnalysisChartCard, expanded = false) {
                         <button
                           class="analysis-legend-icon-btn"
                           type="button"
-                          title="下移"
-                          aria-label="下移"
+                          title="${escapeHtml(t('analysis.legend.moveDown'))}"
+                          aria-label="${escapeHtml(t('analysis.legend.moveDown'))}"
                           data-analysis-series-move-down="${chart.id}::${series.id}"
                           ${index === legendItems.length - 1 ? 'disabled' : ''}
                         >
@@ -4346,8 +4443,8 @@ function renderAnalysisChartCard(chart: AnalysisChartCard, expanded = false) {
                         <button
                           class="analysis-legend-icon-btn"
                           type="button"
-                          title="重命名"
-                          aria-label="重命名"
+                          title="${escapeHtml(t('analysis.legend.rename'))}"
+                          aria-label="${escapeHtml(t('analysis.legend.rename'))}"
                           data-analysis-series-rename-start="${chart.id}::${series.id}"
                         >
                           ✎
@@ -4357,8 +4454,8 @@ function renderAnalysisChartCard(chart: AnalysisChartCard, expanded = false) {
                               <button
                                 class="analysis-legend-icon-btn"
                                 type="button"
-                                title="恢复默认名称"
-                                aria-label="恢复默认名称"
+                                title="${escapeHtml(t('analysis.legend.resetName'))}"
+                                aria-label="${escapeHtml(t('analysis.legend.resetName'))}"
                                 data-analysis-series-name-reset="${chart.id}::${series.id}"
                               >
                                 ↺
@@ -4368,8 +4465,8 @@ function renderAnalysisChartCard(chart: AnalysisChartCard, expanded = false) {
                         <button
                           class="analysis-legend-remove"
                           type="button"
-                          title="移除该序列"
-                          aria-label="移除该序列"
+                          title="${escapeHtml(t('analysis.legend.removeSeries'))}"
+                          aria-label="${escapeHtml(t('analysis.legend.removeSeries'))}"
                           data-analysis-series-remove="${chart.id}::${series.id}"
                         >
                           ×
@@ -4389,14 +4486,14 @@ function renderAnalysisChartCard(chart: AnalysisChartCard, expanded = false) {
                               type="button"
                               data-analysis-series-rename-save="${chart.id}::${series.id}"
                             >
-                              保存
+                              ${escapeHtml(t('analysis.chartTitle.save'))}
                             </button>
                             <button
                               class="analysis-legend-cancel-btn"
                               type="button"
                               data-analysis-series-rename-cancel="${chart.id}::${series.id}"
                             >
-                              取消
+                              ${escapeHtml(t('analysis.chartTitle.cancel'))}
                             </button>
                           </div>
                         `
@@ -4405,7 +4502,11 @@ function renderAnalysisChartCard(chart: AnalysisChartCard, expanded = false) {
                 `
               )
               .join('')
-          : renderAnalysisEmptyState('这张图还没有序列。', '点击右上角 + 添加数据。', true)}
+          : renderAnalysisEmptyState(
+              t('analysis.chartNoSeriesTitle'),
+              t('analysis.chartNoSeriesNote'),
+              true
+            )}
       </div>
     </section>
   `;
@@ -4433,8 +4534,8 @@ function renderAnalysisExpandedOverlay() {
 function renderAnalysisInspector() {
   if (!analysisInspector) {
     return `
-      <div class="analysis-inspector-empty">
-        点击图中的标量点或结构化曲线后，这里会显示对应记录的详细信息。
+        <div class="analysis-inspector-empty">
+        ${escapeHtml(t('analysis.inspector.selectPrompt'))}
       </div>
     `;
   }
@@ -4442,8 +4543,8 @@ function renderAnalysisInspector() {
   const entry = getAnalysisRecordEntry(analysisInspector.recordId);
   if (!entry?.detail) {
     return `
-      <div class="analysis-inspector-empty">
-        未找到当前选中记录的详细信息。
+        <div class="analysis-inspector-empty">
+        ${escapeHtml(t('analysis.inspector.notFound'))}
       </div>
     `;
   }
@@ -4458,19 +4559,19 @@ function renderAnalysisInspector() {
     }));
 
   const metadataSection = renderAnalysisDataList([
-    { label: '实验编号', value: String(detail.id) },
-    { label: '数据名称', value: detail.displayName },
-    { label: '创建时间', value: detail.createdAt },
-    { label: '更新时间', value: detail.updatedAt }
+    { label: t('analysis.label.experimentId'), value: String(detail.id) },
+    { label: t('analysis.label.displayName'), value: detail.displayName },
+    { label: t('analysis.label.createdAt'), value: detail.createdAt },
+    { label: t('analysis.label.updatedAt'), value: detail.updatedAt }
   ]);
 
   const step1Section = renderAnalysisDataList([
-    { label: '测试项目', value: detail.testProject },
-    { label: '样品编号', value: detail.sampleCode },
-    { label: '测试人', value: detail.tester },
-    { label: '测试仪器', value: detail.instrument },
-    { label: '测试时间', value: detail.testTime },
-    { label: '样品所属人员', value: detail.sampleOwner || '-' },
+    { label: t('step1.field.testProject'), value: detail.testProject },
+    { label: t('step1.field.sampleCode'), value: detail.sampleCode },
+    { label: t('step1.field.tester'), value: detail.tester },
+    { label: t('step1.field.instrument'), value: detail.instrument },
+    { label: t('step1.field.testTime'), value: detail.testTime },
+    { label: t('step1.field.sampleOwner'), value: detail.sampleOwner || '-' },
     ...detail.customFields.map((field) => ({
       label: field.fieldName,
       value: field.fieldValue
@@ -4483,23 +4584,23 @@ function renderAnalysisInspector() {
     );
 
     return `
-      <div class="analysis-inspector-title">当前标量点</div>
-      ${renderAnalysisSection('记录概览', metadataSection)}
-      ${renderAnalysisSection('一级信息', step1Section)}
-      ${renderAnalysisSection('实验条件', renderAnalysisDataList(conditionItems, '暂无实验条件'))}
+      <div class="analysis-inspector-title">${escapeHtml(t('analysis.inspector.currentScalar'))}</div>
+      ${renderAnalysisSection(t('analysis.section.recordOverview'), metadataSection)}
+      ${renderAnalysisSection(t('analysis.section.primaryInfo'), step1Section)}
+      ${renderAnalysisSection(t('analysis.section.conditions'), renderAnalysisDataList(conditionItems, t('step2.condition.empty')))}
       ${renderAnalysisSection(
-        '当前结果指标',
+        t('analysis.section.currentMetric'),
         renderAnalysisDataList([
           {
-            label: '图表',
+            label: t('analysis.label.chart'),
             value: inspector.chartTitle
           },
           {
-            label: '横轴字段',
+            label: t('analysis.label.xField'),
             value: `${inspector.xLabel}${inspector.xUnit ? ` (${inspector.xUnit})` : ''}`
           },
           {
-            label: '横轴取值',
+            label: t('analysis.label.xValue'),
             value: inspector.xValue
           },
           {
@@ -4509,25 +4610,25 @@ function renderAnalysisInspector() {
         ])
       )}
       ${renderAnalysisSection(
-        '其他结果指标',
+        t('analysis.section.otherMetrics'),
         renderAnalysisScalarSummaryList(detail.dataItems, inspector.metricName)
       )}
       ${renderAnalysisSection(
-        '相关结构化数据块',
+        t('analysis.section.relatedBlocks'),
         renderAnalysisBlockSummaryList(detail.templateBlocks)
       )}
       ${renderAnalysisSection(
-        '源文件信息',
+        t('analysis.section.sourceInfo'),
         renderAnalysisSourceInfo([
-          { label: '保存文件', value: currentMetric?.sourceFileName || '' },
-          { label: '保存路径', value: currentMetric?.sourceFilePath || '' },
-          { label: '原始文件', value: currentMetric?.originalFileName || '' },
-          { label: '原始路径', value: currentMetric?.originalFilePath || '' }
+          { label: t('analysis.label.savedFile'), value: currentMetric?.sourceFileName || '' },
+          { label: t('analysis.label.savedPath'), value: currentMetric?.sourceFilePath || '' },
+          { label: t('analysis.label.originalFile'), value: currentMetric?.originalFileName || '' },
+          { label: t('analysis.label.originalPath'), value: currentMetric?.originalFilePath || '' }
         ])
       )}
       <div class="analysis-detail-footer">
         <button class="secondary-btn" type="button" data-analysis-open-record="${inspector.recordId}">
-          打开原始记录
+          ${escapeHtml(t('analysis.openSourceRecord'))}
         </button>
       </div>
     `;
@@ -4556,45 +4657,45 @@ function renderAnalysisInspector() {
     : inspector.yUnit;
 
   return `
-    <div class="analysis-inspector-title">当前结构化数据</div>
-    ${renderAnalysisSection('记录概览', metadataSection)}
-    ${renderAnalysisSection('一级信息', step1Section)}
-    ${renderAnalysisSection('实验条件', renderAnalysisDataList(conditionItems, '暂无实验条件'))}
+    <div class="analysis-inspector-title">${escapeHtml(t('analysis.inspector.currentStructured'))}</div>
+    ${renderAnalysisSection(t('analysis.section.recordOverview'), metadataSection)}
+    ${renderAnalysisSection(t('analysis.section.primaryInfo'), step1Section)}
+    ${renderAnalysisSection(t('analysis.section.conditions'), renderAnalysisDataList(conditionItems, t('step2.condition.empty')))}
     ${renderAnalysisSection(
-      '当前结构化数据',
+      t('analysis.section.currentStructured'),
       renderAnalysisDataList([
-        { label: '图表', value: inspector.chartTitle },
-        { label: '数据块', value: currentBlock?.blockTitle || inspector.blockTitle },
+        { label: t('analysis.label.chart'), value: inspector.chartTitle },
+        { label: t('analysis.label.block'), value: currentBlock?.blockTitle || inspector.blockTitle },
         {
-          label: '数据用途',
+          label: t('analysis.label.dataPurpose'),
           value: getStructuredBlockPurposeLabel(currentBlock?.purposeType || inspector.purposeType)
         },
-        { label: '横轴', value: `${xLabel}${xUnit ? ` (${xUnit})` : ''}` },
-        { label: '纵轴', value: `${yLabel}${yUnit ? ` (${yUnit})` : ''}` },
-        { label: '点数', value: String(currentBlock?.points.length || inspector.pointCount) },
-        { label: '备注', value: currentBlock?.note || inspector.note || '-' }
+        { label: t('analysis.label.xAxis'), value: `${xLabel}${xUnit ? ` (${xUnit})` : ''}` },
+        { label: t('analysis.label.yAxis'), value: `${yLabel}${yUnit ? ` (${yUnit})` : ''}` },
+        { label: t('analysis.label.pointCount'), value: String(currentBlock?.points.length || inspector.pointCount) },
+        { label: t('analysis.label.note'), value: currentBlock?.note || inspector.note || '-' }
       ])
     )}
     ${renderAnalysisSection(
-      '其他结构化数据块',
+      t('analysis.section.otherBlocks'),
       renderAnalysisBlockSummaryList(detail.templateBlocks, inspector.blockId)
     )}
     ${renderAnalysisSection(
-      '结果指标概览',
+      t('analysis.section.metricSummary'),
       renderAnalysisScalarSummaryList(detail.dataItems)
     )}
     ${renderAnalysisSection(
-      '源文件信息',
+      t('analysis.section.sourceInfo'),
       renderAnalysisSourceInfo([
-        { label: '保存文件', value: currentBlock?.sourceFileName || '' },
-        { label: '保存路径', value: currentBlock?.sourceFilePath || '' },
-        { label: '原始文件', value: currentBlock?.originalFileName || '' },
-        { label: '原始路径', value: currentBlock?.originalFilePath || '' }
+        { label: t('analysis.label.savedFile'), value: currentBlock?.sourceFileName || '' },
+        { label: t('analysis.label.savedPath'), value: currentBlock?.sourceFilePath || '' },
+        { label: t('analysis.label.originalFile'), value: currentBlock?.originalFileName || '' },
+        { label: t('analysis.label.originalPath'), value: currentBlock?.originalFilePath || '' }
       ])
     )}
     <div class="analysis-detail-footer">
       <button class="secondary-btn" type="button" data-analysis-open-record="${inspector.recordId}">
-        打开原始记录
+        ${escapeHtml(t('analysis.openSourceRecord'))}
       </button>
     </div>
   `;
@@ -4614,10 +4715,10 @@ function renderAnalysisComposerModal() {
       filteredRecords.some((entry) => entry.listItem.id === recordId)
     ).length;
     const scalarMetricPrompt = !composer.selectedRecordIds.length
-      ? '先勾选来源记录。'
+      ? t('analysis.composer.selectRecordsFirst')
       : scalarMetricOptions.length
         ? ''
-        : '所选记录里没有可绘制的数值结果，请更换记录或改选其他记录。';
+        : t('analysis.composer.noScalarMetrics');
     const canConfirm =
       !composer.pending &&
       composer.selectedRecordIds.length > 0 &&
@@ -4627,16 +4728,16 @@ function renderAnalysisComposerModal() {
     return `
       <div class="analysis-modal-backdrop">
         <div class="analysis-modal-card">
-          <div class="analysis-modal-title">添加标量数据</div>
+          <div class="analysis-modal-title">${escapeHtml(t('analysis.composer.scalarTitle'))}</div>
           <div class="search-row analysis-search-row">
             <input
               id="analysis-composer-search"
               class="form-input"
-              placeholder="输入记录名称 / 样品编号 / 测试项目"
+              placeholder="${escapeHtml(t('analysis.composer.searchPlaceholder'))}"
               value="${escapeHtml(composer.searchQuery)}"
             />
-            <button id="analysis-composer-search-btn" class="primary-btn search-btn" type="button">搜索</button>
-            <button id="analysis-composer-filter-add-btn" class="secondary-btn search-btn filter-add-btn" type="button" title="新增筛选条件">＋</button>
+            <button id="analysis-composer-search-btn" class="primary-btn search-btn" type="button">${escapeHtml(t('common.search'))}</button>
+            <button id="analysis-composer-filter-add-btn" class="secondary-btn search-btn filter-add-btn" type="button" title="${escapeHtml(t('database.filter.addTooltip'))}">＋</button>
           </div>
           ${renderCrossFilterControls({
             scope: 'analysis',
@@ -4651,7 +4752,7 @@ function renderAnalysisComposerModal() {
             candidateValues: getAnalysisFilterCandidateValues(composer)
           })}
           <div class="analysis-modal-toolbar">
-            <div class="analysis-filter-result-summary">当前结果 ${filteredRecords.length} 条，已选择 ${selectedCount} 条</div>
+            <div class="analysis-filter-result-summary">${escapeHtml(t('analysis.composer.resultSummary', { results: filteredRecords.length, selected: selectedCount }))}</div>
             <button
               id="analysis-composer-toggle-select-btn"
               class="secondary-btn analysis-compact-toggle-btn"
@@ -4661,8 +4762,8 @@ function renderAnalysisComposerModal() {
               ${
                 filteredRecords.length &&
                 filteredRecords.every((entry) => composer.selectedRecordIds.includes(entry.listItem.id))
-                  ? '取消当前结果'
-                  : '选择当前结果'
+                  ? t('analysis.composer.unselectCurrent')
+                  : t('analysis.composer.selectCurrent')
               }
             </button>
           </div>
@@ -4682,25 +4783,25 @@ function renderAnalysisComposerModal() {
                     `
                   )
                   .join('')
-              : `<div class="analysis-picker-empty">当前筛选没有匹配记录，可清空搜索后重试。</div>`}
+              : `<div class="analysis-picker-empty">${escapeHtml(t('analysis.composer.emptyFiltered'))}</div>`}
           </div>
           <div class="template-block-grid">
             <div class="form-group">
-              <label class="form-label">横轴字段</label>
+              <label class="form-label">${escapeHtml(t('analysis.composer.xAxisField'))}</label>
               <select id="analysis-composer-step1-field" class="form-input">
                 ${ANALYSIS_STEP1_FIELD_OPTIONS.map(
-                  (option) => `
-                    <option value="${option.key}" ${composer.step1FieldKey === option.key ? 'selected' : ''}>
-                      ${option.label}
+                  (optionKey) => `
+                    <option value="${optionKey}" ${composer.step1FieldKey === optionKey ? 'selected' : ''}>
+                      ${escapeHtml(getAnalysisStep1FieldLabel(optionKey))}
                     </option>
                   `
                 ).join('')}
               </select>
             </div>
             <div class="form-group">
-              <label class="form-label">纵轴结果指标</label>
+              <label class="form-label">${escapeHtml(t('analysis.composer.yMetric'))}</label>
               <select id="analysis-composer-y-item" class="form-input" ${scalarMetricOptions.length ? '' : 'disabled'}>
-                <option value="">${scalarMetricOptions.length ? '请选择结果指标' : '暂无可用结果指标'}</option>
+                <option value="">${escapeHtml(scalarMetricOptions.length ? t('analysis.composer.yMetricPlaceholder') : t('analysis.composer.yMetricEmpty'))}</option>
                 ${scalarMetricOptions
                   .map(
                     (name) => `
@@ -4716,9 +4817,9 @@ function renderAnalysisComposerModal() {
           </div>
           ${composer.error ? `<div class="error-message">${escapeHtml(composer.error)}</div>` : ''}
           <div class="form-action-row">
-            <button id="analysis-composer-cancel-btn" class="secondary-btn" type="button">取消</button>
+            <button id="analysis-composer-cancel-btn" class="secondary-btn" type="button">${escapeHtml(t('common.cancelAction'))}</button>
             <button id="analysis-composer-confirm-btn" class="primary-btn action-btn" type="button" ${canConfirm ? '' : 'disabled'}>
-              ${composer.pending ? '添加中...' : '添加序列'}
+              ${escapeHtml(composer.pending ? t('analysis.composer.confirmAdding') : t('analysis.composer.confirmAdd'))}
             </button>
           </div>
         </div>
@@ -4731,10 +4832,10 @@ function renderAnalysisComposerModal() {
     filteredRecords.some((entry) => entry.listItem.id === recordId)
   ).length;
   const structuredBlockPrompt = !composer.selectedRecordIds.length
-    ? '先勾选来源记录。'
+    ? t('analysis.composer.selectRecordsFirst')
     : structuredBlockOptions.length
       ? ''
-      : '所选记录里没有可比较的结构化数据，请更换记录或改选其他记录。';
+      : t('analysis.composer.noStructuredBlocks');
   const canConfirm =
     !composer.pending &&
     composer.selectedRecordIds.length > 0 &&
@@ -4744,16 +4845,16 @@ function renderAnalysisComposerModal() {
   return `
     <div class="analysis-modal-backdrop">
       <div class="analysis-modal-card">
-        <div class="analysis-modal-title">添加结构化数据</div>
+        <div class="analysis-modal-title">${escapeHtml(t('analysis.composer.structuredTitle'))}</div>
         <div class="search-row analysis-search-row">
           <input
             id="analysis-composer-search"
             class="form-input"
-            placeholder="输入记录名称 / 样品编号 / 测试项目"
+            placeholder="${escapeHtml(t('analysis.composer.searchPlaceholder'))}"
             value="${escapeHtml(composer.searchQuery)}"
           />
-          <button id="analysis-composer-search-btn" class="primary-btn search-btn" type="button">搜索</button>
-          <button id="analysis-composer-filter-add-btn" class="secondary-btn search-btn filter-add-btn" type="button" title="新增筛选条件">＋</button>
+          <button id="analysis-composer-search-btn" class="primary-btn search-btn" type="button">${escapeHtml(t('common.search'))}</button>
+          <button id="analysis-composer-filter-add-btn" class="secondary-btn search-btn filter-add-btn" type="button" title="${escapeHtml(t('database.filter.addTooltip'))}">＋</button>
         </div>
         ${renderCrossFilterControls({
           scope: 'analysis',
@@ -4768,7 +4869,7 @@ function renderAnalysisComposerModal() {
           candidateValues: getAnalysisFilterCandidateValues(composer)
         })}
         <div class="analysis-modal-toolbar">
-          <div class="analysis-filter-result-summary">当前结果 ${filteredRecords.length} 条，已选择 ${selectedCount} 条</div>
+          <div class="analysis-filter-result-summary">${escapeHtml(t('analysis.composer.resultSummary', { results: filteredRecords.length, selected: selectedCount }))}</div>
           <button
             id="analysis-composer-toggle-select-btn"
             class="secondary-btn analysis-compact-toggle-btn"
@@ -4778,8 +4879,8 @@ function renderAnalysisComposerModal() {
             ${
               filteredRecords.length &&
               filteredRecords.every((entry) => composer.selectedRecordIds.includes(entry.listItem.id))
-                ? '取消当前结果'
-                : '选择当前结果'
+                ? t('analysis.composer.unselectCurrent')
+                : t('analysis.composer.selectCurrent')
             }
           </button>
         </div>
@@ -4799,12 +4900,12 @@ function renderAnalysisComposerModal() {
                   `
                 )
                 .join('')
-            : `<div class="analysis-picker-empty">当前筛选没有匹配记录，可清空搜索后重试。</div>`}
+            : `<div class="analysis-picker-empty">${escapeHtml(t('analysis.composer.emptyFiltered'))}</div>`}
         </div>
         <div class="form-group">
-          <label class="form-label">结构化数据块</label>
+          <label class="form-label">${escapeHtml(t('analysis.composer.structuredBlock'))}</label>
           <select id="analysis-composer-structured-block" class="form-input" ${structuredBlockOptions.length ? '' : 'disabled'}>
-            <option value="">${structuredBlockOptions.length ? '请选择结构化数据块' : '暂无可用结构化数据块'}</option>
+            <option value="">${escapeHtml(structuredBlockOptions.length ? t('analysis.composer.structuredBlockPlaceholder') : t('analysis.composer.structuredBlockEmpty'))}</option>
             ${structuredBlockOptions
               .map(
                 (blockName) => `
@@ -4819,9 +4920,9 @@ function renderAnalysisComposerModal() {
         </div>
         ${composer.error ? `<div class="error-message">${escapeHtml(composer.error)}</div>` : ''}
         <div class="form-action-row">
-          <button id="analysis-composer-cancel-btn" class="secondary-btn" type="button">取消</button>
+          <button id="analysis-composer-cancel-btn" class="secondary-btn" type="button">${escapeHtml(t('common.cancelAction'))}</button>
           <button id="analysis-composer-confirm-btn" class="primary-btn action-btn" type="button" ${canConfirm ? '' : 'disabled'}>
-            ${composer.pending ? '添加中...' : '添加序列'}
+            ${escapeHtml(composer.pending ? t('analysis.composer.confirmAdding') : t('analysis.composer.confirmAdd'))}
           </button>
         </div>
       </div>
@@ -6368,6 +6469,14 @@ function getActiveStep2TemplateFamily(
   return resolveStep2TemplateFamily(getStep2TemplateContext(context));
 }
 
+function getLocalizedTemplateFamilyLabel(family: Step2TemplateFamily) {
+  if (family.id === 'generic') {
+    return t('step2.templateContext.family.generic');
+  }
+
+  return family.label;
+}
+
 function renderStep2TemplateContextHint(
   context: ScalarItemEditContext | TemplateBlockEditContext | 'detail-readonly'
 ) {
@@ -6380,9 +6489,13 @@ function renderStep2TemplateContextHint(
 
   return `
     <div class="step2-template-context-hint">
-      <div class="step2-template-context-title">当前语义模板：${escapeHtml(family.label)}</div>
+      <div class="step2-template-context-title">${escapeHtml(
+        t('step2.templateContext.title', {
+          family: getLocalizedTemplateFamilyLabel(family)
+        })
+      )}</div>
       <div class="step2-template-context-body">
-        基于测试项目“${escapeHtml(testProject || '未指定')}”，推荐实验条件、结果指标和结构化数据起点；以下建议均可手动修改。
+        ${escapeHtml(t('step2.templateContext.body', { project: testProject || t('step2.templateContext.unspecifiedProject') }))}
       </div>
     </div>
   `;
@@ -6400,7 +6513,7 @@ function renderScalarRecommendationButtons(
   return `
     <div class="step2-template-recommendation-row">
       <div class="step2-template-recommendation-label">${escapeHtml(
-        SCALAR_ROLE_META[role].recommendationLabel
+        getScalarRoleMeta(role).recommendationLabel
       )}</div>
       <div class="step2-template-recommendation-list">
         ${items
@@ -6440,7 +6553,7 @@ function renderStructuredRecommendationButtons(
 
   return `
     <div class="step2-template-recommendation-row">
-      <div class="step2-template-recommendation-label">推荐结构化数据</div>
+      <div class="step2-template-recommendation-label">${escapeHtml(t('step2.structured.recommendationLabel'))}</div>
       <div class="step2-template-recommendation-list">
         ${family.recommendedStructuredBlocks
           .map(
@@ -6475,7 +6588,7 @@ function renderEditableStructuredSectionContent(
 ) {
   return `
     <div class="template-block-toolbar">
-      <button id="${addButtonId}" class="secondary-btn" type="button">添加结构化数据块</button>
+      <button id="${addButtonId}" class="secondary-btn" type="button">${escapeHtml(t('step2.structured.addButton'))}</button>
     </div>
     ${renderStructuredRecommendationButtons(context, getActiveStep2TemplateFamily(context))}
     ${renderTemplateBlockCards(blocks, context)}
@@ -7162,10 +7275,10 @@ function bindDetailEditTemplateContextReactivity() {
 
 function getScalarFileButtonLabel(item: DataItem) {
   if (item.sourceFileName || item.originalFileName || item.replacementOriginalName) {
-    return '更换原始文件';
+    return t('step2.scalar.replaceFile');
   }
 
-  return '选择原始文件';
+  return t('step2.scalar.selectFile');
 }
 
 function renderEditableScalarSection(
@@ -7173,7 +7286,7 @@ function renderEditableScalarSection(
   role: ScalarItemRole,
   rows: DataItem[]
 ) {
-  const meta = SCALAR_ROLE_META[role];
+  const meta = getScalarRoleMeta(role);
   const family = getActiveStep2TemplateFamily(context);
   const oppositeRole: ScalarItemRole = role === 'condition' ? 'metric' : 'condition';
   const contextPrefix = context === 'detail-edit' ? 'detail' : 'create';
@@ -7210,17 +7323,17 @@ function renderEditableScalarSection(
                   <tr>
                     <th>${escapeHtml(meta.nameHeader)}</th>
                     <th>${escapeHtml(meta.valueHeader)}</th>
-                    <th>单位</th>
+                    <th>${escapeHtml(t('step2.table.unitHeader'))}</th>
                     <th>${escapeHtml(meta.fileHeader)}</th>
-                    <th>操作</th>
+                    <th>${escapeHtml(t('step2.table.actionsHeader'))}</th>
                   </tr>
                 </thead>
                 <tbody>
                   ${rows
                     .map((row) => {
                       const fileMeta = [
-                        `原始文件：${escapeHtml(getPendingOriginalName(row))}`,
-                        row.sourceFileName ? `保存文件：${escapeHtml(row.sourceFileName)}` : ''
+                        `${t('step2.import.originalFileLabel')}：${escapeHtml(getPendingOriginalName(row))}`,
+                        row.sourceFileName ? `${t('step2.import.savedFileLabel')}：${escapeHtml(row.sourceFileName)}` : ''
                       ]
                         .filter(Boolean)
                         .join(' · ');
@@ -7231,7 +7344,7 @@ function renderEditableScalarSection(
                             <input
                               id="scalar-item-name-${row.id}"
                               class="table-input"
-                              placeholder="${role === 'condition' ? '如：温度、偏压、光功率' : '如：Responsivity、Rise time'}"
+                              placeholder="${escapeHtml(role === 'condition' ? t('step2.condition.namePlaceholder') : t('step2.metric.namePlaceholder'))}"
                               value="${escapeHtml(row.itemName)}"
                             />
                           </td>
@@ -7239,7 +7352,7 @@ function renderEditableScalarSection(
                             <input
                               id="scalar-item-value-${row.id}"
                               class="table-input"
-                              placeholder="请输入数值"
+                              placeholder="${escapeHtml(t('step2.table.valuePlaceholder'))}"
                               value="${escapeHtml(row.itemValue)}"
                             />
                           </td>
@@ -7247,7 +7360,7 @@ function renderEditableScalarSection(
                             <input
                               id="scalar-item-unit-${row.id}"
                               class="table-input"
-                              placeholder="请输入单位"
+                              placeholder="${escapeHtml(t('step2.table.unitPlaceholder'))}"
                               value="${escapeHtml(row.itemUnit)}"
                             />
                           </td>
@@ -7262,7 +7375,7 @@ function renderEditableScalarSection(
                               >
                                 ${escapeHtml(getScalarFileButtonLabel(row))}
                               </button>
-                              <div>${fileMeta || '原始文件：-'}</div>
+                              <div>${fileMeta || `${escapeHtml(t('step2.import.originalFileLabel'))}：-`}</div>
                             </div>
                           </td>
                           <td>
@@ -7274,7 +7387,7 @@ function renderEditableScalarSection(
                                 data-move-scalar-context="${context}"
                                 data-target-scalar-role="${oppositeRole}"
                               >
-                                ${role === 'condition' ? '移至结果指标' : '移至实验条件'}
+                                ${escapeHtml(role === 'condition' ? t('step2.scalar.moveToMetric') : t('step2.scalar.moveToCondition'))}
                               </button>
                               <button
                                 class="danger-btn small-danger-btn"
@@ -7282,7 +7395,7 @@ function renderEditableScalarSection(
                                 data-remove-scalar-row-id="${row.id}"
                                 data-remove-scalar-context="${context}"
                               >
-                                删除
+                                ${escapeHtml(t('dictionary.delete'))}
                               </button>
                             </div>
                           </td>
@@ -7300,7 +7413,7 @@ function renderEditableScalarSection(
 }
 
 function renderReadonlyScalarSection(role: ScalarItemRole, rows: ExperimentDetail['dataItems']) {
-  const meta = SCALAR_ROLE_META[role];
+  const meta = getScalarRoleMeta(role);
 
   return `
     <div class="detail-section">
@@ -7312,11 +7425,11 @@ function renderReadonlyScalarSection(role: ScalarItemRole, rows: ExperimentDetai
               <table class="data-table">
                 <thead>
                   <tr>
-                    <th>名称</th>
-                    <th>数值</th>
-                    <th>单位</th>
-                    <th>保存文件名</th>
-                    <th>原始文件名</th>
+                    <th>${escapeHtml(t('step2.table.nameHeader'))}</th>
+                    <th>${escapeHtml(t('step2.table.valueHeader'))}</th>
+                    <th>${escapeHtml(t('step2.table.unitHeader'))}</th>
+                    <th>${escapeHtml(t('step2.table.savedFileHeader'))}</th>
+                    <th>${escapeHtml(t('step2.table.originalFileHeader'))}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -7342,9 +7455,9 @@ function renderReadonlyScalarSection(role: ScalarItemRole, rows: ExperimentDetai
                                       class="file-folder-btn"
                                       type="button"
                                       data-open-saved-folder="${escapeHtml(item.sourceFilePath)}"
-                                      title="打开所在文件夹"
+                                      title="${escapeHtml(t('databaseDetail.openFolderTitle'))}"
                                     >
-                                      打开文件夹
+                                      ${escapeHtml(t('databaseDetail.openFolder'))}
                                     </button>
                                   </div>
                                 `
@@ -7386,11 +7499,11 @@ function validateScalarItems(rows: DataItem[]) {
     const hasFile = !!row.sourceFileName || !!row.replacementOriginalName || !!row.originalFileName;
 
     if ((hasName || hasValue || hasUnit || hasFile) && !hasName) {
-      return '请为已填写的数据行补充名称';
+      return t('step2.validation.missingName');
     }
 
     if ((hasName || hasValue || hasUnit || hasFile) && !hasValue) {
-      return '请为已填写的数据行补充数值';
+      return t('step2.validation.missingValue');
     }
   }
 
@@ -7600,10 +7713,10 @@ function renderTemplateBlockImportPanel(block: TemplateBlockFormData) {
   return `
     <div class="import-manual-review-panel">
       ${block.importPreviewSelectedName
-        ? `<div class="import-preview-file-status">预览文件：${escapeHtml(block.importPreviewSelectedName)}</div>`
+        ? `<div class="import-preview-file-status">${escapeHtml(t('step2.import.previewFile', { file: block.importPreviewSelectedName }))}</div>`
         : ''}
       ${block.importParserLabel
-        ? `<div class="import-preview-file-status">当前识别：${escapeHtml(block.importParserLabel)}</div>`
+        ? `<div class="import-preview-file-status">${escapeHtml(t('step2.import.detectedParser', { parser: block.importParserLabel }))}</div>`
         : ''}
       ${warnings.length
         ? `
@@ -7619,15 +7732,15 @@ function renderTemplateBlockImportPanel(block: TemplateBlockFormData) {
         : ''}
       ${importCandidate
         ? `
-            <div class="import-manual-review-title">识别结果预览</div>
-            <div class="import-manual-review-subtitle">识别或重新生成只更新预览，不会自动覆盖当前块。确认无误后，再写入当前块的主编辑字段。</div>
+            <div class="import-manual-review-title">${escapeHtml(t('step2.import.previewTitle'))}</div>
+            <div class="import-manual-review-subtitle">${escapeHtml(t('step2.import.previewSubtitle'))}</div>
             <div class="template-block-grid">
               <div class="form-group">
-                <label class="form-label">预览数据块名称（二级数据项名称）</label>
+                <label class="form-label">${escapeHtml(t('step2.import.previewBlockName'))}</label>
                 <div class="detail-list-value">${escapeHtml(importCandidate.templateBlock.blockTitle || '-')}</div>
               </div>
               <div class="form-group">
-                <label class="form-label">预览点数</label>
+                <label class="form-label">${escapeHtml(t('step2.import.previewPointCount'))}</label>
                 <div class="detail-list-value">${importCandidate.templateBlock.points.length}</div>
               </div>
             </div>
@@ -7636,18 +7749,18 @@ function renderTemplateBlockImportPanel(block: TemplateBlockFormData) {
               type="button"
               data-template-block-apply-import-id="${block.id}"
             >
-              写入 XY 数据
+              ${escapeHtml(t('step2.import.applyPreview'))}
             </button>
           `
         : ''}
       ${manualReview?.available
         ? `
-            <div class="import-manual-review-title">行列映射调整</div>
-            <div class="import-manual-review-subtitle">如果自动识别结果不理想，可在这里调整数据起始行、分隔符和 X/Y 列后重新生成预览。标题、主轴名称、单位和信号名称请直接在当前结构化数据块主字段中继续编辑；确认后再写入当前块。</div>
+            <div class="import-manual-review-title">${escapeHtml(t('step2.import.manualReviewTitle'))}</div>
+            <div class="import-manual-review-subtitle">${escapeHtml(t('step2.import.manualReviewSubtitle'))}</div>
 
             <div class="template-block-grid">
               <div class="form-group">
-                <label class="form-label">数据起始行</label>
+                <label class="form-label">${escapeHtml(t('step2.import.dataStartRow'))}</label>
                 <input
                   id="template-block-import-start-row-${block.id}"
                   class="form-input"
@@ -7658,34 +7771,34 @@ function renderTemplateBlockImportPanel(block: TemplateBlockFormData) {
               </div>
 
               <div class="form-group">
-                <label class="form-label">X 轴来源</label>
+                <label class="form-label">${escapeHtml(t('step2.import.xSource'))}</label>
                 <select
                   id="template-block-import-x-source-${block.id}"
                   class="form-input"
                   data-template-block-import-x-source-id="${block.id}"
                 >
-                  <option value="column" ${manualReview.xSourceMode === 'column' ? 'selected' : ''}>来自文件列</option>
-                  <option value="generated" ${manualReview.xSourceMode === 'generated' ? 'selected' : ''}>手动生成</option>
+                  <option value="column" ${manualReview.xSourceMode === 'column' ? 'selected' : ''}>${escapeHtml(t('step2.import.xSourceColumn'))}</option>
+                  <option value="generated" ${manualReview.xSourceMode === 'generated' ? 'selected' : ''}>${escapeHtml(t('step2.import.xSourceGenerated'))}</option>
                 </select>
               </div>
 
               <div class="form-group">
-                <label class="form-label">分隔符</label>
+                <label class="form-label">${escapeHtml(t('step2.import.delimiter'))}</label>
                 <select
                   id="template-block-import-delimiter-${block.id}"
                   class="form-input"
                 >
-                  <option value="comma" ${manualReview.delimiter === 'comma' ? 'selected' : ''}>逗号</option>
-                  <option value="tab" ${manualReview.delimiter === 'tab' ? 'selected' : ''}>Tab</option>
-                  <option value="semicolon" ${manualReview.delimiter === 'semicolon' ? 'selected' : ''}>分号</option>
-                  <option value="whitespace" ${manualReview.delimiter === 'whitespace' ? 'selected' : ''}>空白字符</option>
+                  <option value="comma" ${manualReview.delimiter === 'comma' ? 'selected' : ''}>${escapeHtml(t('step2.import.delimiterComma'))}</option>
+                  <option value="tab" ${manualReview.delimiter === 'tab' ? 'selected' : ''}>${escapeHtml(t('step2.import.delimiterTab'))}</option>
+                  <option value="semicolon" ${manualReview.delimiter === 'semicolon' ? 'selected' : ''}>${escapeHtml(t('step2.import.delimiterSemicolon'))}</option>
+                  <option value="whitespace" ${manualReview.delimiter === 'whitespace' ? 'selected' : ''}>${escapeHtml(t('step2.import.delimiterWhitespace'))}</option>
                 </select>
               </div>
 
               ${manualReview.xSourceMode === 'column'
                 ? `
                     <div class="form-group">
-                      <label class="form-label">X 列</label>
+                      <label class="form-label">${escapeHtml(t('step2.import.xColumn'))}</label>
                       <input
                         id="template-block-import-x-column-${block.id}"
                         class="form-input"
@@ -7697,7 +7810,7 @@ function renderTemplateBlockImportPanel(block: TemplateBlockFormData) {
                   `
                 : `
                     <div class="form-group">
-                      <label class="form-label">X 起点</label>
+                      <label class="form-label">${escapeHtml(t('step2.import.generatedStart'))}</label>
                       <input
                         id="template-block-import-generated-start-${block.id}"
                         class="form-input"
@@ -7706,7 +7819,7 @@ function renderTemplateBlockImportPanel(block: TemplateBlockFormData) {
                       />
                     </div>
                     <div class="form-group">
-                      <label class="form-label">X 步长</label>
+                      <label class="form-label">${escapeHtml(t('step2.import.generatedStep'))}</label>
                       <input
                         id="template-block-import-generated-step-${block.id}"
                         class="form-input"
@@ -7717,7 +7830,7 @@ function renderTemplateBlockImportPanel(block: TemplateBlockFormData) {
                   `}
 
               <div class="form-group">
-                <label class="form-label">Y 列</label>
+                <label class="form-label">${escapeHtml(t('step2.import.yColumn'))}</label>
                 <input
                   id="template-block-import-y-column-${block.id}"
                   class="form-input"
@@ -7734,7 +7847,7 @@ function renderTemplateBlockImportPanel(block: TemplateBlockFormData) {
               data-template-block-manual-preview-id="${block.id}"
               ${manualReview.previewLoading ? 'disabled' : ''}
             >
-              ${manualReview.previewLoading ? '生成中...' : '重新生成块数据'}
+              ${escapeHtml(manualReview.previewLoading ? t('step2.import.generating') : t('step2.import.regenerate'))}
             </button>
 
             ${manualReview.previewError ? `<div class="error-message">${escapeHtml(manualReview.previewError)}</div>` : ''}
@@ -7743,9 +7856,9 @@ function renderTemplateBlockImportPanel(block: TemplateBlockFormData) {
               <table class="import-manual-preview-table">
                 <thead>
                   <tr>
-                    <th>行号</th>
+                    <th>${escapeHtml(t('step2.import.rowNumber'))}</th>
                     ${Array.from({ length: manualReview.maxColumnCount })
-                      .map((_, index) => `<th>列 ${index + 1}</th>`)
+                      .map((_, index) => `<th>${escapeHtml(t('step2.import.columnNumber', { index: index + 1 }))}</th>`)
                       .join('')}
                   </tr>
                 </thead>
@@ -7773,14 +7886,14 @@ function renderTemplateBlockImportPanel(block: TemplateBlockFormData) {
 
 function getTemplateBlockFileButtonLabel(block: TemplateBlockFormData) {
   if (block.importPreviewSelectedName && !block.sourceFileName && !block.originalFileName) {
-    return '重新选择导入文件';
+    return t('step2.import.reselectFile');
   }
 
   if (block.sourceFileName || block.originalFileName || block.replacementOriginalName) {
-    return '更换导入文件';
+    return t('step2.import.replaceFile');
   }
 
-  return '导入原始文件';
+  return t('step2.import.selectFile');
 }
 
 function getTemplateBlockDisplayedOriginalName(block: TemplateBlockFormData) {
@@ -7799,19 +7912,19 @@ function shouldShowTemplateBlockAdjustButton(
 function getTemplateBlockFieldConfig(templateType?: TemplateBlockType) {
   void templateType;
   return {
-    typeLabel: '结构化数据块',
-    subtitle: '统一录入曲线、光谱等结构化序列数据；支持文件导入、解析调整、预览重生成和显式写入当前块',
-    dataLabel: 'XY 数据',
-    dataPlaceholder: '每行一组结构化数据，例如：&#10;0,1.23&#10;0.1,1.28',
-    titlePlaceholder: '如：IV 曲线、XRD 图谱、EQE 曲线',
-    primaryLabelText: '主轴名称',
-    primaryLabelPlaceholder: '如：Voltage、Wavelength、2θ',
-    primaryUnitText: '主轴单位',
-    primaryUnitPlaceholder: '如：V、nm、degree',
-    secondaryLabelText: '信号名称',
-    secondaryLabelPlaceholder: '如：Current、Intensity、Responsivity',
-    secondaryUnitText: '信号单位',
-    secondaryUnitPlaceholder: '如：A、a.u.、A/W'
+    typeLabel: t('step2.structured.typeLabel'),
+    subtitle: t('step2.structured.subtitle'),
+    dataLabel: t('step2.structured.dataLabel'),
+    dataPlaceholder: t('step2.structured.dataPlaceholder'),
+    titlePlaceholder: t('step2.structured.titlePlaceholder'),
+    primaryLabelText: t('step2.structured.primaryLabelText'),
+    primaryLabelPlaceholder: t('step2.structured.primaryLabelPlaceholder'),
+    primaryUnitText: t('step2.structured.primaryUnitText'),
+    primaryUnitPlaceholder: t('step2.structured.primaryUnitPlaceholder'),
+    secondaryLabelText: t('step2.structured.secondaryLabelText'),
+    secondaryLabelPlaceholder: t('step2.structured.secondaryLabelPlaceholder'),
+    secondaryUnitText: t('step2.structured.secondaryUnitText'),
+    secondaryUnitPlaceholder: t('step2.structured.secondaryUnitPlaceholder')
   };
 }
 
@@ -7820,7 +7933,7 @@ function renderTemplateBlockCards(
   context: TemplateBlockEditContext
 ) {
   if (!blocks.length) {
-    return `<div class="empty-tip">当前还没有添加结构化数据块</div>`;
+    return `<div class="empty-tip">${escapeHtml(t('step2.structured.empty'))}</div>`;
   }
 
   return blocks
@@ -7840,7 +7953,7 @@ function renderTemplateBlockCards(
               type="button"
               data-remove-template-block-id="${block.id}"
             >
-              删除
+              ${escapeHtml(t('dictionary.delete'))}
             </button>
           </div>
 
@@ -7854,12 +7967,12 @@ function renderTemplateBlockCards(
               ${block.importPreviewLoading ? 'disabled' : ''}
             >
               ${block.importPreviewLoading
-                ? '导入预览中...'
+                ? escapeHtml(t('step2.import.previewLoading'))
                 : escapeHtml(getTemplateBlockFileButtonLabel(block))}
             </button>
             <div class="template-block-file-meta">
-              原始文件：${escapeHtml(getTemplateBlockDisplayedOriginalName(block))}
-              ${block.sourceFileName ? ` · 保存文件：${escapeHtml(block.sourceFileName)}` : ''}
+              ${escapeHtml(t('step2.import.originalFileLabel'))}：${escapeHtml(getTemplateBlockDisplayedOriginalName(block))}
+              ${block.sourceFileName ? ` · ${escapeHtml(t('step2.import.savedFileLabel'))}：${escapeHtml(block.sourceFileName)}` : ''}
             </div>
             ${shouldShowTemplateBlockAdjustButton(block)
               ? `
@@ -7869,7 +7982,7 @@ function renderTemplateBlockCards(
                     data-template-block-toggle-import-id="${block.id}"
                     data-template-block-toggle-context="${context}"
                   >
-                    ${getActiveTemplateBlockImportId(context) === block.id ? '收起解析' : '调整解析'}
+                    ${escapeHtml(getActiveTemplateBlockImportId(context) === block.id ? t('step2.import.collapseParser') : t('step2.import.adjustParser'))}
                   </button>
                 `
               : ''}
@@ -7881,7 +7994,7 @@ function renderTemplateBlockCards(
 
           <div class="template-block-grid">
             <div class="form-group">
-              <label class="form-label">数据用途</label>
+              <label class="form-label">${escapeHtml(t('step2.structured.purposeLabel'))}</label>
               <select id="template-block-purpose-${block.id}" class="form-input">
                 ${STRUCTURED_BLOCK_PURPOSE_OPTIONS.map(
                   (option) => `
@@ -7894,7 +8007,7 @@ function renderTemplateBlockCards(
             </div>
 
             <div class="form-group">
-              <label class="form-label">数据块名称（二级数据项名称） <span class="required-star">*</span></label>
+              <label class="form-label">${escapeHtml(t('step2.structured.blockTitleLabel'))} <span class="required-star">*</span></label>
               <input
                 id="template-block-title-${block.id}"
                 class="form-input"
@@ -7950,11 +8063,11 @@ function renderTemplateBlockCards(
           </div>
 
           <div class="form-group">
-            <label class="form-label">备注</label>
+            <label class="form-label">${escapeHtml(t('step2.structured.noteLabel'))}</label>
             <input
               id="template-block-note-${block.id}"
               class="form-input"
-              placeholder="可选备注"
+              placeholder="${escapeHtml(t('step2.structured.notePlaceholder'))}"
               value="${escapeHtml(block.note)}"
             />
           </div>
@@ -7968,7 +8081,7 @@ function renderTemplateBlockCards(
 
 function renderReadonlyTemplateBlocks(blocks: TemplateBlockFormData[], showReadonlyHint = false) {
   if (!blocks.length) {
-    return `<div class="empty-tip">无结构化数据块</div>`;
+    return `<div class="empty-tip">${escapeHtml(t('step2.structured.readonlyEmpty'))}</div>`;
   }
 
   return blocks
@@ -7983,17 +8096,17 @@ function renderReadonlyTemplateBlocks(blocks: TemplateBlockFormData[], showReado
               <div class="template-block-type">${fieldConfig.typeLabel} ${index + 1}</div>
               <div class="template-block-title">${escapeHtml(block.blockTitle)}</div>
             </div>
-            ${showReadonlyHint ? '<div class="template-block-readonly-hint">当前仅支持查看，保存修改时会原样保留</div>' : ''}
+            ${showReadonlyHint ? `<div class="template-block-readonly-hint">${escapeHtml(t('step2.structured.readonlyHint'))}</div>` : ''}
           </div>
 
           <div class="detail-grid template-block-detail-grid">
-            ${renderDetailPair('数据用途', getStructuredBlockPurposeLabel(block.purposeType))}
+            ${renderDetailPair(t('step2.structured.purposeLabel'), getStructuredBlockPurposeLabel(block.purposeType))}
             ${renderDetailPair(fieldConfig.primaryLabelText, block.primaryLabel || '-')}
             ${renderDetailPair(fieldConfig.primaryUnitText, block.primaryUnit || '-')}
             ${renderDetailPair(fieldConfig.secondaryLabelText, block.secondaryLabel || '-')}
             ${renderDetailPair(fieldConfig.secondaryUnitText, block.secondaryUnit || '-')}
-            ${renderDetailPair('数据点数', String(countTemplateBlockPointLines(block.dataText)))}
-            ${renderDetailPair('备注', block.note || '-')}
+            ${renderDetailPair(t('step2.structured.pointCountLabel'), String(countTemplateBlockPointLines(block.dataText)))}
+            ${renderDetailPair(t('step2.structured.noteLabel'), block.note || '-')}
           </div>
 
           <div class="form-group">
@@ -8016,15 +8129,15 @@ function renderReadonlyTemplateBlocks(blocks: TemplateBlockFormData[], showReado
                       class="file-folder-btn"
                       type="button"
                       data-open-saved-folder="${escapeHtml(block.sourceFilePath)}"
-                      title="打开所在文件夹"
+                      title="${escapeHtml(t('databaseDetail.openFolderTitle'))}"
                     >
-                      打开文件夹
+                      ${escapeHtml(t('databaseDetail.openFolder'))}
                     </button>
                   </div>
                 `
-              : '<div class="detail-value">保存文件：-</div>'}
+              : `<div class="detail-value">${escapeHtml(t('step2.import.savedFileLabel'))}：-</div>`}
             <div class="template-block-file-meta">
-              原始文件：${escapeHtml(block.originalFileName || '-')}
+              ${escapeHtml(t('step2.import.originalFileLabel'))}：${escapeHtml(block.originalFileName || '-')}
             </div>
           </div>
         </div>
@@ -8052,14 +8165,20 @@ function buildValidatedTemplateBlocks(
 
     if (!blockTitle) {
       return {
-        error: `请填写第 ${index + 1} 个${blockLabel}的标题`,
+        error: t('databaseDetail.validation.blockTitleRequired', {
+          index: index + 1,
+          blockLabel
+        }),
         blocks: []
       };
     }
 
     if (existingSameTypeTitle) {
       return {
-        error: `${blockLabel}标题“${blockTitle}”重复，请修改后重试`,
+        error: t('databaseDetail.validation.blockTitleDuplicate', {
+          blockLabel,
+          title: blockTitle
+        }),
         blocks: []
       };
     }
@@ -8155,7 +8274,7 @@ function bindStep1DictionaryAddAction(params: {
       });
 
       if (!result.success) {
-        setFieldFeedback(params.feedbackId, result.error || '添加词典项失败', 'error');
+        setFieldFeedback(params.feedbackId, result.error || t('dictionary.addFailed'), 'error');
         return;
       }
 
@@ -8171,7 +8290,7 @@ function bindStep1DictionaryAddAction(params: {
     } catch (error) {
       setFieldFeedback(
         params.feedbackId,
-        getErrorMessage(error) || '添加词典项失败，请稍后重试',
+        getErrorMessage(error) || t('step1.dictionaryAddFailedRetry'),
         'error'
       );
     } finally {
@@ -8243,9 +8362,10 @@ function bindStep1SuggestionInput(params: {
 
 function renderSettingsSubViewTabs() {
   const subViews: Array<{ key: SettingsSubView; label: string }> = [
-    { key: 'general', label: '常规设置' },
-    { key: 'dictionary', label: '词典管理' },
-    { key: 'about', label: '关于' }
+    { key: 'general', label: t('common.generalSettings') },
+    { key: 'dictionary', label: t('common.dictionaryManagement') },
+    { key: 'logs', label: t('settings.logsTab') },
+    { key: 'about', label: t('common.about') }
   ];
 
   return `
@@ -8281,7 +8401,7 @@ function renderDictionaryManagementSection(dictionaryType: DictionaryType, label
           id="dictionary-input-${dictionaryType}"
           class="form-input"
           value="${escapeHtml(inputValue)}"
-          placeholder="请输入${label}"
+          placeholder="${escapeHtml(t('dictionary.placeholder', { label }))}"
         />
         <button
           class="secondary-btn dictionary-add-btn"
@@ -8289,7 +8409,7 @@ function renderDictionaryManagementSection(dictionaryType: DictionaryType, label
           data-dictionary-add-type="${dictionaryType}"
           ${isAdding || !!dictionaryDeletingId ? 'disabled' : ''}
         >
-          ${isAdding ? '添加中...' : '添加'}
+          ${escapeHtml(isAdding ? t('dictionary.adding') : t('dictionary.add'))}
         </button>
       </div>
       <div class="error-message">${escapeHtml(errorMessage)}</div>
@@ -8309,7 +8429,7 @@ function renderDictionaryManagementSection(dictionaryType: DictionaryType, label
                         data-dictionary-delete-label="${escapeHtml(item.value)}"
                         ${dictionaryDeletingId ? 'disabled' : ''}
                       >
-                        ${dictionaryDeletingId === item.id ? '删除中...' : '删除'}
+                        ${escapeHtml(dictionaryDeletingId === item.id ? t('dictionary.deleting') : t('dictionary.delete'))}
                       </button>
                     </div>
                   `
@@ -8317,7 +8437,7 @@ function renderDictionaryManagementSection(dictionaryType: DictionaryType, label
                 .join('')}
             </div>
           `
-          : `<div class="empty-tip">当前暂无可用词典项</div>`
+          : `<div class="empty-tip">${escapeHtml(t('dictionary.empty'))}</div>`
       }
     </div>
   `;
@@ -8383,7 +8503,7 @@ async function startOnboardingInitialization() {
 
     if (!result.success) {
       onboardingState.step = 'admin';
-      onboardingState.error = result.error || '初始化失败，请稍后重试';
+      onboardingState.error = result.error || t('onboarding.progress.error');
       requestRender();
       return;
     }
@@ -8397,14 +8517,14 @@ async function startOnboardingInitialization() {
     requestRender();
   } catch (error) {
     onboardingState.step = 'admin';
-    onboardingState.error = getErrorMessage(error) || '初始化失败，请稍后重试';
+    onboardingState.error = getErrorMessage(error) || t('onboarding.progress.error');
     requestRender();
   }
 }
 
 function renderOnboardingPage(appName: string, version: string) {
   const stepIndex = getOnboardingStepIndex(onboardingState.step);
-  const stepIndicator = `步骤 ${stepIndex} / 6`;
+  const stepIndicator = t('onboarding.stepIndicator', { current: stepIndex, total: 6 });
   let contentHtml = '';
 
   if (onboardingState.step === 'welcome') {
@@ -8412,158 +8532,158 @@ function renderOnboardingPage(appName: string, version: string) {
       <div class="onboarding-hero">
         <div class="onboarding-step-tag">${stepIndicator}</div>
         <h1>${escapeHtml(appName)}</h1>
-        <p class="subtitle">欢迎使用 Scida。首次启动将完成一次本地初始化，用于确认你的本机存储与登录设置。</p>
+        <p class="subtitle">${escapeHtml(t('onboarding.welcome.subtitle'))}</p>
         <div class="onboarding-note-card">
-          初始化只会配置本地存储目录与本地管理员账号，不会启用云账户、在线激活、序列号或机器绑定。
+          ${escapeHtml(t('onboarding.welcome.note'))}
         </div>
       </div>
       <div class="form-action-row onboarding-actions">
-        <button id="onboarding-welcome-next-btn" class="primary-btn action-btn">开始初始化</button>
-        <button type="button" class="secondary-btn action-btn" data-open-about-dialog>关于产品</button>
+        <button id="onboarding-welcome-next-btn" class="primary-btn action-btn">${escapeHtml(t('common.startInitialization'))}</button>
+        <button type="button" class="secondary-btn action-btn" data-open-about-dialog>${escapeHtml(t('common.aboutProduct'))}</button>
       </div>
     `;
   } else if (onboardingState.step === 'legal') {
     contentHtml = `
       <div class="onboarding-hero">
         <div class="onboarding-step-tag">${stepIndicator}</div>
-        <h1>许可与隐私确认</h1>
-        <p class="subtitle">继续前请确认你已知悉本地使用边界。</p>
+        <h1>${escapeHtml(t('onboarding.legal.title'))}</h1>
+        <p class="subtitle">${escapeHtml(t('onboarding.legal.subtitle'))}</p>
       </div>
 
       <div class="onboarding-note-card">
-        <strong>许可说明</strong>
-        <div>Scida 当前按本地桌面软件方式交付，不包含在线注册、激活、订阅绑定或云端账号流程。</div>
+        <strong>${escapeHtml(t('onboarding.legal.licenseTitle'))}</strong>
+        <div>${escapeHtml(t('onboarding.legal.licenseText'))}</div>
       </div>
 
       <div class="onboarding-note-card">
-        <strong>隐私说明</strong>
-        <div>实验数据、登录配置与运行数据库默认保存在本机；本初始化流程不会将数据上传到云端服务。</div>
+        <strong>${escapeHtml(t('onboarding.legal.privacyTitle'))}</strong>
+        <div>${escapeHtml(t('onboarding.legal.privacyText'))}</div>
       </div>
 
       <label class="checkbox-row onboarding-checkbox">
         <input id="onboarding-accept-license" type="checkbox" ${onboardingState.acceptedLicense ? 'checked' : ''} />
-        <span>我已阅读并接受当前许可说明</span>
+        <span>${escapeHtml(t('onboarding.legal.acceptLicense'))}</span>
       </label>
 
       <label class="checkbox-row onboarding-checkbox">
         <input id="onboarding-accept-privacy" type="checkbox" ${onboardingState.acceptedPrivacy ? 'checked' : ''} />
-        <span>我已阅读并理解当前隐私说明</span>
+        <span>${escapeHtml(t('onboarding.legal.acceptPrivacy'))}</span>
       </label>
 
       <div id="onboarding-error" class="error-message large-error">${escapeHtml(onboardingState.error)}</div>
 
       <div class="form-action-row onboarding-actions">
-        <button id="onboarding-legal-back-btn" class="secondary-btn action-btn" type="button">上一步</button>
-        <button id="onboarding-legal-next-btn" class="primary-btn action-btn" type="button">继续</button>
+        <button id="onboarding-legal-back-btn" class="secondary-btn action-btn" type="button">${escapeHtml(t('common.back'))}</button>
+        <button id="onboarding-legal-next-btn" class="primary-btn action-btn" type="button">${escapeHtml(t('common.continue'))}</button>
       </div>
     `;
   } else if (onboardingState.step === 'storage') {
     contentHtml = `
       <div class="onboarding-hero">
         <div class="onboarding-step-tag">${stepIndicator}</div>
-        <h1>配置原始文件根目录</h1>
-        <p class="subtitle">该目录将作为原始文件的本地保存根目录，后续托管文件和导出流程仍会沿用当前产品边界。</p>
+        <h1>${escapeHtml(t('onboarding.storage.title'))}</h1>
+        <p class="subtitle">${escapeHtml(t('onboarding.storage.subtitle'))}</p>
       </div>
 
       <div class="form-group">
-        <label class="form-label">保存根目录</label>
+        <label class="form-label">${escapeHtml(t('onboarding.storage.label'))}</label>
         <input
           id="onboarding-storage-root"
           class="form-input"
           value="${escapeHtml(onboardingState.storageRoot)}"
-          placeholder="请输入可读写的本地目录"
+          placeholder="${escapeHtml(t('onboarding.storage.placeholder'))}"
         />
       </div>
 
       <div class="onboarding-note-card">
-        初始化时会在主进程中校验该路径并尝试创建目录；无权限、路径指向文件或不可写目录时会被阻止。
+        ${escapeHtml(t('onboarding.storage.note'))}
       </div>
 
       <div id="onboarding-error" class="error-message large-error">${escapeHtml(onboardingState.error)}</div>
 
       <div class="form-action-row onboarding-actions">
-        <button id="onboarding-storage-back-btn" class="secondary-btn action-btn" type="button">上一步</button>
-        <button id="onboarding-storage-next-btn" class="primary-btn action-btn" type="button">继续</button>
+        <button id="onboarding-storage-back-btn" class="secondary-btn action-btn" type="button">${escapeHtml(t('common.back'))}</button>
+        <button id="onboarding-storage-next-btn" class="primary-btn action-btn" type="button">${escapeHtml(t('common.continue'))}</button>
       </div>
     `;
   } else if (onboardingState.step === 'admin') {
     contentHtml = `
       <div class="onboarding-hero">
         <div class="onboarding-step-tag">${stepIndicator}</div>
-        <h1>创建本地管理员账号</h1>
-        <p class="subtitle">该账号只用于本机登录。密码不会明文回传给界面，密码哈希由主进程写入本地设置。</p>
+        <h1>${escapeHtml(t('onboarding.admin.title'))}</h1>
+        <p class="subtitle">${escapeHtml(t('onboarding.admin.subtitle'))}</p>
       </div>
 
       <div class="step-form-grid">
         <div class="form-group">
-          <label class="form-label">管理员账号</label>
+          <label class="form-label">${escapeHtml(t('onboarding.admin.usernameLabel'))}</label>
           <input
             id="onboarding-login-username"
             class="form-input"
             value="${escapeHtml(onboardingState.loginUsername)}"
-            placeholder="请输入本地管理员账号"
+            placeholder="${escapeHtml(t('onboarding.admin.usernamePlaceholder'))}"
           />
         </div>
 
         <div class="form-group">
-          <label class="form-label">管理员密码</label>
+          <label class="form-label">${escapeHtml(t('onboarding.admin.passwordLabel'))}</label>
           <input
             id="onboarding-login-password"
             class="form-input"
             type="password"
-            placeholder="至少 6 位"
+            placeholder="${escapeHtml(t('onboarding.admin.passwordPlaceholder'))}"
           />
         </div>
       </div>
 
       <div class="form-group">
-        <label class="form-label">确认密码</label>
+        <label class="form-label">${escapeHtml(t('onboarding.admin.confirmLabel'))}</label>
         <input
           id="onboarding-login-password-confirm"
           class="form-input"
           type="password"
-          placeholder="请再次输入密码"
+          placeholder="${escapeHtml(t('onboarding.admin.confirmPlaceholder'))}"
         />
       </div>
 
       <div id="onboarding-error" class="error-message large-error">${escapeHtml(onboardingState.error)}</div>
 
       <div class="form-action-row onboarding-actions">
-        <button id="onboarding-admin-back-btn" class="secondary-btn action-btn" type="button">上一步</button>
-        <button id="onboarding-admin-submit-btn" class="primary-btn action-btn" type="button">开始初始化</button>
+        <button id="onboarding-admin-back-btn" class="secondary-btn action-btn" type="button">${escapeHtml(t('common.back'))}</button>
+        <button id="onboarding-admin-submit-btn" class="primary-btn action-btn" type="button">${escapeHtml(t('common.startInitialization'))}</button>
       </div>
     `;
   } else if (onboardingState.step === 'progress') {
     contentHtml = `
       <div class="onboarding-hero">
         <div class="onboarding-step-tag">${stepIndicator}</div>
-        <h1>正在初始化</h1>
-        <p class="subtitle">正在创建本地目录、校验设置并写入首次初始化状态，请稍候。</p>
+        <h1>${escapeHtml(t('onboarding.progress.title'))}</h1>
+        <p class="subtitle">${escapeHtml(t('onboarding.progress.subtitle'))}</p>
       </div>
       <div class="onboarding-progress-card">
         <div class="onboarding-progress-spinner" aria-hidden="true"></div>
-        <div>正在校验存储根目录、写入本地管理员设置，并记录首启完成状态。</div>
+        <div>${escapeHtml(t('onboarding.progress.text'))}</div>
       </div>
     `;
   } else {
     contentHtml = `
       <div class="onboarding-hero">
         <div class="onboarding-step-tag">${stepIndicator}</div>
-        <h1>初始化完成</h1>
-        <p class="subtitle">首次启动初始化已完成。后续启动将直接进入登录页，并继续使用本机保存的数据与设置。</p>
+        <h1>${escapeHtml(t('onboarding.complete.title'))}</h1>
+        <p class="subtitle">${escapeHtml(t('onboarding.complete.subtitle'))}</p>
       </div>
 
       <div class="onboarding-note-card">
-        当前本地管理员账号：<strong>${escapeHtml(onboardingState.loginUsername.trim())}</strong>
+        ${escapeHtml(t('onboarding.complete.accountNote', { username: onboardingState.loginUsername.trim() }))}
       </div>
 
       <div class="onboarding-note-card">
-        建议在版本升级、批量整理或重要修改前手动备份本机运行数据库与原始文件目录。
+        ${escapeHtml(t('onboarding.complete.backupNote'))}
       </div>
 
       <div class="form-action-row onboarding-actions">
-        <button id="onboarding-complete-login-btn" class="primary-btn action-btn" type="button">进入登录</button>
-        <button type="button" class="secondary-btn action-btn" data-open-about-dialog>关于产品</button>
+        <button id="onboarding-complete-login-btn" class="primary-btn action-btn" type="button">${escapeHtml(t('common.login'))}</button>
+        <button type="button" class="secondary-btn action-btn" data-open-about-dialog>${escapeHtml(t('common.aboutProduct'))}</button>
       </div>
     `;
   }
@@ -8572,7 +8692,7 @@ function renderOnboardingPage(appName: string, version: string) {
     <div class="page-shell onboarding-shell">
       <div class="card onboarding-card">
         ${contentHtml}
-        <div class="footer-tip">当前版本：${escapeHtml(version)}</div>
+        <div class="footer-tip">${escapeHtml(t('login.currentVersion', { version }))}</div>
       </div>
     </div>
     ${renderAboutDialog(appName, version)}
@@ -8619,7 +8739,7 @@ async function render() {
       onboardingState.acceptedPrivacy = acceptedPrivacy;
 
       if (!acceptedLicense || !acceptedPrivacy) {
-        onboardingState.error = '请先完成许可与隐私确认';
+        onboardingState.error = t('onboarding.legal.error');
         requestRender();
         return;
       }
@@ -8642,7 +8762,7 @@ async function render() {
       onboardingState.storageRoot = storageRoot;
 
       if (!storageRoot) {
-        onboardingState.error = '请填写原始文件根目录';
+        onboardingState.error = t('onboarding.storage.error');
         requestRender();
         return;
       }
@@ -8671,19 +8791,19 @@ async function render() {
       onboardingState.confirmPassword = confirmPassword;
 
       if (!loginUsername) {
-        onboardingState.error = '请填写本地管理员账号';
+        onboardingState.error = t('onboarding.admin.usernameError');
         requestRender();
         return;
       }
 
       if (password.length < 6) {
-        onboardingState.error = '密码长度至少为 6 位';
+        onboardingState.error = t('onboarding.admin.passwordError');
         requestRender();
         return;
       }
 
       if (password !== confirmPassword) {
-        onboardingState.error = '两次输入的密码不一致';
+        onboardingState.error = t('onboarding.admin.passwordMismatch');
         requestRender();
         return;
       }
@@ -8705,28 +8825,28 @@ async function render() {
       <div class="page-shell">
         <div class="card login-card">
           <h1>${appName}</h1>
-          <p class="subtitle">请先登录后进入系统</p>
+          <p class="subtitle">${escapeHtml(t('login.subtitle'))}</p>
 
           <div class="form-group">
-            <label class="form-label">账号</label>
-            <input id="username" class="form-input" placeholder="请输入账号" />
+            <label class="form-label">${escapeHtml(t('login.usernameLabel'))}</label>
+            <input id="username" class="form-input" placeholder="${escapeHtml(t('login.usernamePlaceholder'))}" />
           </div>
 
           <div class="form-group">
-            <label class="form-label">密码</label>
-            <input id="password" type="password" class="form-input" placeholder="请输入密码" />
+            <label class="form-label">${escapeHtml(t('login.passwordLabel'))}</label>
+            <input id="password" type="password" class="form-input" placeholder="${escapeHtml(t('login.passwordPlaceholder'))}" />
           </div>
 
           <div id="error-message" class="error-message"></div>
 
-          <button id="login-btn" class="primary-btn">登录</button>
+          <button id="login-btn" class="primary-btn">${escapeHtml(t('common.login'))}</button>
 
           <div class="footer-tip">
-            当前版本：${version}
+            ${escapeHtml(t('login.currentVersion', { version }))}
           </div>
 
           <div class="form-action-row login-secondary-actions">
-            <button type="button" class="secondary-btn action-btn" data-open-about-dialog>关于产品</button>
+            <button type="button" class="secondary-btn action-btn" data-open-about-dialog>${escapeHtml(t('common.aboutProduct'))}</button>
           </div>
         </div>
       </div>
@@ -8746,7 +8866,7 @@ async function render() {
       const password = passwordInput?.value || '';
 
       if (!username || !password) {
-        if (errorMessage) errorMessage.textContent = '请输入账号和密码';
+        if (errorMessage) errorMessage.textContent = t('login.missingCredentials');
         return;
       }
 
@@ -8756,7 +8876,7 @@ async function render() {
         const result = await window.electronAPI.authenticate({ username, password });
 
         if (!result.success) {
-          if (errorMessage) errorMessage.textContent = result.error || '账号或密码错误';
+          if (errorMessage) errorMessage.textContent = result.error || t('login.error');
           return;
         }
 
@@ -8764,7 +8884,7 @@ async function render() {
         void render();
       } catch (error) {
         console.error(error);
-        if (errorMessage) errorMessage.textContent = '登录失败，请稍后重试';
+        if (errorMessage) errorMessage.textContent = t('login.error');
       }
     };
 
@@ -8789,48 +8909,48 @@ async function render() {
     root.innerHTML = `
       <div class="home-layout">
         ${renderAppSidebar(appName, [
-          { label: '主页', icon: '⌂', active: true },
-          { id: 'menu-data-home', label: '数据', icon: '▣' },
-          { id: 'menu-analysis-home', label: '数据分析', icon: '◫' },
-          { id: 'menu-settings-home', label: '设置', icon: '⚙' }
+          { label: t('common.home'), icon: '⌂', active: true },
+          { id: 'menu-data-home', label: t('common.data'), icon: '▣' },
+          { id: 'menu-analysis-home', label: t('common.analysis'), icon: '◫' },
+          { id: 'menu-settings-home', label: t('common.settings'), icon: '⚙' }
         ])}
 
         <main class="main-content">
           <header class="topbar">
-            <div class="topbar-title">主界面</div>
-            <button id="logout-btn" class="secondary-btn">退出登录</button>
+            <div class="topbar-title">${escapeHtml(t('home.topbarTitle'))}</div>
+            <button id="logout-btn" class="secondary-btn">${escapeHtml(t('common.logout'))}</button>
           </header>
 
           <section class="content-area">
             <div class="welcome-card">
-              <h2>欢迎使用 ${appName}</h2>
-              <p class="subtitle">请选择你要进入的功能模块；日常记录、查看和导出最终都会回到实验数据工作区。</p>
+              <h2>${escapeHtml(t('home.welcomeTitle', { appName }))}</h2>
+              <p class="subtitle">${escapeHtml(t('home.welcomeSubtitle'))}</p>
 
               <div class="name-preview-card">
-                <div class="name-preview-label">首次使用建议</div>
-                <div class="name-preview-value">如为首次使用，建议先进入设置，配置保存根目录并维护一级字段词典（测试项目 / 测试人 / 测试仪器）。</div>
+                <div class="name-preview-label">${escapeHtml(t('home.firstUseTitle'))}</div>
+                <div class="name-preview-value">${escapeHtml(t('home.firstUseNote'))}</div>
               </div>
 
               <div class="entry-grid">
                 <div class="entry-card">
                   <div class="entry-icon">＋</div>
-                  <div class="entry-title">添加新数据</div>
-                  <div class="entry-desc">进入 Step 1 / Step 2 录入流程，创建新的实验记录</div>
-                  <button id="add-data-btn" class="primary-btn">进入</button>
+                  <div class="entry-title">${escapeHtml(t('home.addDataTitle'))}</div>
+                  <div class="entry-desc">${escapeHtml(t('home.addDataDesc'))}</div>
+                  <button id="add-data-btn" class="primary-btn">${escapeHtml(t('common.enter'))}</button>
                 </div>
 
                 <div class="entry-card">
                   <div class="entry-icon">▣</div>
-                  <div class="entry-title">数据库入口</div>
-                  <div class="entry-desc">进入主要工作区，查看、选择、打开和导出已有实验记录</div>
-                  <button id="database-btn" class="secondary-btn big-btn">进入</button>
+                  <div class="entry-title">${escapeHtml(t('home.databaseTitle'))}</div>
+                  <div class="entry-desc">${escapeHtml(t('home.databaseDesc'))}</div>
+                  <button id="database-btn" class="secondary-btn big-btn">${escapeHtml(t('common.enter'))}</button>
                 </div>
 
                 <div class="entry-card">
                   <div class="entry-icon">◫</div>
-                  <div class="entry-title">数据分析</div>
-                  <div class="entry-desc">进入只读分析工作区，叠加比较已有标量和结构化数据</div>
-                  <button id="analysis-btn" class="secondary-btn big-btn">进入</button>
+                  <div class="entry-title">${escapeHtml(t('home.analysisTitle'))}</div>
+                  <div class="entry-desc">${escapeHtml(t('home.analysisDesc'))}</div>
+                  <button id="analysis-btn" class="secondary-btn big-btn">${escapeHtml(t('common.enter'))}</button>
                 </div>
               </div>
             </div>
@@ -8881,18 +9001,18 @@ async function render() {
     root.innerHTML = `
       <div class="home-layout">
         ${renderAppSidebar(appName, [
-          { id: 'analysis-menu-home', label: '主页', icon: '⌂' },
-          { id: 'analysis-menu-data', label: '数据', icon: '▣' },
-          { label: '数据分析', icon: '◫', active: true },
-          { id: 'analysis-menu-settings', label: '设置', icon: '⚙' }
+          { id: 'analysis-menu-home', label: t('common.home'), icon: '⌂' },
+          { id: 'analysis-menu-data', label: t('common.data'), icon: '▣' },
+          { label: t('common.analysis'), icon: '◫', active: true },
+          { id: 'analysis-menu-settings', label: t('common.settings'), icon: '⚙' }
         ])}
 
         <main class="main-content">
           <header class="topbar">
-            <div class="topbar-title">数据分析</div>
+            <div class="topbar-title">${escapeHtml(t('analysis.topbarTitle'))}</div>
             <div class="analysis-header-actions">
-              <button id="analysis-add-scalar-chart-btn" class="secondary-btn" type="button">新增标量图</button>
-              <button id="analysis-add-structured-chart-btn" class="secondary-btn" type="button">新增结构化图</button>
+              <button id="analysis-add-scalar-chart-btn" class="secondary-btn" type="button">${escapeHtml(t('analysis.addScalar'))}</button>
+              <button id="analysis-add-structured-chart-btn" class="secondary-btn" type="button">${escapeHtml(t('analysis.addStructured'))}</button>
             </div>
           </header>
 
@@ -8900,18 +9020,18 @@ async function render() {
             <div class="analysis-workspace-layout ${analysisInspectorCollapsed ? 'inspector-collapsed' : ''}">
               <div class="analysis-main-panel">
                 ${analysisLoading
-                  ? renderAnalysisEmptyState('正在准备分析数据...', '请稍候。')
+                  ? renderAnalysisEmptyState(t('analysis.loadingTitle'), t('analysis.loadingSubtitle'))
                   : analysisLoadError
                     ? `<div class="error-message large-error">${escapeHtml(analysisLoadError)}</div>`
                     : analysisCharts.length
                       ? analysisCharts.map((chart) => renderAnalysisChartCard(chart)).join('')
                       : `
                           <div class="welcome-card">
-                            <h2>还没有分析图</h2>
-                            <p class="subtitle">先创建一张标量图或结构化图，开始查看现有实验数据。分析视图始终保持对源记录只读。</p>
+                            <h2>${escapeHtml(t('analysis.noChartsTitle'))}</h2>
+                            <p class="subtitle">${escapeHtml(t('analysis.noChartsSubtitle'))}</p>
                             <div class="form-action-row">
-                              <button id="analysis-add-scalar-chart-btn-empty" class="primary-btn action-btn" type="button">创建标量图</button>
-                              <button id="analysis-add-structured-chart-btn-empty" class="secondary-btn" type="button">创建结构化图</button>
+                              <button id="analysis-add-scalar-chart-btn-empty" class="primary-btn action-btn" type="button">${escapeHtml(t('analysis.createScalar'))}</button>
+                              <button id="analysis-add-structured-chart-btn-empty" class="secondary-btn" type="button">${escapeHtml(t('analysis.createStructured'))}</button>
                             </div>
                           </div>
                         `}
@@ -8919,13 +9039,13 @@ async function render() {
 
               <aside class="analysis-inspector-panel ${analysisInspectorCollapsed ? 'collapsed' : ''}">
                 <div class="analysis-inspector-header-row">
-                  <div class="analysis-inspector-header">详情</div>
+                  <div class="analysis-inspector-header">${escapeHtml(t('analysis.details'))}</div>
                   <button
                     id="analysis-inspector-toggle"
                     class="analysis-inspector-toggle-btn"
                     type="button"
-                    title="${analysisInspectorCollapsed ? '展开详情' : '收起详情'}"
-                    aria-label="${analysisInspectorCollapsed ? '展开详情' : '收起详情'}"
+                    title="${escapeHtml(analysisInspectorCollapsed ? t('analysis.expandDetails') : t('analysis.collapseDetails'))}"
+                    aria-label="${escapeHtml(analysisInspectorCollapsed ? t('analysis.expandDetails') : t('analysis.collapseDetails'))}"
                   >
                     ${analysisInspectorCollapsed ? '»' : '«'}
                   </button>
@@ -8956,30 +9076,30 @@ async function render() {
     root.innerHTML = `
       <div class="home-layout">
         ${renderAppSidebar(appName, [
-          { id: 'menu-home', label: '主页', icon: '⌂' },
-          { label: '添加数据', icon: '＋', active: true },
-          { id: 'menu-data-step1', label: '数据', icon: '▣' },
-          { id: 'menu-analysis-step1', label: '数据分析', icon: '◫' },
-          { id: 'menu-settings-step1', label: '设置', icon: '⚙' }
+          { id: 'menu-home', label: t('common.home'), icon: '⌂' },
+          { label: t('addData.sidebarLabel'), icon: '＋', active: true },
+          { id: 'menu-data-step1', label: t('common.data'), icon: '▣' },
+          { id: 'menu-analysis-step1', label: t('common.analysis'), icon: '◫' },
+          { id: 'menu-settings-step1', label: t('common.settings'), icon: '⚙' }
         ])}
 
         <main class="main-content">
           <header class="topbar">
-            <div class="topbar-title">添加新数据 · 一级界面</div>
-            <button id="back-home-btn" class="secondary-btn">返回主页</button>
+            <div class="topbar-title">${escapeHtml(t('addData.topbarTitle'))}</div>
+            <button id="back-home-btn" class="secondary-btn">${escapeHtml(t('addData.backHome'))}</button>
           </header>
 
           <section class="content-area">
             <div class="welcome-card">
-              <h2>一级信息录入</h2>
-              <p class="subtitle">Step 1 用于定义实验身份信息和标准化一级元数据；必填项完成后才能进入 Step 2。</p>
+              <h2>${escapeHtml(t('addData.heading'))}</h2>
+              <p class="subtitle">${escapeHtml(t('addData.subtitle'))}</p>
 
               <div class="step-form-grid">
                 <div class="form-group">
-                  <label class="form-label">测试项目 <span class="required-star">*</span></label>
+                  <label class="form-label">${escapeHtml(t('step1.field.testProject'))} <span class="required-star">*</span></label>
                   <div class="step1-suggestion-shell">
                     <div class="input-plus-row">
-                      <input id="testProject" class="form-input" placeholder="请输入测试项目，如 XRD、能谱、夹杂分析" value="${escapeHtml(step1FormData.testProject)}" autocomplete="off" />
+                      <input id="testProject" class="form-input" placeholder="${escapeHtml(t('step1.placeholder.testProject'))}" value="${escapeHtml(step1FormData.testProject)}" autocomplete="off" />
                       <button id="project-plus-btn" class="icon-btn" type="button">＋</button>
                     </div>
                     <div id="testProject-suggestion-list" class="step1-suggestion-list"></div>
@@ -8988,15 +9108,15 @@ async function render() {
                 </div>
 
                 <div class="form-group">
-                  <label class="form-label">样品编号 <span class="required-star">*</span></label>
-                  <input id="sampleCode" class="form-input" placeholder="请输入样品编号" value="${escapeHtml(step1FormData.sampleCode)}" />
+                  <label class="form-label">${escapeHtml(t('step1.field.sampleCode'))} <span class="required-star">*</span></label>
+                  <input id="sampleCode" class="form-input" placeholder="${escapeHtml(t('step1.placeholder.sampleCode'))}" value="${escapeHtml(step1FormData.sampleCode)}" />
                 </div>
 
                 <div class="form-group">
-                  <label class="form-label">测试人 <span class="required-star">*</span></label>
+                  <label class="form-label">${escapeHtml(t('step1.field.tester'))} <span class="required-star">*</span></label>
                   <div class="step1-suggestion-shell">
                     <div class="input-plus-row">
-                      <input id="tester" class="form-input" placeholder="请输入测试人" value="${escapeHtml(step1FormData.tester)}" autocomplete="off" />
+                      <input id="tester" class="form-input" placeholder="${escapeHtml(t('step1.placeholder.tester'))}" value="${escapeHtml(step1FormData.tester)}" autocomplete="off" />
                       <button id="tester-plus-btn" class="icon-btn" type="button">＋</button>
                     </div>
                     <div id="tester-suggestion-list" class="step1-suggestion-list"></div>
@@ -9005,10 +9125,10 @@ async function render() {
                 </div>
 
                 <div class="form-group">
-                  <label class="form-label">测试仪器 <span class="required-star">*</span></label>
+                  <label class="form-label">${escapeHtml(t('step1.field.instrument'))} <span class="required-star">*</span></label>
                   <div class="step1-suggestion-shell">
                     <div class="input-plus-row">
-                      <input id="instrument" class="form-input" placeholder="请输入测试仪器" value="${escapeHtml(step1FormData.instrument)}" autocomplete="off" />
+                      <input id="instrument" class="form-input" placeholder="${escapeHtml(t('step1.placeholder.instrument'))}" value="${escapeHtml(step1FormData.instrument)}" autocomplete="off" />
                       <button id="instrument-plus-btn" class="icon-btn" type="button">＋</button>
                     </div>
                     <div id="instrument-suggestion-list" class="step1-suggestion-list"></div>
@@ -9017,35 +9137,41 @@ async function render() {
                 </div>
 
                 <div class="form-group">
-                  <label class="form-label">测试时间 <span class="required-star">*</span></label>
+                  <label class="form-label">${escapeHtml(t('step1.field.testTime'))} <span class="required-star">*</span></label>
                   <input id="testTime" type="datetime-local" class="form-input" value="${escapeHtml(step1FormData.testTime)}" />
                 </div>
 
                 <div class="form-group">
-                  <label class="form-label">样品所属人员</label>
-                  <input id="sampleOwner" class="form-input" placeholder="请输入样品所属人员" value="${escapeHtml(step1FormData.sampleOwner)}" />
+                  <label class="form-label">${escapeHtml(t('step1.field.sampleOwner'))}</label>
+                  <input id="sampleOwner" class="form-input" placeholder="${escapeHtml(t('step1.placeholder.sampleOwner'))}" value="${escapeHtml(step1FormData.sampleOwner)}" />
                 </div>
               </div>
 
               <div class="dynamic-section">
                 <div class="dynamic-header">
                   <div>
-                    <div class="dynamic-title">本次实验专属字段</div>
-                    <div class="dynamic-subtitle">新添加字段只对当前这一次实验有效</div>
+                    <div class="dynamic-title">${escapeHtml(t('step1.dynamic.title'))}</div>
+                    <div class="dynamic-subtitle">${escapeHtml(t('step1.dynamic.subtitle'))}</div>
                   </div>
-                  <button id="add-dynamic-field-btn" class="secondary-btn" type="button">新增字段</button>
+                  <button id="add-dynamic-field-btn" class="secondary-btn" type="button">${escapeHtml(t('step1.dynamic.addButton'))}</button>
                 </div>
 
                 <div id="dynamic-fields-container">
-                  ${renderDynamicFields(step1FormData.dynamicFields)}
+                  ${renderDynamicFields(step1FormData.dynamicFields, {
+                    empty: t('step1.dynamic.empty'),
+                    fieldPrefix: t('step1.dynamic.fieldPrefix'),
+                    namePlaceholder: t('step1.dynamic.namePlaceholder'),
+                    valuePlaceholder: t('step1.dynamic.valuePlaceholder'),
+                    deleteButton: t('dictionary.delete')
+                  })}
                 </div>
               </div>
 
               <div id="step1-error" class="error-message large-error"></div>
 
               <div class="form-action-row">
-                <button id="step1-cancel-btn" class="secondary-btn" type="button">取消并返回</button>
-                <button id="step1-next-btn" class="primary-btn action-btn" type="button">下一步</button>
+                <button id="step1-cancel-btn" class="secondary-btn" type="button">${escapeHtml(t('addData.cancelAndReturn'))}</button>
+                <button id="step1-next-btn" class="primary-btn action-btn" type="button">${escapeHtml(t('common.next'))}</button>
               </div>
             </div>
           </section>
@@ -9077,26 +9203,26 @@ async function render() {
     root.innerHTML = `
       <div class="home-layout">
         ${renderAppSidebar(appName, [
-          { id: 'menu-home-step2', label: '主页', icon: '⌂' },
-          { label: '添加数据', icon: '＋', active: true },
-          { id: 'menu-data-step2', label: '数据', icon: '▣' },
-          { id: 'menu-analysis-step2', label: '数据分析', icon: '◫' },
-          { id: 'menu-settings-step2', label: '设置', icon: '⚙' }
+          { id: 'menu-home-step2', label: t('common.home'), icon: '⌂' },
+          { label: t('addData.sidebarLabel'), icon: '＋', active: true },
+          { id: 'menu-data-step2', label: t('common.data'), icon: '▣' },
+          { id: 'menu-analysis-step2', label: t('common.analysis'), icon: '◫' },
+          { id: 'menu-settings-step2', label: t('common.settings'), icon: '⚙' }
         ])}
 
         <main class="main-content">
           <header class="topbar">
-            <div class="topbar-title">添加新数据 · 二级界面</div>
-            <button id="back-step1-btn-top" class="secondary-btn">返回上一步</button>
+            <div class="topbar-title">${escapeHtml(t('step2.topbarTitle'))}</div>
+            <button id="back-step1-btn-top" class="secondary-btn">${escapeHtml(t('common.back'))}</button>
           </header>
 
           <section class="content-area">
             <div class="welcome-card">
-              <h2>二级数据录入</h2>
-              <p class="subtitle">Step 2 用于填写实验内容和二级数据项，包括实验条件、结果指标和结构化数据块。</p>
+              <h2>${escapeHtml(t('step2.heading'))}</h2>
+              <p class="subtitle">${escapeHtml(t('step2.subtitle'))}</p>
 
               <div class="name-preview-card">
-                <div class="name-preview-label">自动命名预览</div>
+                <div class="name-preview-label">${escapeHtml(t('step2.namePreviewLabel'))}</div>
                 <div class="name-preview-value">${escapeHtml(buildDisplayName(step1FormData))}</div>
               </div>
 
@@ -9105,12 +9231,12 @@ async function render() {
               <div class="template-block-section">
                 <div class="dynamic-header">
                   <div>
-                    <div class="dynamic-title">结构化数据块</div>
-                    <div class="dynamic-subtitle">记录曲线型或序列型数据，如光谱、I-V、XRD、EQE 等；文件导入、解析调整和写入均在块内完成。</div>
+                    <div class="dynamic-title">${escapeHtml(t('step2.structured.sectionTitle'))}</div>
+                    <div class="dynamic-subtitle">${escapeHtml(t('step2.structured.sectionSubtitle'))}</div>
                   </div>
 
                   <div class="template-block-toolbar">
-                    <button id="add-template-block-btn" class="secondary-btn" type="button">添加结构化数据块</button>
+                    <button id="add-template-block-btn" class="secondary-btn" type="button">${escapeHtml(t('step2.structured.addButton'))}</button>
                   </div>
                 </div>
 
@@ -9127,8 +9253,8 @@ async function render() {
               <div id="step2-error" class="error-message large-error"></div>
 
               <div class="form-action-row">
-                <button id="back-step1-btn-bottom" class="secondary-btn" type="button">返回上一步</button>
-                <button id="finish-step2-btn" class="primary-btn action-btn" type="button">完成录入</button>
+                <button id="back-step1-btn-bottom" class="secondary-btn" type="button">${escapeHtml(t('common.back'))}</button>
+                <button id="finish-step2-btn" class="primary-btn action-btn" type="button">${escapeHtml(t('step2.finishButton'))}</button>
               </div>
             </div>
           </section>
@@ -9171,20 +9297,20 @@ async function render() {
     root.innerHTML = `
       <div class="page-shell">
         <div class="card login-card">
-          <h1>保存成功</h1>
-          <p class="subtitle">实验数据已成功写入本地数据库</p>
+          <h1>${escapeHtml(t('saveSuccess.title'))}</h1>
+          <p class="subtitle">${escapeHtml(t('saveSuccess.subtitle'))}</p>
 
           <div class="info-row">
-            <span>实验编号</span>
+            <span>${escapeHtml(t('saveSuccess.experimentId'))}</span>
             <strong>${lastSavedExperimentId ?? '-'}</strong>
           </div>
 
           <div class="info-row">
-            <span>数据名称</span>
+            <span>${escapeHtml(t('saveSuccess.displayName'))}</span>
             <strong>${escapeHtml(buildDisplayName(step1FormData))}</strong>
           </div>
 
-          <button id="save-success-home-btn" class="primary-btn">返回主页</button>
+          <button id="save-success-home-btn" class="primary-btn">${escapeHtml(t('common.backToHome'))}</button>
         </div>
       </div>
     `;
@@ -9202,20 +9328,20 @@ async function render() {
     root.innerHTML = `
       <div class="home-layout">
         ${renderAppSidebar(appName, [
-          { id: 'db-menu-home', label: '主页', icon: '⌂' },
-          { label: '数据', icon: '▣', active: true },
-          { id: 'db-menu-analysis', label: '数据分析', icon: '◫' },
-          { id: 'db-menu-settings', label: '设置', icon: '⚙' }
+          { id: 'db-menu-home', label: t('common.home'), icon: '⌂' },
+          { label: t('common.data'), icon: '▣', active: true },
+          { id: 'db-menu-analysis', label: t('common.analysis'), icon: '◫' },
+          { id: 'db-menu-settings', label: t('common.settings'), icon: '⚙' }
         ])}
 
 	        <main class="main-content">
 	          <header class="topbar">
-	            <div class="topbar-title">数据库入口</div>
+	            <div class="topbar-title">${escapeHtml(t('database.topbarTitle'))}</div>
 	            <div class="detail-top-actions">
-	              <span>当前结果 ${getVisibleExperimentIds().length} 条</span>
-	              <span>已选择 ${selectedExperimentIds.length} 条</span>
+	              <span>${escapeHtml(t('database.currentResults', { count: getVisibleExperimentIds().length }))}</span>
+	              <span>${escapeHtml(t('database.selectedResults', { count: selectedExperimentIds.length }))}</span>
 	              <button id="db-select-all-btn" class="secondary-btn">
-	                ${areAllVisibleSelected() ? '取消当前结果' : '全选当前结果'}
+	                ${escapeHtml(areAllVisibleSelected() ? t('database.cancelCurrentResults') : t('database.selectCurrentResults'))}
 	              </button>
 	              <button
 	                id="db-clear-selection-btn"
@@ -9223,7 +9349,7 @@ async function render() {
                 type="button"
                 ${selectedExperimentIds.length ? '' : 'disabled'}
               >
-                清空选择
+                ${escapeHtml(t('database.clearSelection'))}
               </button>
               <button
                 id="db-delete-btn"
@@ -9231,27 +9357,34 @@ async function render() {
                 type="button"
                 ${selectedExperimentIds.length ? '' : 'disabled'}
               >
-                删除
+                ${escapeHtml(t('dictionary.delete'))}
               </button>
               <button id="db-export-btn" class="secondary-btn export-top-btn">⤴</button>
-              <button id="db-refresh-btn" class="secondary-btn">刷新</button>
+              <button id="db-refresh-btn" class="secondary-btn">${escapeHtml(t('common.refresh'))}</button>
             </div>
           </header>
 
           <section class="content-area">
             <div class="welcome-card">
-              <h2>实验数据列表</h2>
-              <p class="subtitle">这里是已有实验记录的主要工作区：可浏览、勾选、打开详情并从所选记录发起导出。</p>
+              <h2>${escapeHtml(t('database.title'))}</h2>
+              <p class="subtitle">${escapeHtml(t('database.subtitle'))}</p>
 
               <div class="search-row">
                 <input
                   id="db-search-input"
                   class="form-input"
-                  placeholder="搜索样品编号、测试项目、测试人、测试仪器、名称"
+                  placeholder="${escapeHtml(t('database.searchPlaceholder'))}"
                   value="${escapeHtml(databaseSearchKeyword)}"
                 />
-                <button id="db-search-btn" class="primary-btn search-btn">搜索</button>
-                <button id="db-filter-add-btn" class="secondary-btn search-btn filter-add-btn" type="button" title="新增筛选条件">＋</button>
+                <button id="db-search-btn" class="primary-btn search-btn">${escapeHtml(t('common.search'))}</button>
+                <button
+                  id="db-filter-add-btn"
+                  class="secondary-btn search-btn filter-add-btn"
+                  type="button"
+                  title="${escapeHtml(t('database.filter.addTooltip'))}"
+                >
+                  ＋
+                </button>
               </div>
               ${renderCrossFilterControls({
                 scope: 'database',
@@ -9268,7 +9401,14 @@ async function render() {
               })}
 
               <div class="group-tabs">
-                ${renderGroupTabs(databaseGroupBy)}
+                ${renderGroupTabs(databaseGroupBy, {
+                  sampleCode: t('database.groupBy.sampleCode'),
+                  testProject: t('database.groupBy.testProject'),
+                  testTime: t('database.groupBy.testTime'),
+                  instrument: t('database.groupBy.instrument'),
+                  tester: t('database.groupBy.tester'),
+                  sampleOwner: t('database.groupBy.sampleOwner')
+                })}
               </div>
 
               <div class="database-list-wrapper">
@@ -9571,26 +9711,32 @@ async function render() {
       return;
     }
 
-    const editHistoryHtml = renderExperimentEditHistory(currentEditHistory);
+      const editHistoryHtml = renderExperimentEditHistory(currentEditHistory, {
+        empty: t('databaseDetail.historyEmpty'),
+        editor: t('databaseDetail.historyEditor'),
+        reason: t('databaseDetail.historyReason'),
+        summary: t('databaseDetail.historySummary'),
+        fallbackSummary: t('databaseDetail.historyFallbackSummary')
+      });
 
     root.innerHTML = `
       <div class="home-layout">
         ${renderAppSidebar(appName, [
-          { id: 'detail-menu-home', label: '主页', icon: '⌂' },
-          { id: 'detail-menu-list', label: '数据', icon: '▣', active: true },
-          { id: 'detail-menu-analysis', label: '数据分析', icon: '◫' },
-          { id: 'detail-menu-settings', label: '设置', icon: '⚙' }
+          { id: 'detail-menu-home', label: t('common.home'), icon: '⌂' },
+          { id: 'detail-menu-list', label: t('common.data'), icon: '▣', active: true },
+          { id: 'detail-menu-analysis', label: t('common.analysis'), icon: '◫' },
+          { id: 'detail-menu-settings', label: t('common.settings'), icon: '⚙' }
         ])}
 
         <main class="main-content">
           <header class="topbar">
-            <div class="topbar-title">实验详情（${detailEditMode ? '编辑中' : '只读'}）</div>
+            <div class="topbar-title">${escapeHtml(detailEditMode ? t('databaseDetail.titleEditing') : t('databaseDetail.titleReadonly'))}</div>
             <div class="detail-top-actions">
               ${detailEditMode
-        ? `<button id="detail-cancel-edit-btn" class="secondary-btn">取消修改</button>`
-        : `<button id="detail-edit-btn" class="secondary-btn">修改</button>`
+        ? `<button id="detail-cancel-edit-btn" class="secondary-btn">${escapeHtml(t('databaseDetail.cancelEdit'))}</button>`
+        : `<button id="detail-edit-btn" class="secondary-btn">${escapeHtml(t('databaseDetail.edit'))}</button>`
       }
-              <button id="detail-back-btn" class="secondary-btn">返回列表</button>
+              <button id="detail-back-btn" class="secondary-btn">${escapeHtml(t('common.backToList'))}</button>
             </div>
           </header>
 
@@ -9601,42 +9747,42 @@ async function render() {
                   ? buildDisplayName(detailEditStep1)
                   : currentDetail.displayName
               )}</h2>
-              <p class="subtitle">当前阶段支持详情只读查看和修改后留痕</p>
+              <p class="subtitle">${escapeHtml(t('databaseDetail.subtitle'))}</p>
 
               <div class="detail-section">
-                <div class="detail-section-title">一级主信息</div>
+                <div class="detail-section-title">${escapeHtml(t('databaseDetail.section.primaryInfo'))}</div>
                 <div class="detail-grid">
                   ${detailEditMode && detailEditStep1
         ? `
-                        ${renderDetailEditInput('edit-testProject', '测试项目', detailEditStep1.testProject)}
-                        ${renderDetailEditInput('edit-sampleCode', '样品编号', detailEditStep1.sampleCode)}
-                        ${renderDetailEditInput('edit-tester', '测试人', detailEditStep1.tester)}
-                        ${renderDetailEditInput('edit-instrument', '测试仪器', detailEditStep1.instrument)}
-                        ${renderDetailEditInput('edit-testTime', '测试时间', detailEditStep1.testTime, 'datetime-local')}
-                        ${renderDetailEditInput('edit-sampleOwner', '样品所属人员', detailEditStep1.sampleOwner)}
+                        ${renderDetailEditInput('edit-testProject', t('step1.field.testProject'), detailEditStep1.testProject)}
+                        ${renderDetailEditInput('edit-sampleCode', t('step1.field.sampleCode'), detailEditStep1.sampleCode)}
+                        ${renderDetailEditInput('edit-tester', t('step1.field.tester'), detailEditStep1.tester)}
+                        ${renderDetailEditInput('edit-instrument', t('step1.field.instrument'), detailEditStep1.instrument)}
+                        ${renderDetailEditInput('edit-testTime', t('step1.field.testTime'), detailEditStep1.testTime, 'datetime-local')}
+                        ${renderDetailEditInput('edit-sampleOwner', t('step1.field.sampleOwner'), detailEditStep1.sampleOwner)}
                         ${renderDetailDerivedPreview(
                           'detail-edit-display-name-preview',
-                          '数据名称（自动生成）',
+                          t('databaseDetail.derivedDisplayName'),
                           buildDisplayName(detailEditStep1),
-                          '基于测试项目、样品编号、测试人、测试仪器和测试时间自动生成；请修改上述一级主信息来更新此名称。'
+                          t('databaseDetail.derivedDisplayNameHint')
                         )}
                       `
         : `
-                        ${renderDetailPair('实验编号', String(currentDetail.id))}
-                        ${renderDetailPair('测试项目', currentDetail.testProject)}
-                        ${renderDetailPair('样品编号', currentDetail.sampleCode)}
-                        ${renderDetailPair('测试人', currentDetail.tester)}
-                        ${renderDetailPair('测试仪器', currentDetail.instrument)}
-                        ${renderDetailPair('测试时间', currentDetail.testTime)}
-                        ${renderDetailPair('样品所属人员', currentDetail.sampleOwner || '-')}
-                        ${renderDetailPair('数据名称', currentDetail.displayName)}
+                        ${renderDetailPair(t('databaseDetail.label.experimentId'), String(currentDetail.id))}
+                        ${renderDetailPair(t('step1.field.testProject'), currentDetail.testProject)}
+                        ${renderDetailPair(t('step1.field.sampleCode'), currentDetail.sampleCode)}
+                        ${renderDetailPair(t('step1.field.tester'), currentDetail.tester)}
+                        ${renderDetailPair(t('step1.field.instrument'), currentDetail.instrument)}
+                        ${renderDetailPair(t('step1.field.testTime'), currentDetail.testTime)}
+                        ${renderDetailPair(t('step1.field.sampleOwner'), currentDetail.sampleOwner || '-')}
+                        ${renderDetailPair(t('databaseDetail.label.displayName'), currentDetail.displayName)}
                       `
       }
                 </div>
               </div>
 
               <div class="detail-section">
-                <div class="detail-section-title">动态字段</div>
+                <div class="detail-section-title">${escapeHtml(t('databaseDetail.section.dynamicFields'))}</div>
                 ${detailEditMode && detailEditStep1
         ? `
                       <div class="detail-list">
@@ -9645,13 +9791,13 @@ async function render() {
             .map(
               (field, index) => `
                                     <div class="detail-edit-row">
-                                      <input id="edit-dynamic-name-${index}" class="form-input" value="${escapeHtml(field.name)}" placeholder="字段名称" />
-                                      <input id="edit-dynamic-value-${index}" class="form-input" value="${escapeHtml(field.value)}" placeholder="字段值" />
+                                      <input id="edit-dynamic-name-${index}" class="form-input" value="${escapeHtml(field.name)}" placeholder="${escapeHtml(t('databaseDetail.dynamicNamePlaceholder'))}" />
+                                      <input id="edit-dynamic-value-${index}" class="form-input" value="${escapeHtml(field.value)}" placeholder="${escapeHtml(t('databaseDetail.dynamicValuePlaceholder'))}" />
                                     </div>
                                   `
             )
             .join('')
-          : `<div class="empty-tip">无动态字段</div>`
+          : `<div class="empty-tip">${escapeHtml(t('databaseDetail.dynamicEmpty'))}</div>`
         }
                       </div>
                     `
@@ -9670,7 +9816,7 @@ async function render() {
             .join('')}
                         </div>
                       `
-          : `<div class="empty-tip">无动态字段</div>`
+          : `<div class="empty-tip">${escapeHtml(t('databaseDetail.dynamicEmpty'))}</div>`
       }
               </div>
 
@@ -9689,7 +9835,7 @@ async function render() {
           `}
 
               <div class="detail-section">
-                <div class="detail-section-title">结构化数据块</div>
+                <div class="detail-section-title">${escapeHtml(t('databaseDetail.section.structuredBlocks'))}</div>
                 ${detailEditMode
         ? `<div id="detail-edit-structured-section-body">${renderEditableStructuredSectionContent(
           'detail-edit',
@@ -9728,23 +9874,23 @@ async function render() {
               originalFilePath: block.originalFilePath || '',
               createdAt: block.createdAt
             })))
-          : `<div class="empty-tip">无结构化数据块</div>`
+          : `<div class="empty-tip">${escapeHtml(t('databaseDetail.structuredEmpty'))}</div>`
       }
               </div>
 
               <div class="detail-section">
-                <div class="detail-section-title">最近修改历史</div>
+                <div class="detail-section-title">${escapeHtml(t('databaseDetail.section.editHistory'))}</div>
                 ${editHistoryHtml}
               </div>
 
       ${detailEditMode
         ? `
                     <div class="detail-section">
-                      <div class="detail-section-title">修改确认</div>
+                      <div class="detail-section-title">${escapeHtml(t('databaseDetail.section.editConfirmation'))}</div>
                       <div class="detail-edit-confirm">
-                        <input id="edit-reason-input" class="form-input" placeholder="请输入修改理由（必填）" value="${escapeHtml(detailEditReason)}" />
-                        <input id="edit-editor-input" class="form-input" placeholder="请输入修改人（必填）" value="${escapeHtml(detailEditor)}" />
-                        <button id="detail-save-edit-btn" class="primary-btn action-btn">修改确认</button>
+                        <input id="edit-reason-input" class="form-input" placeholder="${escapeHtml(t('databaseDetail.editReasonPlaceholder'))}" value="${escapeHtml(detailEditReason)}" />
+                        <input id="edit-editor-input" class="form-input" placeholder="${escapeHtml(t('databaseDetail.editEditorPlaceholder'))}" value="${escapeHtml(detailEditor)}" />
+                        <button id="detail-save-edit-btn" class="primary-btn action-btn">${escapeHtml(t('databaseDetail.saveEdit'))}</button>
                       </div>
                       <div id="detail-edit-error" class="error-message large-error"></div>
                     </div>
@@ -9870,12 +10016,12 @@ async function render() {
       const errorBox = document.getElementById('detail-edit-error');
 
       if (!detailEditReason) {
-        if (errorBox) errorBox.textContent = '请填写修改理由';
+        if (errorBox) errorBox.textContent = t('databaseDetail.validation.reasonRequired');
         return;
       }
 
       if (!detailEditor) {
-        if (errorBox) errorBox.textContent = '请填写修改人';
+        if (errorBox) errorBox.textContent = t('databaseDetail.validation.editorRequired');
         return;
       }
 
@@ -9886,7 +10032,7 @@ async function render() {
         !collected.step1.instrument ||
         !collected.step1.testTime
       ) {
-        if (errorBox) errorBox.textContent = '一级主信息中的必填项不能为空';
+        if (errorBox) errorBox.textContent = t('databaseDetail.validation.primaryRequired');
         return;
       }
 
@@ -10092,47 +10238,65 @@ async function render() {
         `
       : '';
     const recentOperationLogsHtml = recentOperationLogs
-      ? renderRecentOperationLogs(recentOperationLogs)
-      : `<div class="detail-value">点击“查看最近操作日志”加载最近 30 条操作日志</div>`;
+      ? renderRecentOperationLogs(recentOperationLogs, {
+          empty: t('settings.logsEmpty'),
+          operationType: t('settings.logsOperationType'),
+          experimentId: t('settings.logsExperimentId'),
+          actor: t('settings.logsActor'),
+          summary: t('settings.logsSummary')
+        })
+      : `<div class="detail-value">${escapeHtml(t('settings.recentLogsEmpty'))}</div>`;
     const runtimeDbPath = appRuntimeInfo?.runtimeDbPath || '';
     const generalSettingsHtml = `
       <div class="detail-section">
-        <div class="detail-section-title">原始文件根目录</div>
+        <div class="detail-section-title">${escapeHtml(t('language.sectionTitle'))}</div>
         <div class="form-group">
-          <label class="form-label">保存根目录</label>
+          <label class="form-label" for="settings-app-language">${escapeHtml(t('language.label'))}</label>
+          <select id="settings-app-language" class="form-input">
+            <option value="zh-CN" ${appSettings.appLanguage === 'zh-CN' ? 'selected' : ''}>${escapeHtml(t('language.option.zh-CN'))}</option>
+            <option value="en" ${appSettings.appLanguage === 'en' ? 'selected' : ''}>${escapeHtml(t('language.option.en'))}</option>
+          </select>
+        </div>
+        <div class="detail-value">${escapeHtml(t('language.hint'))}</div>
+      </div>
+
+      <div class="detail-section">
+        <div class="detail-section-title">${escapeHtml(t('settings.storageRootTitle'))}</div>
+        <div class="form-group">
+          <label class="form-label">${escapeHtml(t('settings.storageRootLabel'))}</label>
           <input id="settings-storage-root" class="form-input" value="${escapeHtml(appSettings.storageRoot)}" />
         </div>
       </div>
 
       <div class="detail-section">
-        <div class="detail-section-title">登录设置</div>
+        <div class="detail-section-title">${escapeHtml(t('settings.loginSettingsTitle'))}</div>
         <div class="step-form-grid">
           <div class="form-group">
-            <label class="form-label">登录账号</label>
+            <label class="form-label">${escapeHtml(t('settings.loginUsernameLabel'))}</label>
             <input id="settings-login-username" class="form-input" value="${escapeHtml(appSettings.loginUsername)}" />
           </div>
 
           <div class="form-group">
-            <label class="form-label">新登录密码</label>
+            <label class="form-label">${escapeHtml(t('settings.loginPasswordLabel'))}</label>
             <input
               id="settings-login-password"
               class="form-input"
               type="password"
-              placeholder="留空则保持当前密码不变"
+              placeholder="${escapeHtml(t('settings.loginPasswordPlaceholder'))}"
             />
           </div>
         </div>
       </div>
 
       <div class="detail-section">
-        <div class="detail-section-title">数据库备份提醒</div>
+        <div class="detail-section-title">${escapeHtml(t('settings.backupTitle'))}</div>
         <div class="backup-reminder-card">
-          <div class="backup-reminder-title">运行数据库位置</div>
+          <div class="backup-reminder-title">${escapeHtml(t('settings.runtimeDbLocationTitle'))}</div>
           <div class="backup-reminder-text">
-            Scida 的运行数据库保存在本机。建议在版本升级、批量导入导出前或重要修改前，先手动备份数据库文件和原始文件根目录。
+            ${escapeHtml(t('settings.backupText'))}
           </div>
-          <div class="backup-reminder-path" title="${escapeHtml(runtimeDbPath || '当前未读取到运行数据库路径')}">
-            ${escapeHtml(runtimeDbPath || '当前未读取到运行数据库路径')}
+          <div class="backup-reminder-path" title="${escapeHtml(runtimeDbPath || t('settings.runtimeDbUnavailable'))}">
+            ${escapeHtml(runtimeDbPath || t('settings.runtimeDbUnavailable'))}
           </div>
           <div class="form-action-row about-action-row">
             <button
@@ -10141,7 +10305,7 @@ async function render() {
               type="button"
               ${runtimeDbPath ? '' : 'disabled'}
             >
-              打开数据库所在目录
+              ${escapeHtml(t('settings.openRuntimeDbFolder'))}
             </button>
           </div>
         </div>
@@ -10150,14 +10314,14 @@ async function render() {
       <div id="settings-error" class="error-message large-error"></div>
 
       <div class="form-action-row">
-        <button id="settings-save-btn" class="primary-btn action-btn">保存设置</button>
+        <button id="settings-save-btn" class="primary-btn action-btn">${escapeHtml(t('common.saveSettings'))}</button>
         <button
           id="settings-file-integrity-btn"
           class="secondary-btn action-btn"
           type="button"
           ${fileIntegrityLoading ? 'disabled' : ''}
         >
-          ${fileIntegrityLoading ? '检查中...' : '检查文件完整性'}
+          ${escapeHtml(fileIntegrityLoading ? t('settings.fileIntegrityChecking') : t('settings.fileIntegrityButton'))}
         </button>
         <button
           id="settings-open-storage-root-btn"
@@ -10165,7 +10329,7 @@ async function render() {
           type="button"
           ${fileIntegrityActionLoading ? 'disabled' : ''}
         >
-          打开保存根目录
+          ${escapeHtml(t('settings.openStorageRoot'))}
         </button>
       </div>
 
@@ -10228,9 +10392,11 @@ async function render() {
             ${orphanExamplesHtml}
           `
         : ''}
-
+    `;
+    const logsSettingsHtml = `
       <div class="detail-section">
-        <div class="detail-section-title">最近操作日志</div>
+        <div class="detail-section-title">${escapeHtml(t('settings.recentLogsTitle'))}</div>
+        <div class="detail-section-subtitle">${escapeHtml(t('settings.subtitle.logs'))}</div>
         <div class="form-action-row">
           <button
             id="settings-recent-logs-btn"
@@ -10238,9 +10404,13 @@ async function render() {
             type="button"
             ${operationLogLoading ? 'disabled' : ''}
           >
-            ${operationLogLoading ? '加载中...' : '查看最近操作日志'}
+            ${escapeHtml(operationLogLoading ? t('settings.recentLogsLoading') : t('settings.recentLogsButton'))}
           </button>
-          ${renderOperationLogFilterButtons(operationLogFilter, operationLogLoading)}
+          ${renderOperationLogFilterButtons(operationLogFilter, operationLogLoading, {
+            all: t('settings.logsFilter.all'),
+            delete: t('settings.logsFilter.delete'),
+            export: t('settings.logsFilter.export')
+          })}
         </div>
 
         ${operationLogError ? `<div class="error-message large-error">${escapeHtml(operationLogError)}</div>` : ''}
@@ -10249,9 +10419,9 @@ async function render() {
     `;
     const dictionaryManagementHtml = `
       ${dictionaryLoadError ? `<div class="error-message large-error">${escapeHtml(dictionaryLoadError)}</div>` : ''}
-      ${dictionaryLoading && !dictionaryLoaded ? `<div class="empty-tip">词典加载中...</div>` : ''}
-      ${DICTIONARY_SECTION_META.map(({ type, label }) =>
-        renderDictionaryManagementSection(type, label)
+      ${dictionaryLoading && !dictionaryLoaded ? `<div class="empty-tip">${escapeHtml(t('dictionary.loading'))}</div>` : ''}
+      ${DICTIONARY_SECTION_META.map((type) =>
+        renderDictionaryManagementSection(type, getDictionarySectionLabel(getCurrentLanguage(), type))
       ).join('')}
     `;
     const aboutSettingsHtml = `
@@ -10261,28 +10431,38 @@ async function render() {
     root.innerHTML = `
       <div class="home-layout">
         ${renderAppSidebar(appName, [
-          { id: 'settings-menu-home', label: '主页', icon: '⌂' },
-          { id: 'settings-menu-data', label: '数据', icon: '▣' },
-          { id: 'settings-menu-analysis', label: '数据分析', icon: '◫' },
-          { label: '设置', icon: '⚙', active: true }
+          { id: 'settings-menu-home', label: t('common.home'), icon: '⌂' },
+          { id: 'settings-menu-data', label: t('common.data'), icon: '▣' },
+          { id: 'settings-menu-analysis', label: t('common.analysis'), icon: '◫' },
+          { label: t('common.settings'), icon: '⚙', active: true }
         ])}
 
         <main class="main-content">
           <header class="topbar">
-            <div class="topbar-title">设置</div>
-            <button id="settings-back-home-btn" class="secondary-btn">返回主页</button>
+            <div class="topbar-title">${escapeHtml(t('settings.topbarTitle'))}</div>
+            <button id="settings-back-home-btn" class="secondary-btn">${escapeHtml(t('settings.backHome'))}</button>
           </header>
 
           <section class="content-area">
             <div class="welcome-card">
-              <h2>${settingsSubView === 'general' ? '系统设置' : settingsSubView === 'dictionary' ? '词典管理' : '关于'}</h2>
+              <h2>${escapeHtml(
+                settingsSubView === 'general'
+                  ? t('settings.heading.general')
+                  : settingsSubView === 'dictionary'
+                    ? t('settings.heading.dictionary')
+                    : settingsSubView === 'logs'
+                      ? t('settings.heading.logs')
+                      : t('settings.heading.about')
+              )}</h2>
               <p class="subtitle">
                 ${
                   settingsSubView === 'general'
-                    ? '当前阶段支持原始文件根目录、登录账号密码，以及本机运行数据库位置与备份提醒。'
+                    ? escapeHtml(t('settings.subtitle.general'))
                     : settingsSubView === 'dictionary'
-                      ? '维护一级字段建议词典。删除仅影响后续建议，不会修改历史记录。'
-                      : '查看当前版本、产品说明、发布摘要，以及第三方 notices 入口。'
+                      ? escapeHtml(t('settings.subtitle.dictionary'))
+                      : settingsSubView === 'logs'
+                        ? escapeHtml(t('settings.subtitle.logs'))
+                      : escapeHtml(t('settings.subtitle.about'))
                 }
               </p>
 
@@ -10292,6 +10472,8 @@ async function render() {
                   ? generalSettingsHtml
                   : settingsSubView === 'dictionary'
                     ? dictionaryManagementHtml
+                    : settingsSubView === 'logs'
+                      ? logsSettingsHtml
                     : aboutSettingsHtml
               }
             </div>
@@ -10336,6 +10518,42 @@ async function render() {
       });
     });
 
+    document.getElementById('settings-app-language')?.addEventListener('change', async (event) => {
+      const target = event.target as HTMLSelectElement;
+      const nextLanguage = target.value as AppLanguage;
+      const previousLanguage = appSettings.appLanguage;
+
+      if ((nextLanguage !== 'zh-CN' && nextLanguage !== 'en') || nextLanguage === previousLanguage) {
+        target.value = previousLanguage;
+        return;
+      }
+
+      appSettings = {
+        ...appSettings,
+        appLanguage: nextLanguage
+      };
+      requestRender(true);
+
+      try {
+        const result = await window.electronAPI.setAppLanguage({ appLanguage: nextLanguage });
+        if (!result.success) {
+          appSettings = {
+            ...appSettings,
+            appLanguage: previousLanguage
+          };
+          requestRender(true);
+          alert(result.error || t('language.saveFailed'));
+        }
+      } catch (error) {
+        appSettings = {
+          ...appSettings,
+          appLanguage: previousLanguage
+        };
+        requestRender(true);
+        alert(getErrorMessage(error) || t('language.saveFailed'));
+      }
+    });
+
     if (settingsSubView === 'dictionary') {
       DICTIONARY_TYPES.forEach((dictionaryType) => {
         document
@@ -10374,14 +10592,14 @@ async function render() {
             });
 
             if (!result.success) {
-              dictionarySectionErrors[dictionaryType] = result.error || '添加词典项失败';
+              dictionarySectionErrors[dictionaryType] = result.error || t('dictionary.addFailed');
               return;
             }
 
             dictionaryInputValues[dictionaryType] = '';
             await reloadDictionaryItems();
           } catch (error) {
-            dictionarySectionErrors[dictionaryType] = getErrorMessage(error) || '添加词典项失败';
+            dictionarySectionErrors[dictionaryType] = getErrorMessage(error) || t('dictionary.addFailed');
           } finally {
             dictionarySubmittingType = null;
             requestRender(true);
@@ -10403,7 +10621,7 @@ async function render() {
           }
 
           const shouldContinue = window.confirm(
-            `删除“${label}”后，它将不会再出现在后续建议中，但不会修改已有记录。是否继续？`
+            t('dictionary.deleteConfirm', { label })
           );
           if (!shouldContinue) {
             return;
@@ -10415,13 +10633,13 @@ async function render() {
           try {
             const result = await window.electronAPI.deactivateDictionaryItem({ id });
             if (!result.success) {
-              alert(result.error || '删除词典项失败');
+              alert(result.error || t('dictionary.deleteFailed'));
               return;
             }
 
             await reloadDictionaryItems();
           } catch (error) {
-            alert(getErrorMessage(error) || '删除词典项失败');
+            alert(getErrorMessage(error) || t('dictionary.deleteFailed'));
           } finally {
             dictionaryDeletingId = null;
             requestRender(true);
@@ -10442,12 +10660,12 @@ async function render() {
       const errorBox = document.getElementById('settings-error');
 
       if (!storageRoot) {
-        if (errorBox) errorBox.textContent = '请填写原始文件根目录';
+        if (errorBox) errorBox.textContent = t('settings.storageRootRequired');
         return;
       }
 
       if (!loginUsername) {
-        if (errorBox) errorBox.textContent = '请填写登录账号';
+        if (errorBox) errorBox.textContent = t('settings.loginUsernameRequired');
         return;
       }
 
@@ -10457,17 +10675,19 @@ async function render() {
         const result = await window.electronAPI.saveAppSettings({
           storageRoot,
           loginUsername,
+          appLanguage: appSettings.appLanguage,
           newPassword: newPassword || undefined
         });
 
         if (!result.success) {
-          if (errorBox) errorBox.textContent = result.error || '保存设置失败';
+          if (errorBox) errorBox.textContent = result.error || t('settings.saveFailed');
           return;
         }
 
         appSettings = {
           storageRoot,
-          loginUsername
+          loginUsername,
+          appLanguage: appSettings.appLanguage
         };
         fileIntegrityReport = null;
         fileIntegrityError = '';
@@ -10477,9 +10697,9 @@ async function render() {
           passwordInput.value = '';
         }
 
-        alert('设置已保存');
+        alert(t('settings.saveSuccess'));
       } catch (error) {
-        if (errorBox) errorBox.textContent = '保存设置失败，请稍后重试';
+        if (errorBox) errorBox.textContent = t('settings.saveFailedRetry');
         console.error(error);
       }
     });
@@ -10517,7 +10737,7 @@ async function render() {
         await reloadRecentOperationLogs();
       } catch (error) {
         recentOperationLogs = null;
-        operationLogError = getErrorMessage(error) || '加载最近操作日志失败';
+        operationLogError = getErrorMessage(error) || t('settings.recentLogsLoadFailed');
       } finally {
         operationLogLoading = false;
         requestRender(true);
@@ -10542,7 +10762,7 @@ async function render() {
           await reloadRecentOperationLogs(nextFilter);
         } catch (error) {
           recentOperationLogs = null;
-          operationLogError = getErrorMessage(error) || '加载最近操作日志失败';
+          operationLogError = getErrorMessage(error) || t('settings.recentLogsLoadFailed');
         } finally {
           operationLogLoading = false;
           requestRender(true);
@@ -10552,7 +10772,7 @@ async function render() {
 
     document.getElementById('settings-open-storage-root-btn')?.addEventListener('click', async () => {
       if (!appSettings.storageRoot) {
-        alert('当前没有可打开的保存根目录');
+        alert(t('settings.openStorageRootMissing'));
         return;
       }
 
@@ -10561,7 +10781,7 @@ async function render() {
 
     document.getElementById('settings-open-runtime-db-folder-btn')?.addEventListener('click', async () => {
       if (!appRuntimeInfo?.runtimeDbPath) {
-        alert('当前没有可打开的运行数据库路径');
+        alert(t('settings.openRuntimeDbMissing'));
         return;
       }
 
@@ -10696,7 +10916,7 @@ function bindStep1Events() {
     buttonId: 'project-plus-btn',
     dictionaryType: 'testProject',
     feedbackId: 'testProject-dictionary-feedback',
-    successMessage: '已加入测试项目词典',
+    successMessage: t('step1.dictionaryAdded.testProject'),
     suggestionContainerId: 'testProject-suggestion-list'
   });
 
@@ -10705,7 +10925,7 @@ function bindStep1Events() {
     buttonId: 'tester-plus-btn',
     dictionaryType: 'tester',
     feedbackId: 'tester-dictionary-feedback',
-    successMessage: '已加入测试人词典',
+    successMessage: t('step1.dictionaryAdded.tester'),
     suggestionContainerId: 'tester-suggestion-list'
   });
 
@@ -10714,7 +10934,7 @@ function bindStep1Events() {
     buttonId: 'instrument-plus-btn',
     dictionaryType: 'instrument',
     feedbackId: 'instrument-dictionary-feedback',
-    successMessage: '已加入测试仪器词典',
+    successMessage: t('step1.dictionaryAdded.instrument'),
     suggestionContainerId: 'instrument-suggestion-list'
   });
 
@@ -10769,7 +10989,7 @@ function bindStep1Events() {
         return;
       }
     } catch (error) {
-      window.alert(`词典校验失败，请稍后重试。\n${getErrorMessage(error)}`);
+      window.alert(`${t('step1.dictionaryValidationFailed')}\n${getErrorMessage(error)}`);
       return;
     }
 
@@ -10927,8 +11147,8 @@ function hasActiveDatabaseSearchOrFilters() {
 function renderDatabaseGroups(groups: ExperimentGroup[]) {
   if (!groups.length) {
     return hasActiveDatabaseSearchOrFilters()
-      ? `<div class="empty-tip">当前搜索或筛选条件下没有符合条件的实验数据，可清空搜索词或筛选条件后重试</div>`
-      : `<div class="empty-tip">当前没有符合条件的实验数据</div>`;
+      ? `<div class="empty-tip">${escapeHtml(t('database.emptyFiltered'))}</div>`
+      : `<div class="empty-tip">${escapeHtml(t('database.emptyDefault'))}</div>`;
   }
 
   return groups
@@ -10952,14 +11172,14 @@ function renderDatabaseGroups(groups: ExperimentGroup[]) {
 	                    <div class="record-main">
 	                      <div class="record-title">${escapeHtml(item.displayName)}</div>
 	                      <div class="record-meta">
-                        <span>样品编号：${escapeHtml(item.sampleCode)}</span>
-                        <span>测试项目：${escapeHtml(item.testProject)}</span>
-                        <span>测试人：${escapeHtml(item.tester)}</span>
-                        <span>测试仪器：${escapeHtml(item.instrument)}</span>
+                        <span>${escapeHtml(t('database.card.sampleCode'))}：${escapeHtml(item.sampleCode)}</span>
+                        <span>${escapeHtml(t('database.card.testProject'))}：${escapeHtml(item.testProject)}</span>
+                        <span>${escapeHtml(t('database.card.tester'))}：${escapeHtml(item.tester)}</span>
+                        <span>${escapeHtml(t('database.card.instrument'))}：${escapeHtml(item.instrument)}</span>
 	                      </div>
 	                    </div>
 	
-	                    <button class="secondary-btn" type="button" data-open-detail-id="${item.id}">查看详情</button>
+	                    <button class="secondary-btn" type="button" data-open-detail-id="${item.id}">${escapeHtml(t('database.card.viewDetails'))}</button>
 	                  </div>
 	                `
           )
@@ -11188,15 +11408,15 @@ function saveStep2InputsToState() {
 }
 
 function validateStep1() {
-  if (!step1FormData.testProject) return '请填写测试项目';
-  if (!step1FormData.sampleCode) return '请填写样品编号';
-  if (!step1FormData.tester) return '请填写测试人';
-  if (!step1FormData.instrument) return '请填写测试仪器';
-  if (!step1FormData.testTime) return '请选择测试时间';
+  if (!step1FormData.testProject) return t('step1.validation.testProjectRequired');
+  if (!step1FormData.sampleCode) return t('step1.validation.sampleCodeRequired');
+  if (!step1FormData.tester) return t('step1.validation.testerRequired');
+  if (!step1FormData.instrument) return t('step1.validation.instrumentRequired');
+  if (!step1FormData.testTime) return t('step1.validation.testTimeRequired');
 
   for (const field of step1FormData.dynamicFields) {
     if ((field.name && !field.value) || (!field.name && field.value)) {
-      return '动态字段名称和值需要成对填写';
+      return t('step1.validation.dynamicPairRequired');
     }
   }
 
@@ -11217,17 +11437,17 @@ async function validateStep1DictionaryMembership() {
     {
       dictionaryType: 'testProject',
       value: step1FormData.testProject,
-      message: `当前测试项目“${step1FormData.testProject}”不在词典中。\n如需继续使用，请先点击该字段右侧的 + 按钮加入词典。`
+      message: t('step1.dictionaryMissing.testProject', { value: step1FormData.testProject })
     },
     {
       dictionaryType: 'tester',
       value: step1FormData.tester,
-      message: `当前测试人“${step1FormData.tester}”不在词典中。\n如需继续使用，请先点击该字段右侧的 + 按钮加入词典。`
+      message: t('step1.dictionaryMissing.tester', { value: step1FormData.tester })
     },
     {
       dictionaryType: 'instrument',
       value: step1FormData.instrument,
-      message: `当前测试仪器“${step1FormData.instrument}”不在词典中。\n如需继续使用，请先点击该字段右侧的 + 按钮加入词典。`
+      message: t('step1.dictionaryMissing.instrument', { value: step1FormData.instrument })
     }
   ];
 
@@ -11255,7 +11475,7 @@ function validateStep2() {
 
   if (!hasAnyContent) {
     return {
-      error: '请至少填写一行二级数据或一个结构化数据块',
+      error: t('step2.validation.requireContent'),
       templateBlocks: []
     };
   }

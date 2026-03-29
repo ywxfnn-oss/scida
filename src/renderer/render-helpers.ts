@@ -347,14 +347,17 @@ export function renderDuplicateWarningModal(params: {
   `;
 }
 
-export function renderGroupTabs(current: GroupByType) {
+export function renderGroupTabs(
+  current: GroupByType,
+  labels?: Partial<Record<GroupByType, string>>
+) {
   const tabs: { key: GroupByType; label: string }[] = [
-    { key: 'sampleCode', label: '按样品编号' },
-    { key: 'testProject', label: '按测试项目' },
-    { key: 'testTime', label: '按测试时间' },
-    { key: 'instrument', label: '按测试仪器' },
-    { key: 'tester', label: '按测试人' },
-    { key: 'sampleOwner', label: '按样品所属人员' }
+    { key: 'sampleCode', label: labels?.sampleCode || '按样品编号' },
+    { key: 'testProject', label: labels?.testProject || '按测试项目' },
+    { key: 'testTime', label: labels?.testTime || '按测试时间' },
+    { key: 'instrument', label: labels?.instrument || '按测试仪器' },
+    { key: 'tester', label: labels?.tester || '按测试人' },
+    { key: 'sampleOwner', label: labels?.sampleOwner || '按样品所属人员' }
   ];
 
   return tabs
@@ -374,12 +377,13 @@ export function renderGroupTabs(current: GroupByType) {
 
 export function renderOperationLogFilterButtons(
   currentFilter: OperationLogFilter,
-  disabled: boolean
+  disabled: boolean,
+  labels?: Partial<Record<OperationLogFilter, string>>
 ) {
   const filters: Array<{ key: OperationLogFilter; label: string }> = [
-    { key: 'all', label: '全部' },
-    { key: 'delete', label: '删除' },
-    { key: 'export', label: '导出' }
+    { key: 'all', label: labels?.all || '全部' },
+    { key: 'delete', label: labels?.delete || '删除' },
+    { key: 'export', label: labels?.export || '导出' }
   ];
 
   return filters
@@ -398,9 +402,18 @@ export function renderOperationLogFilterButtons(
     .join('');
 }
 
-export function renderRecentOperationLogs(entries: RecentOperationLogEntry[]) {
+export function renderRecentOperationLogs(
+  entries: RecentOperationLogEntry[],
+  labels?: {
+    empty?: string;
+    operationType?: string;
+    experimentId?: string;
+    actor?: string;
+    summary?: string;
+  }
+) {
   if (!entries.length) {
-    return `<div class="detail-value">暂无最近操作日志</div>`;
+    return `<div class="detail-value">${escapeHtml(labels?.empty || '暂无最近操作日志')}</div>`;
   }
 
   return `
@@ -411,10 +424,10 @@ export function renderRecentOperationLogs(entries: RecentOperationLogEntry[]) {
             <div class="detail-list-item">
               <div class="detail-list-key">${escapeHtml(formatDateTimeForDisplay(entry.createdAt))}</div>
               <div class="detail-list-value">
-                操作类型：${escapeHtml(entry.operationType)}<br />
-                实验编号：${escapeHtml(entry.experimentId !== null ? String(entry.experimentId) : '-')}<br />
-                操作人：${escapeHtml(entry.actor || '-')}<br />
-                摘要：${escapeHtml(entry.summaryText || '-')}
+                ${escapeHtml(labels?.operationType || '操作类型')}：${escapeHtml(entry.operationType)}<br />
+                ${escapeHtml(labels?.experimentId || '实验编号')}：${escapeHtml(entry.experimentId !== null ? String(entry.experimentId) : '-')}<br />
+                ${escapeHtml(labels?.actor || '操作人')}：${escapeHtml(entry.actor || '-')}<br />
+                ${escapeHtml(labels?.summary || '摘要')}：${escapeHtml(entry.summaryText || '-')}
               </div>
             </div>
           `
@@ -424,9 +437,18 @@ export function renderRecentOperationLogs(entries: RecentOperationLogEntry[]) {
   `;
 }
 
-export function renderExperimentEditHistory(entries: ExperimentEditHistoryEntry[]) {
+export function renderExperimentEditHistory(
+  entries: ExperimentEditHistoryEntry[],
+  labels?: {
+    empty?: string;
+    editor?: string;
+    reason?: string;
+    summary?: string;
+    fallbackSummary?: string;
+  }
+) {
   if (!entries.length) {
-    return `<div class="detail-value">暂无修改历史</div>`;
+    return `<div class="detail-value">${escapeHtml(labels?.empty || '暂无修改历史')}</div>`;
   }
 
   return `
@@ -437,9 +459,11 @@ export function renderExperimentEditHistory(entries: ExperimentEditHistoryEntry[
             <div class="detail-list-item">
               <div class="detail-list-key">${escapeHtml(formatDateTimeForDisplay(entry.editedAt))}</div>
               <div class="detail-list-value">
-                修改人：${escapeHtml(entry.editor || '-')}<br />
-                修改理由：${escapeHtml(entry.editReason || '-')}<br />
-                摘要：${escapeHtml(entry.summaryText || '修改记录')}
+                ${escapeHtml(labels?.editor || '修改人')}：${escapeHtml(entry.editor || '-')}<br />
+                ${escapeHtml(labels?.reason || '修改理由')}：${escapeHtml(entry.editReason || '-')}<br />
+                ${escapeHtml(labels?.summary || '摘要')}：${escapeHtml(
+                  entry.summaryText || labels?.fallbackSummary || '修改记录'
+                )}
               </div>
             </div>
           `
@@ -487,28 +511,37 @@ export function renderDetailDerivedPreview(
   `;
 }
 
-export function renderDynamicFields(fields: DynamicFieldLike[]) {
+export function renderDynamicFields(
+  fields: DynamicFieldLike[],
+  labels?: {
+    empty?: string;
+    fieldPrefix?: string;
+    namePlaceholder?: string;
+    valuePlaceholder?: string;
+    deleteButton?: string;
+  }
+) {
   if (!fields.length) {
-    return `<div class="empty-tip">当前还没有新增字段</div>`;
+    return `<div class="empty-tip">${escapeHtml(labels?.empty || '当前还没有新增字段')}</div>`;
   }
 
   return fields
     .map(
       (field, index) => `
         <div class="dynamic-row">
-          <div class="dynamic-index">字段 ${index + 1}</div>
+          <div class="dynamic-index">${escapeHtml(labels?.fieldPrefix || '字段')} ${index + 1}</div>
 
           <div class="dynamic-inputs">
             <input
               id="dynamic-name-${field.id}"
               class="form-input"
-              placeholder="字段名称，如 送检部门"
+              placeholder="${escapeHtml(labels?.namePlaceholder || '字段名称，如 送检部门')}"
               value="${escapeHtml(field.name)}"
             />
             <input
               id="dynamic-value-${field.id}"
               class="form-input"
-              placeholder="字段值"
+              placeholder="${escapeHtml(labels?.valuePlaceholder || '字段值')}"
               value="${escapeHtml(field.value)}"
             />
           </div>
@@ -518,7 +551,7 @@ export function renderDynamicFields(fields: DynamicFieldLike[]) {
             type="button"
             data-remove-dynamic-id="${field.id}"
           >
-            删除
+            ${escapeHtml(labels?.deleteButton || '删除')}
           </button>
         </div>
       `
