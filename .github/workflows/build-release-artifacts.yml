@@ -19,6 +19,27 @@ jobs:
     runs-on: ${{ matrix.os }}
     env:
       DATABASE_URL: file:./dev.db
+      # macOS public-distribution secrets:
+      # - SCIDA_APPLE_SIGNING_CERTIFICATE_P12_BASE64
+      # - SCIDA_APPLE_SIGNING_CERTIFICATE_PASSWORD
+      # - SCIDA_APPLE_SIGNING_IDENTITY (optional if the imported keychain has one matching Developer ID cert)
+      # - SCIDA_APPLE_TEAM_ID
+      # - Notarization: prefer API key
+      #   - SCIDA_APPLE_NOTARY_API_KEY_P8_BASE64
+      #   - SCIDA_APPLE_NOTARY_API_KEY_ID
+      #   - SCIDA_APPLE_NOTARY_API_ISSUER
+      # - Notarization fallback: Apple ID password flow
+      #   - SCIDA_APPLE_ID
+      #   - SCIDA_APPLE_APP_SPECIFIC_PASSWORD
+      SCIDA_APPLE_SIGNING_CERTIFICATE_P12_BASE64: ${{ secrets.SCIDA_APPLE_SIGNING_CERTIFICATE_P12_BASE64 }}
+      SCIDA_APPLE_SIGNING_CERTIFICATE_PASSWORD: ${{ secrets.SCIDA_APPLE_SIGNING_CERTIFICATE_PASSWORD }}
+      SCIDA_APPLE_SIGNING_IDENTITY: ${{ secrets.SCIDA_APPLE_SIGNING_IDENTITY }}
+      SCIDA_APPLE_TEAM_ID: ${{ secrets.SCIDA_APPLE_TEAM_ID }}
+      SCIDA_APPLE_NOTARY_API_KEY_P8_BASE64: ${{ secrets.SCIDA_APPLE_NOTARY_API_KEY_P8_BASE64 }}
+      SCIDA_APPLE_NOTARY_API_KEY_ID: ${{ secrets.SCIDA_APPLE_NOTARY_API_KEY_ID }}
+      SCIDA_APPLE_NOTARY_API_ISSUER: ${{ secrets.SCIDA_APPLE_NOTARY_API_ISSUER }}
+      SCIDA_APPLE_ID: ${{ secrets.SCIDA_APPLE_ID }}
+      SCIDA_APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.SCIDA_APPLE_APP_SPECIFIC_PASSWORD }}
     strategy:
       fail-fast: false
       matrix:
@@ -38,6 +59,68 @@ jobs:
           node-version: 22
           cache: npm
 
+      - name: Validate mac signing secrets
+        if: runner.os == 'macOS' && startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          missing=()
+          [[ -n "${SCIDA_APPLE_SIGNING_CERTIFICATE_P12_BASE64}" ]] || missing+=("SCIDA_APPLE_SIGNING_CERTIFICATE_P12_BASE64")
+          [[ -n "${SCIDA_APPLE_SIGNING_CERTIFICATE_PASSWORD}" ]] || missing+=("SCIDA_APPLE_SIGNING_CERTIFICATE_PASSWORD")
+          [[ -n "${SCIDA_APPLE_TEAM_ID}" ]] || missing+=("SCIDA_APPLE_TEAM_ID")
+
+          has_api_key_creds=0
+          if [[ -n "${SCIDA_APPLE_NOTARY_API_KEY_P8_BASE64}" && -n "${SCIDA_APPLE_NOTARY_API_KEY_ID}" && -n "${SCIDA_APPLE_NOTARY_API_ISSUER}" ]]; then
+            has_api_key_creds=1
+          fi
+
+          has_apple_id_creds=0
+          if [[ -n "${SCIDA_APPLE_ID}" && -n "${SCIDA_APPLE_APP_SPECIFIC_PASSWORD}" && -n "${SCIDA_APPLE_TEAM_ID}" ]]; then
+            has_apple_id_creds=1
+          fi
+
+          if [[ "${has_api_key_creds}" -eq 0 && "${has_apple_id_creds}" -eq 0 ]]; then
+            missing+=("notarization credentials (API key trio or Apple ID + app-specific password)")
+          fi
+
+          if [[ "${#missing[@]}" -gt 0 ]]; then
+            printf 'Missing required mac release secrets:\n' >&2
+            printf ' - %s\n' "${missing[@]}" >&2
+            exit 1
+          fi
+
+      - name: Import Developer ID certificate
+        if: runner.os == 'macOS' && env.SCIDA_APPLE_SIGNING_CERTIFICATE_P12_BASE64 != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          CERT_DIR="$(mktemp -d)"
+          KEYCHAIN_PATH="$RUNNER_TEMP/scida-build.keychain-db"
+          CERT_PATH="$CERT_DIR/scida-signing-cert.p12"
+
+          echo "$SCIDA_APPLE_SIGNING_CERTIFICATE_P12_BASE64" | base64 --decode > "$CERT_PATH"
+
+          security create-keychain -p "" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -k "$KEYCHAIN_PATH" -P "$SCIDA_APPLE_SIGNING_CERTIFICATE_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "" "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
+          echo "SCIDA_MACOS_KEYCHAIN=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+
+      - name: Write notarization API key
+        if: runner.os == 'macOS' && env.SCIDA_APPLE_NOTARY_API_KEY_P8_BASE64 != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          KEY_PATH="$RUNNER_TEMP/scida-notary-api-key.p8"
+          echo "$SCIDA_APPLE_NOTARY_API_KEY_P8_BASE64" | base64 --decode > "$KEY_PATH"
+          chmod 600 "$KEY_PATH"
+          echo "SCIDA_APPLE_NOTARY_API_KEY_PATH=$KEY_PATH" >> "$GITHUB_ENV"
+
       - name: Install dependencies
         run: npm ci
 
@@ -50,9 +133,30 @@ jobs:
       - name: Build distributables
         run: npm run make
 
+      - name: Validate signed mac artifact
+        if: runner.os == 'macOS' && startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ZIP_PATH="$(find out/make/zip/darwin -name '*.zip' | head -n 1)"
+          TEST_DIR="$(mktemp -d)"
+          ditto -x -k "$ZIP_PATH" "$TEST_DIR"
+          APP_PATH="$TEST_DIR/Scida.app"
+
+          codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+          xcrun stapler validate "$APP_PATH"
+          spctl -a -vvv --type exec "$APP_PATH"
+
       - name: Upload make artifacts
         uses: actions/upload-artifact@v4
         with:
           name: scida-${{ matrix.label }}-${{ github.ref_name }}
           path: out/make/**
           if-no-files-found: error
+
+      - name: Clean up mac signing keychain
+        if: always() && runner.os == 'macOS' && env.SCIDA_MACOS_KEYCHAIN != ''
+        shell: bash
+        run: |
+          security delete-keychain "$SCIDA_MACOS_KEYCHAIN" || true

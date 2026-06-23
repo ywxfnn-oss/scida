@@ -7,8 +7,18 @@ import { VitePlugin } from '@electron-forge/plugin-vite';
 import { namedHookWithTaskFn } from '@electron-forge/plugin-base';
 import { FusesPlugin } from '@electron-forge/plugin-fuses';
 import { FuseV1Options, FuseVersion } from '@electron/fuses';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
+
+const macEntitlementsPath = path.join(process.cwd(), 'assets', 'macos', 'entitlements.plist');
+const macEntitlementsInheritPath = path.join(
+  process.cwd(),
+  'assets',
+  'macos',
+  'entitlements.inherit.plist'
+);
 
 function copyDirIfExists(from: string, to: string) {
   if (!fs.existsSync(from)) return;
@@ -17,6 +27,132 @@ function copyDirIfExists(from: string, to: string) {
     recursive: true,
     force: true
   });
+}
+
+function findBundleRoots(appPath: string): string[] {
+  const bundleRoots = new Set<string>([appPath]);
+  const stack = [appPath];
+
+  while (stack.length > 0) {
+    const currentPath = stack.pop();
+    if (!currentPath) continue;
+
+    const entries = fs.readdirSync(currentPath, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+
+      const entryPath = path.join(currentPath, entry.name);
+      if (entry.name.endsWith('.app') || entry.name.endsWith('.framework')) {
+        bundleRoots.add(entryPath);
+      }
+
+      stack.push(entryPath);
+    }
+  }
+
+  return [...bundleRoots];
+}
+
+function isMacSigningConfigured() {
+  return process.platform === 'darwin' && !!process.env.SCIDA_APPLE_TEAM_ID;
+}
+
+function buildMacOsxSignConfig() {
+  if (!isMacSigningConfigured()) return undefined;
+
+  return {
+    identity: process.env.SCIDA_APPLE_SIGNING_IDENTITY || undefined,
+    keychain: process.env.SCIDA_MACOS_KEYCHAIN || undefined,
+    hardenedRuntime: true,
+    preAutoEntitlements: false,
+    optionsForFile: (filePath: string) => ({
+      entitlements:
+        filePath.endsWith('.app') && !filePath.includes(`${path.sep}Contents${path.sep}Frameworks${path.sep}`)
+          ? macEntitlementsPath
+          : macEntitlementsInheritPath,
+      hardenedRuntime: true
+    })
+  };
+}
+
+function buildMacOsxNotarizeConfig() {
+  if (!isMacSigningConfigured()) return undefined;
+
+  if (
+    process.env.SCIDA_APPLE_NOTARY_API_KEY_PATH &&
+    process.env.SCIDA_APPLE_NOTARY_API_KEY_ID &&
+    process.env.SCIDA_APPLE_NOTARY_API_ISSUER
+  ) {
+    return {
+      tool: 'notarytool' as const,
+      appleApiKey: process.env.SCIDA_APPLE_NOTARY_API_KEY_PATH,
+      appleApiKeyId: process.env.SCIDA_APPLE_NOTARY_API_KEY_ID,
+      appleApiIssuer: process.env.SCIDA_APPLE_NOTARY_API_ISSUER
+    };
+  }
+
+  if (
+    process.env.SCIDA_APPLE_ID &&
+    process.env.SCIDA_APPLE_APP_SPECIFIC_PASSWORD &&
+    process.env.SCIDA_APPLE_TEAM_ID
+  ) {
+    return {
+      tool: 'notarytool' as const,
+      appleId: process.env.SCIDA_APPLE_ID,
+      appleIdPassword: process.env.SCIDA_APPLE_APP_SPECIFIC_PASSWORD,
+      teamId: process.env.SCIDA_APPLE_TEAM_ID
+    };
+  }
+
+  return undefined;
+}
+
+function normalizeMacAppBundle(appPath: string, shouldAdhocSign: boolean) {
+  const removableRootAttributes = [
+    'com.apple.FinderInfo',
+    'com.apple.fileprovider.fpfs#P',
+    'com.apple.ResourceFork'
+  ];
+  const bundleRoots = findBundleRoots(appPath);
+
+  execFileSync('xattr', ['-cr', appPath]);
+  for (const bundleRoot of bundleRoots) {
+    for (const attribute of removableRootAttributes) {
+      try {
+        execFileSync('xattr', ['-d', attribute, bundleRoot]);
+      } catch {
+        // Ignore missing xattrs; cleanup is best-effort.
+      }
+    }
+  }
+
+  if (shouldAdhocSign) {
+    execFileSync('codesign', ['--force', '--deep', '--sign', '-', appPath]);
+    for (const bundleRoot of bundleRoots) {
+      for (const attribute of removableRootAttributes) {
+        try {
+          execFileSync('xattr', ['-d', attribute, bundleRoot]);
+        } catch {
+          // Ignore missing xattrs; cleanup is best-effort.
+        }
+      }
+    }
+  }
+
+  execFileSync('codesign', ['--verify', '--deep', '--strict', '--verbose=2', appPath]);
+}
+
+function createCleanMacDistributionZip(appPath: string, artifactPath: string, shouldAdhocSign: boolean) {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'scida-mac-dist-'));
+  const stagedAppPath = path.join(tempDir, path.basename(appPath));
+
+  try {
+    execFileSync('ditto', [appPath, stagedAppPath]);
+    normalizeMacAppBundle(stagedAppPath, shouldAdhocSign);
+    execFileSync('ditto', ['-c', '-k', '--sequesterRsrc', '--keepParent', stagedAppPath, artifactPath]);
+  } finally {
+    fs.rmSync(tempDir, { force: true, recursive: true });
+  }
 }
 
 function createScidataVitePlugin(config: ConstructorParameters<typeof VitePlugin>[0]) {
@@ -70,10 +206,38 @@ function createScidataVitePlugin(config: ConstructorParameters<typeof VitePlugin
 }
 
 const config: ForgeConfig = {
+  hooks: {
+    postMake: async (_forgeConfig, makeResults) => {
+      const shouldAdhocSign = !isMacSigningConfigured();
+
+      for (const makeResult of makeResults) {
+        if (makeResult.platform !== 'darwin') continue;
+
+        const productName = makeResult.packageJSON.productName;
+        const appPath = path.join(
+          process.cwd(),
+          'out',
+          `${productName}-darwin-${makeResult.arch}`,
+          `${productName}.app`
+        );
+
+        if (!fs.existsSync(appPath)) continue;
+
+        for (const artifactPath of makeResult.artifacts) {
+          if (!artifactPath.endsWith('.zip')) continue;
+          createCleanMacDistributionZip(appPath, artifactPath, shouldAdhocSign);
+        }
+      }
+    }
+  },
+
   packagerConfig: {
     asar: false,
     prune: true,
+    appBundleId: 'io.github.ywxfnn-oss.scida',
     icon: path.join(process.cwd(), 'assets', 'icons', 'scida'),
+    osxSign: buildMacOsxSignConfig(),
+    osxNotarize: buildMacOsxNotarizeConfig(),
     afterPrune: [
       (
         buildPath: string,
