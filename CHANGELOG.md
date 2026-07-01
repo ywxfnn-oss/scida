@@ -2,6 +2,62 @@
 
 ## Unreleased
 
+## v1.6.1 - 2026-07-01
+
+### Changed
+
+- Polished the database workspace layout so browse controls, saved-filter controls, and batch actions are more clearly separated while preserving existing selection, export, delete, and detail-open behavior.
+- Replaced the locale-dependent native test-time behavior with a controlled single-field calendar-style datetime picker that always uses `YYYY-MM-DD HH:mm` and 24-hour time.
+- Simplified Step 2 structured-data import so one structured block maps to one explicit X/Y curve, the raw preview stays fully visible, and `写入当前块` is the only action that writes into the saved XY field.
+- Compressed structured-data review in database detail so saved curves are easier to scan without letting large XY text dominate the page.
+- Aligned Analysis structured-series naming with database detail naming so selection, legend, and inspector all prefer meaningful block names before fallback labels.
+
+### Fixed
+
+- Fixed copied-draft messaging so the UI correctly states that copied drafts clear `testTime`, scalar values, structured XY text, and file attachments.
+- Fixed draft-clearing behavior after final save so local draft state is not cleared unless persisted draft deletion succeeds.
+- Fixed completeness guidance so partially filled scalar rows are surfaced consistently with final-save validation expectations.
+- Fixed create-flow leave paths so Home/sidebar/cancel exits no longer bypass draft-resume handling.
+
+## v1.6.0 - 2026-07-01
+
+### Added
+
+- Added AppSetting-backed saved database filter views with local save, reopen, rename, and delete behavior.
+- Added starred records with persistence across restart, plus star toggles from both database list and detail.
+- Added a starred-only database filter for faster return-to-important-record workflows.
+- Added related-record navigation on detail pages using derived same-project, same-sample, and same-tester relationships.
+- Added direct `在分析中打开所选记录` handoff from the database list as a navigation-only shortcut into the read-only analysis workspace.
+
+### Changed
+
+- Upgraded the database page toward a clearer workspace for finding, filtering, selecting, reviewing, and reusing historical records while keeping analysis and export boundaries unchanged.
+- Kept `Copy as New Draft` visible from detail as the narrow reuse entry point, without expanding it into a broader relationship or reuse system.
+- Preserved export semantics, analysis semantics, and database schema while moving database personalization state into local settings instead of persistent record data.
+
+## v1.5.0 - 2026-07-01
+
+### Added
+
+- Added `Save Draft and Return`, `Resume Draft`, and `Discard Draft` for a single persisted active entry draft.
+- Added `Copy as New Draft` from database detail so users can reuse an existing record as a new entry starting point.
+- Added completeness / missing-item guidance for:
+  - missing required Step 1 fields
+  - pending dictionary confirmation
+  - empty Step 2 content
+  - partially filled scalar or structured entry content
+- Added recent suggestions for frequently reused `testProject` and `instrument` values based on experiment usage.
+- Added post-save quick actions for:
+  - `Create Similar`
+  - `Open Saved Record`
+  - `Back Home`
+
+### Changed
+
+- Shifted the next main user-value step from generic workflow hardening toward faster high-frequency record entry and safer incomplete-work handling.
+- Kept drafts local-only, out of database browse / analysis / export, and clearly distinct from saved experiments.
+- Reduced Step 1 repeated-entry friction without changing export behavior, analysis boundaries, or schema.
+
 ## v1.4.0 - 2026-03-29
 
 ### Added

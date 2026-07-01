@@ -8,9 +8,13 @@ import { namedHookWithTaskFn } from '@electron-forge/plugin-base';
 import { FusesPlugin } from '@electron-forge/plugin-fuses';
 import { FuseV1Options, FuseVersion } from '@electron/fuses';
 import { execFileSync } from 'node:child_process';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
+import { createRequire } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
+
+const require = createRequire(import.meta.url);
 
 const macEntitlementsPath = path.join(process.cwd(), 'assets', 'macos', 'entitlements.plist');
 const macEntitlementsInheritPath = path.join(
@@ -205,6 +209,69 @@ function createScidataVitePlugin(config: ConstructorParameters<typeof VitePlugin
   return plugin;
 }
 
+function getElectronDownloadCacheRoot() {
+  if (process.platform === 'darwin') {
+    return path.join(os.homedir(), 'Library', 'Caches', 'electron');
+  }
+
+  if (process.platform === 'win32') {
+    return path.join(
+      process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'),
+      'electron',
+      'Cache'
+    );
+  }
+
+  return path.join(
+    process.env.XDG_CACHE_HOME || path.join(os.homedir(), '.cache'),
+    'electron'
+  );
+}
+
+function findCachedElectronZip(cacheRoot: string, fileName: string) {
+  if (!fs.existsSync(cacheRoot)) {
+    return null;
+  }
+
+  const entries = fs.readdirSync(cacheRoot, { withFileTypes: true });
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+
+    const candidate = path.join(cacheRoot, entry.name, fileName);
+    if (fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+
+  return null;
+}
+
+function computeFileSha256(filePath: string) {
+  const hash = crypto.createHash('sha256');
+  hash.update(fs.readFileSync(filePath));
+  return hash.digest('hex');
+}
+
+function buildElectronDownloadConfig() {
+  const cacheRoot = getElectronDownloadCacheRoot();
+  const electronVersion = require('electron/package.json').version as string;
+  const fileName = `electron-v${electronVersion}-${process.platform}-${process.arch}.zip`;
+  const cachedZipPath = findCachedElectronZip(cacheRoot, fileName);
+
+  if (!cachedZipPath) {
+    return { cacheRoot };
+  }
+
+  return {
+    cacheRoot,
+    // When the host Electron zip is already cached, supplying its checksum avoids an extra
+    // SHASUMS256 network fetch during make's internal package step.
+    checksums: {
+      [fileName]: computeFileSha256(cachedZipPath)
+    }
+  };
+}
+
 const config: ForgeConfig = {
   hooks: {
     postMake: async (_forgeConfig, makeResults) => {
@@ -234,6 +301,7 @@ const config: ForgeConfig = {
   packagerConfig: {
     asar: false,
     prune: true,
+    download: buildElectronDownloadConfig(),
     appBundleId: 'io.github.ywxfnn-oss.scida',
     icon: path.join(process.cwd(), 'assets', 'icons', 'scida'),
     osxSign: buildMacOsxSignConfig(),

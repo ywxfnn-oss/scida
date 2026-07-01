@@ -1,0 +1,6 @@
+release: prepare vX.Y.Z
+
+- bump package version to X.Y.Z
+- update changelog
+- add/update release notes
+- refresh release-facing docs

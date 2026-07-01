@@ -19,7 +19,7 @@ import type {
 } from './import-format-registry';
 
 const MIN_DATA_POINTS = 2;
-const MANUAL_PREVIEW_ROW_LIMIT = 12;
+const MANUAL_PREVIEW_ROW_LIMIT = 40;
 const XRD_LABEL = 'XRD 文本导入';
 const XRD_PARSER_ID = 'xrd_text_generic';
 
@@ -140,7 +140,11 @@ function buildAxisUnitWarnings(xUnit: string, yUnit: string) {
   return ['坐标单位未填写完整，后续分析比较可能受限'];
 }
 
-function splitLineByDelimiter(line: string, delimiter: ImportManualDelimiter) {
+function splitLineByDelimiter(
+  line: string,
+  delimiter: ImportManualDelimiter,
+  options?: { collapseWhitespace?: boolean }
+) {
   if (delimiter === 'tab') {
     return line.split('\t').map((part) => part.trim());
   }
@@ -153,10 +157,14 @@ function splitLineByDelimiter(line: string, delimiter: ImportManualDelimiter) {
     return line.split(';').map((part) => part.trim());
   }
 
-  return line
-    .trim()
-    .split(/\s+/)
-    .map((part) => part.trim());
+  if (options?.collapseWhitespace === false) {
+    return line
+      .trim()
+      .split(/\s/)
+      .map((part) => part.trim());
+  }
+
+  return line.trim().split(/\s+/).map((part) => part.trim());
 }
 
 function splitDelimitedLine(line: string) {
@@ -196,6 +204,13 @@ function getContentRows(content: string): TextRow[] {
     }))
     .filter((entry) => entry.rawLine)
     .filter((entry) => !entry.rawLine.startsWith('#') && !entry.rawLine.startsWith('//'));
+}
+
+function getPreviewContentRows(content: string): TextRow[] {
+  return content.split(/\r?\n/).map((rawLine, index) => ({
+    rowNumber: index + 1,
+    rawLine
+  }));
 }
 
 function detectSuggestedDelimiter(rows: TextRow[]): ImportManualDelimiter {
@@ -268,20 +283,21 @@ function isLikelyXRDText(fileName: string, content: string) {
 function buildManualXYReviewSupportWithDelimiter(
   content: string,
   delimiter: ImportManualDelimiter,
-  dataStartRow = 1
+  options?: {
+    collapseWhitespace?: boolean;
+  }
 ): ImportManualXYReviewSupport | null {
-  const rows = getContentRows(content);
+  const rows = getPreviewContentRows(content);
 
   if (!rows.length) {
     return null;
   }
 
-  const startIndex = Math.max(0, dataStartRow - 1);
   const previewRows: ImportManualPreviewRow[] = rows
-    .slice(startIndex, startIndex + MANUAL_PREVIEW_ROW_LIMIT)
+    .slice(0, MANUAL_PREVIEW_ROW_LIMIT)
     .map((row) => ({
       rowNumber: row.rowNumber,
-      columns: splitLineByDelimiter(row.rawLine, delimiter)
+      columns: splitLineByDelimiter(row.rawLine, delimiter, options)
     }));
 
   const maxColumnCount = previewRows.reduce(
@@ -430,11 +446,46 @@ export function previewManualXYCandidate(params: {
     };
   }
 
-  const dataStartIndex = params.payload.dataStartRow - 1;
-  if (dataStartIndex < 0 || dataStartIndex >= rows.length) {
+  const allRows = getPreviewContentRows(params.content);
+  const dataStartRow = params.payload.dataStartRow;
+  const dataEndRow = params.payload.dataEndRow || allRows.length;
+  const dataStartColumn = Math.max(1, params.payload.dataStartColumn || 1);
+  const dataEndColumn = Math.max(dataStartColumn, params.payload.dataEndColumn || dataStartColumn + 1);
+  const selectedYColumn = params.payload.yColumnIndex;
+
+  const dataStartIndex = dataStartRow - 1;
+  if (dataStartIndex < 0 || dataStartIndex >= allRows.length) {
     return {
       success: false,
       error: '数据起始行超出可预览范围'
+    };
+  }
+
+  if (dataEndRow < dataStartRow) {
+    return {
+      success: false,
+      error: '结束行不能早于起始行'
+    };
+  }
+
+  if (dataEndColumn < dataStartColumn) {
+    return {
+      success: false,
+      error: '结束列不能早于起始列'
+    };
+  }
+
+  if (params.payload.xColumnIndex + 1 < dataStartColumn || params.payload.xColumnIndex + 1 > dataEndColumn) {
+    return {
+      success: false,
+      error: 'X/Y 列必须位于选中的数据区域内'
+    };
+  }
+
+  if (selectedYColumn + 1 < dataStartColumn || selectedYColumn + 1 > dataEndColumn) {
+    return {
+      success: false,
+      error: 'X/Y 列必须位于选中的数据区域内'
     };
   }
 
@@ -442,6 +493,8 @@ export function previewManualXYCandidate(params: {
   const xSourceMode: ImportManualXAxisSourceMode = params.payload.xSourceMode || 'column';
   const generatedXStart = Number(params.payload.generatedXStart ?? 0);
   const generatedXStep = Number(params.payload.generatedXStep ?? 1);
+  let skippedRowCount = 0;
+  const warnings: string[] = [];
 
   if (xSourceMode === 'generated') {
     if (!Number.isFinite(generatedXStart)) {
@@ -459,12 +512,26 @@ export function previewManualXYCandidate(params: {
     }
   }
 
-  for (let index = dataStartIndex; index < rows.length; index += 1) {
-    const row = rows[index];
-    const columns = splitLineByDelimiter(row.rawLine, params.payload.delimiter);
-    const yRaw = columns[params.payload.yColumnIndex];
+  for (let index = dataStartIndex; index < Math.min(dataEndRow, allRows.length); index += 1) {
+    const row = allRows[index];
+    const columns = splitLineByDelimiter(row.rawLine, params.payload.delimiter, {
+      collapseWhitespace: params.payload.collapseWhitespace
+    });
+    const regionColumns = columns.slice(dataStartColumn - 1, dataEndColumn);
+    const isEmptyRegion = regionColumns.every((value) => !value);
+
+    if (isEmptyRegion && params.payload.ignoreEmptyRows !== false) {
+      skippedRowCount += 1;
+      continue;
+    }
+
+    const yRaw = columns[selectedYColumn];
 
     if (typeof yRaw !== 'string') {
+      if (params.payload.ignoreNonNumericRows !== false) {
+        skippedRowCount += 1;
+        continue;
+      }
       return {
         success: false,
         error: `第 ${row.rowNumber} 行缺少所选 Y 列，请调整分隔符、起始行或列号`
@@ -478,6 +545,10 @@ export function previewManualXYCandidate(params: {
         : Number(columns[params.payload.xColumnIndex]);
 
     if (!Number.isFinite(x) || !Number.isFinite(y)) {
+      if (params.payload.ignoreNonNumericRows !== false) {
+        skippedRowCount += 1;
+        continue;
+      }
       return {
         success: false,
         error:
@@ -497,6 +568,10 @@ export function previewManualXYCandidate(params: {
     };
   }
 
+  if (skippedRowCount) {
+    warnings.push(`当前选择区域中已跳过 ${skippedRowCount} 行空值或非数值内容`);
+  }
+
   return {
     success: true,
     candidate: buildXYTemplateBlockCandidate({
@@ -504,10 +579,11 @@ export function previewManualXYCandidate(params: {
       parserLabel: '手动 XY 映射',
       detectionConfidence: 'low',
       warnings: [
-        '该预览来自手动映射，请确认列选择和起始行',
+        `该预览来自手动映射，请确认范围：第 ${dataStartRow}-${dataEndRow} 行，第 ${dataStartColumn}-${dataEndColumn} 列`,
         ...(xSourceMode === 'generated'
           ? ['X 轴由手动生成，请确认起点、步长和单位']
           : []),
+        ...warnings,
         ...buildAxisUnitWarnings(params.payload.xUnit, params.payload.yUnit)
       ],
       filePath: params.filePath,
@@ -524,7 +600,9 @@ export function previewManualXYCandidate(params: {
       buildManualXYReviewSupportWithDelimiter(
         params.content,
         params.payload.delimiter,
-        params.payload.dataStartRow
+        {
+          collapseWhitespace: params.payload.collapseWhitespace
+        }
       ) || {
         reviewType: 'xyText',
         suggestedDelimiter: params.payload.delimiter,

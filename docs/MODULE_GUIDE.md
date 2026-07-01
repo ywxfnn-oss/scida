@@ -1,6 +1,6 @@
 # MODULE_GUIDE.md
 
-Module guide for the current Scidata Manager main branch.
+Module guide for the current Scida main branch.
 
 ## Main Process Composition
 

@@ -1,0 +1,7 @@
+release: prepare v1.6.1
+
+- bump package metadata to 1.6.1
+- ship database workspace and entry-workflow polish updates
+- unify 24-hour test-time input and structured-data review polish
+- backfill v1.5.0 / v1.6.0 / v1.6.1 release notes
+- add standard release process, checklist, and versioned release drafts

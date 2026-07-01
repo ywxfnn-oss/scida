@@ -175,6 +175,40 @@ The product direction is clear: structured records, local files, lightweight ana
 
 它的产品方向已经比较清楚：结构化记录、本地文件、轻量分析和导出。当前界面和工作流已经比早期原型更完整，但整体仍然是有意识地保持聚焦。
 
+### Current Release Track / 当前发布轨迹
+
+- `v1.6.1`
+  - database workspace interaction polish
+  - controlled 24-hour test-time picker
+  - simplified structured-data import and review
+  - structured-series naming consistency in Analysis
+- `v1.6.0`
+  - saved database filter views
+  - starred records
+  - related records on detail
+  - faster database-to-analysis handoff
+- `v1.5.0`
+  - draft / resume / discard workflow
+  - copy existing record as new draft
+  - completeness guidance for incomplete entry
+  - repeated-entry suggestions and post-save quick actions
+
+- `v1.6.1`
+  - 数据库工作台交互精简与层级打磨
+  - 独立于系统时间偏好的 24 小时制测试时间选择器
+  - 更直接的结构化数据导入与回看流程
+  - Analysis 中结构化曲线命名一致性
+- `v1.6.0`
+  - 数据库常用筛选视图
+  - 记录星标
+  - 详情页相关记录
+  - 更快进入分析的数据库入口
+- `v1.5.0`
+  - 草稿 / 继续草稿 / 丢弃草稿
+  - 从已有记录复制为新草稿
+  - 不完整录入提示
+  - 高频录入建议与保存后快捷动作
+
 ---
 
 ## Downloads / 下载
@@ -357,6 +391,12 @@ These are the main local development and release-prep commands used in the repos
 - [Default Templates](docs/DEFAULT_TEMPLATES.md) / 默认模板说明
 - [Export Flow](docs/EXPORT_FLOW.md) / 导出流程说明
 - [Module Guide](docs/MODULE_GUIDE.md) / 模块说明
+- [Release Process](docs/RELEASE_PROCESS.md)
+- [Release Checklist](docs/RELEASE_CHECKLIST.md)
+- [Release Notes v1.6.1](docs/release-notes/v1.6.1.md)
+- [Release Notes v1.6.0](docs/release-notes/v1.6.0.md)
+- [Release Notes v1.5.0](docs/release-notes/v1.5.0.md)
+- [Release Notes v1.4.0](docs/release-notes/v1.4.0.md)
 
 If you want a deeper technical view after reading the product overview, these documents are the right next step.  
 如果你在看完产品概述之后希望进一步了解技术细节，这些文档是合适的下一步入口。
@@ -365,12 +405,12 @@ If you want a deeper technical view after reading the product overview, these do
 
 ## Roadmap / 路线图
 
-- keep improving public-release quality  
-  持续提升公开发布质量
-- make the bilingual experience more complete and more polished  
-  继续补齐并打磨双语使用体验
-- improve workflow clarity for real research use rather than expanding blindly  
-  优先提升真实科研使用中的流程清晰度，而不是盲目扩功能
+- keep strengthening day-to-day personal research workflows before broad platform expansion  
+  在大规模平台化扩展之前，继续优先强化日常个人科研工作流
+- improve release quality, packaging confidence, and human smoke coverage in parallel  
+  并行提升发布质量、打包可信度和人工 smoke 覆盖
+- continue making database history, structured data, and read-only analysis easier to reuse together  
+  继续提升数据库历史记录、结构化数据和只读分析之间的联动复用体验
 - gradually broaden template and workflow coverage beyond the initial domain focus  
   在初始领域重点之外，逐步扩展模板和工作流覆盖范围
 

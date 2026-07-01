@@ -17,10 +17,16 @@ import type {
   DeactivateDictionaryItemPayload,
   ListDictionaryItemsPayload,
   PersistedAnalysisUIState,
+  RecordDatabaseWorkspaceUsagePayload,
+  SaveActiveEntryDraftPayload,
   SaveAppSettingsPayload,
+  SaveDatabaseViewPayload,
   SaveGeneratedFilePayload,
   SaveExperimentPayload,
   SaveExperimentResult,
+  DeleteSavedDatabaseViewPayload,
+  RenameSavedDatabaseViewPayload,
+  ToggleStarredExperimentPayload,
   UpdateExperimentPayload
 } from './electron-api';
 import {
@@ -74,6 +80,12 @@ import {
   savePersistedAnalysisUIState
 } from './main/ui-state-settings';
 import {
+  discardActiveEntryDraft,
+  getActiveEntryDraft,
+  getRecentEntrySuggestions,
+  saveActiveEntryDraft
+} from './main/entry-workflow-settings';
+import {
   addDictionaryItem,
   deactivateDictionaryItem,
   listDictionaryItems
@@ -85,6 +97,16 @@ import {
 } from './main/import-preview-service';
 import { listExperimentEditLogs } from './main/edit-log';
 import { listRecentOperationLogs } from './main/operation-log';
+import {
+  deleteSavedDatabaseView,
+  getDatabaseWorkspaceState,
+  getStarredExperimentIds,
+  recordDatabaseWorkspaceUsage,
+  renameSavedDatabaseView,
+  saveDatabaseView,
+  toggleStarredExperiment
+} from './main/database-workspace-settings';
+import { listRelatedExperimentRecords } from './main/database-related-records';
 import {
   normalizeTemplateBlocks,
   parseTemplateBlockMeta,
@@ -678,6 +700,45 @@ app.whenReady().then(async () => {
     }
   );
 
+  ipcMain.handle('entry:getActiveDraft', async () => {
+    try {
+      return await getActiveEntryDraft(prisma);
+    } catch (error) {
+      console.error('getActiveEntryDraft failed:', error);
+      return null;
+    }
+  });
+
+  ipcMain.handle('entry:saveActiveDraft', async (_event, payload: SaveActiveEntryDraftPayload) => {
+    try {
+      return await saveActiveEntryDraft(prisma, payload);
+    } catch (error) {
+      console.error('saveActiveEntryDraft failed:', error);
+      return { success: false, error: '保存草稿失败，请稍后重试' };
+    }
+  });
+
+  ipcMain.handle('entry:discardActiveDraft', async (): Promise<ActionResult> => {
+    try {
+      return await discardActiveEntryDraft(prisma);
+    } catch (error) {
+      console.error('discardActiveEntryDraft failed:', error);
+      return { success: false, error: '删除草稿失败，请稍后重试' };
+    }
+  });
+
+  ipcMain.handle('entry:getRecentSuggestions', async () => {
+    try {
+      return await getRecentEntrySuggestions(prisma);
+    } catch (error) {
+      console.error('getRecentEntrySuggestions failed:', error);
+      return {
+        testProjects: [],
+        instruments: []
+      };
+    }
+  });
+
   ipcMain.handle(
     'dictionary:list',
     async (_event, payload?: ListDictionaryItemsPayload) => {
@@ -1095,14 +1156,22 @@ app.whenReady().then(async () => {
           value2?: string;
         }>;
         sortOrder?: 'newest' | 'oldest';
+        starredOnly?: boolean;
       }
     ) => {
       const keyword = (payload?.query || '').trim();
       const groupBy = payload?.groupBy || 'sampleCode';
       const sortOrder = payload?.sortOrder || 'newest';
+      const starredOnly = Boolean(payload?.starredOnly);
       const crossFilters = Array.isArray(payload?.crossFilters)
         ? payload.crossFilters.filter((chip) => chip?.value?.trim())
         : [];
+      const starredExperimentIds = starredOnly ? await getStarredExperimentIds(prisma) : [];
+
+      if (starredOnly && !starredExperimentIds.length) {
+        return [];
+      }
+
       const whereClauses = [];
 
       if (keyword) {
@@ -1115,6 +1184,14 @@ app.whenReady().then(async () => {
             { instrument: { contains: keyword } },
             { sampleOwner: { contains: keyword } }
           ]
+        });
+      }
+
+      if (starredOnly) {
+        whereClauses.push({
+          id: {
+            in: starredExperimentIds
+          }
         });
       }
 
@@ -1283,12 +1360,20 @@ app.whenReady().then(async () => {
           | 'secondaryName'
           | 'secondaryValue'
           | 'structuredBlockName';
+        starredOnly?: boolean;
       }
     ) => {
       const keyword = (payload?.query || '').trim();
+      const starredOnly = Boolean(payload?.starredOnly);
       const crossFilters = Array.isArray(payload?.crossFilters)
         ? payload.crossFilters.filter((chip) => chip?.value?.trim())
         : [];
+      const starredExperimentIds = starredOnly ? await getStarredExperimentIds(prisma) : [];
+
+      if (starredOnly && !starredExperimentIds.length) {
+        return [];
+      }
+
       const whereClauses = [];
 
       if (keyword) {
@@ -1301,6 +1386,14 @@ app.whenReady().then(async () => {
             { instrument: { contains: keyword } },
             { sampleOwner: { contains: keyword } }
           ]
+        });
+      }
+
+      if (starredOnly) {
+        whereClauses.push({
+          id: {
+            in: starredExperimentIds
+          }
         });
       }
 
@@ -1449,6 +1542,73 @@ app.whenReady().then(async () => {
     };
   });
 
+  ipcMain.handle('database:getWorkspaceState', async () => {
+    try {
+      return await getDatabaseWorkspaceState(prisma);
+    } catch (error) {
+      console.error('getDatabaseWorkspaceState failed:', error);
+      return {
+        savedViews: [],
+        frequentFilters: [],
+        starredExperimentIds: []
+      };
+    }
+  });
+
+  ipcMain.handle(
+    'database:recordWorkspaceUsage',
+    async (_event, payload: RecordDatabaseWorkspaceUsagePayload): Promise<ActionResult> => {
+      try {
+        return await recordDatabaseWorkspaceUsage(prisma, payload);
+      } catch (error) {
+        console.error('recordDatabaseWorkspaceUsage failed:', error);
+        return { success: false, error: '记录常用筛选失败，请稍后重试' };
+      }
+    }
+  );
+
+  ipcMain.handle('database:saveView', async (_event, payload: SaveDatabaseViewPayload) => {
+    try {
+      return await saveDatabaseView(prisma, payload);
+    } catch (error) {
+      console.error('saveDatabaseView failed:', error);
+      return { success: false, error: '保存视图失败，请稍后重试' };
+    }
+  });
+
+  ipcMain.handle(
+    'database:renameView',
+    async (_event, payload: RenameSavedDatabaseViewPayload): Promise<ActionResult> => {
+    try {
+      return await renameSavedDatabaseView(prisma, payload);
+    } catch (error) {
+      console.error('renameSavedDatabaseView failed:', error);
+      return { success: false, error: '重命名视图失败，请稍后重试' };
+    }
+    }
+  );
+
+  ipcMain.handle(
+    'database:deleteView',
+    async (_event, payload: DeleteSavedDatabaseViewPayload): Promise<ActionResult> => {
+    try {
+      return await deleteSavedDatabaseView(prisma, payload);
+    } catch (error) {
+      console.error('deleteSavedDatabaseView failed:', error);
+      return { success: false, error: '删除视图失败，请稍后重试' };
+    }
+    }
+  );
+
+  ipcMain.handle('database:toggleStarred', async (_event, payload: ToggleStarredExperimentPayload) => {
+    try {
+      return await toggleStarredExperiment(prisma, payload);
+    } catch (error) {
+      console.error('toggleStarredExperiment failed:', error);
+      return { success: false, error: '更新星标状态失败，请稍后重试' };
+    }
+  });
+
   ipcMain.handle('experiment:getDetail', async (_event, experimentId: number) => {
     const experiment = await prisma.experiment.findUnique({
       where: { id: experimentId },
@@ -1540,6 +1700,19 @@ app.whenReady().then(async () => {
         };
       })
     };
+  });
+
+  ipcMain.handle('experiment:listRelatedRecords', async (_event, experimentId: number) => {
+    try {
+      return await listRelatedExperimentRecords(prisma, experimentId);
+    } catch (error) {
+      console.error('listRelatedExperimentRecords failed:', error);
+      return {
+        sameProject: [],
+        sameSampleCode: [],
+        sameTester: []
+      };
+    }
   });
 
   ipcMain.handle(

@@ -51,7 +51,7 @@ export function getPendingOriginalName(item: DataItemLike) {
 
 export function formatTestTimeForDisplay(value: string) {
   if (!value) return '';
-  return value.replace('T', '-').replaceAll(':', '-');
+  return value.replace(/T$/, '').replace('T', '-').replaceAll(':', '-');
 }
 
 export function formatDateTimeForDisplay(value: string) {

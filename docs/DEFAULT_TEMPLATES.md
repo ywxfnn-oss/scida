@@ -1,10 +1,10 @@
 # Default Templates
 
-Guide for the default Step 1-driven Step 2 template system in Scidata Manager.
+Guide for the default Step 1-driven Step 2 template system in Scida.
 
 ## Introduction
 
-This guide explains how Scidata Manager uses the Step 1 `测试项目` field to provide a default semantic context for Step 2.
+This guide explains how Scida uses the Step 1 `测试项目` field to provide a default semantic context for Step 2.
 
 The default template system is meant to help users start faster. It provides:
 
@@ -27,7 +27,7 @@ You can still:
 
 ## How Templates Work
 
-Scidata Manager keeps the current product structure:
+Scida keeps the current product structure:
 
 - Step 1: standardized first-level metadata
 - Step 2: unified second-level data entry

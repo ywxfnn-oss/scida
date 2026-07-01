@@ -1,6 +1,6 @@
 # DATABASE.md
 
-Database guide for the current Scidata Manager main branch.
+Database guide for the current Scida main branch.
 
 ## Stack
 
@@ -10,11 +10,12 @@ Database guide for the current Scidata Manager main branch.
 
 This file is limited to current main-branch runtime database behavior and safety rules.
 
-Current `v1.1.0` release boundary:
+Current `v1.6.1` release boundary:
 
-- no schema changes were introduced for the naming-consolidation work
-- derived record naming, export naming, Step 2 wording, and managed-file naming changes were implemented without DB-table changes
-- there is no historical managed-file batch rename migration in this release
+- no schema changes were introduced across the `v1.5.0` / `v1.6.0` / `v1.6.1` line
+- draft workflow, saved filter views, starred records, related-record navigation, and analysis naming consistency were implemented without DB-table changes
+- derived record naming, export naming, and managed-file behavior remain compatible with the existing runtime schema
+- there is still no historical managed-file batch rename migration in this release line
 
 ## Key Files
 

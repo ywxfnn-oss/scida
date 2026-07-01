@@ -10,19 +10,29 @@ import type {
   ListDictionaryItemsPayload
 } from '../electron-api';
 
-const DICTIONARY_TYPES: DictionaryType[] = ['testProject', 'tester', 'instrument'];
+const DICTIONARY_TYPES: DictionaryType[] = [
+  'testProject',
+  'tester',
+  'instrument',
+  'sampleCode',
+  'sampleOwner'
+];
 
 const DICTIONARY_SETTING_KEYS: Record<DictionaryType, string> = {
   testProject: 'dictionary:testProject',
   tester: 'dictionary:tester',
-  instrument: 'dictionary:instrument'
+  instrument: 'dictionary:instrument',
+  sampleCode: 'dictionary:sampleCode',
+  sampleOwner: 'dictionary:sampleOwner'
 };
 
 function buildEmptyDictionaryItemsByType(): DictionaryItemsByType {
   return {
     testProject: [],
     tester: [],
-    instrument: []
+    instrument: [],
+    sampleCode: [],
+    sampleOwner: []
   };
 }
 

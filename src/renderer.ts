@@ -1,5 +1,6 @@
 import './index.css';
 import type {
+  ActiveEntryDraft,
   AnalysisStep1FieldKey,
   AppLanguage,
   AppBootstrapState,
@@ -8,15 +9,23 @@ import type {
   CrossFilterChip,
   CrossFilterField,
   CrossFilterOperator,
+  DatabaseWorkspaceState,
   DictionaryItemsByType,
   DictionaryType,
   DuplicateExperimentMatch,
+  EntryDraftDataItem,
+  EntryDraftDynamicField,
+  EntryDraftTemplateBlock,
   ExperimentEditHistoryEntry,
   ExperimentDetail,
   ExperimentGroup,
   ExperimentListItem,
+  FrequentDatabaseFilter,
+  ImportRecognitionStatus,
   ImportManualDelimiter,
   ImportManualXAxisSourceMode,
+  ImportResolvedEncoding,
+  ImportTextEncoding,
   ImportPreviewFileResult,
   ExperimentListSortOrder,
   FileIntegrityReport,
@@ -25,7 +34,11 @@ import type {
   PersistedAnalysisUIState,
   PersistedAnalysisUIStateChartConfig,
   PreviewManualImportXYResult,
+  RecentEntrySuggestions,
   RecentOperationLogEntry,
+  RelatedExperimentRecords,
+  SaveActiveEntryDraftPayload,
+  RecordDatabaseWorkspaceUsagePayload,
   SaveExperimentPayload,
   SaveExperimentTemplateBlockPayload,
   UpdateExperimentPayload
@@ -33,6 +46,7 @@ import type {
 import {
   buildDisplayName,
   escapeHtml,
+  formatDateTimeForDisplay,
   generateId,
   getErrorMessage,
   getPendingOriginalName,
@@ -44,7 +58,6 @@ import {
   renderExperimentEditHistory,
   renderDynamicFields,
   renderExportModal,
-  renderGroupTabs,
   renderOperationLogFilterButtons,
   renderRecentOperationLogs
 } from './renderer/render-helpers';
@@ -169,6 +182,10 @@ type TemplateBlockFormData = {
 
 type ImportReviewManualState = {
   available: boolean;
+  textEncoding: ImportTextEncoding;
+  resolvedEncoding: ImportResolvedEncoding;
+  recognitionStatus: ImportRecognitionStatus;
+  recognitionMessage: string;
   delimiter: ImportManualDelimiter;
   suggestedDelimiter: ImportManualDelimiter;
   previewRows: Array<{
@@ -177,11 +194,17 @@ type ImportReviewManualState = {
   }>;
   maxColumnCount: number;
   dataStartRow: number;
+  dataEndRow: number | null;
+  dataStartColumn: number;
+  dataEndColumn: number | null;
   xSourceMode: ImportManualXAxisSourceMode;
   xColumnIndex: number;
   yColumnIndex: number;
   generatedXStart: number;
   generatedXStep: number;
+  ignoreEmptyRows: boolean;
+  ignoreNonNumericRows: boolean;
+  collapseWhitespace: boolean;
   previewLoading: boolean;
   previewError: string;
 };
@@ -394,7 +417,13 @@ type AnalysisChartDragState = {
   plotHeight: number;
 };
 
-const DICTIONARY_TYPES: DictionaryType[] = ['testProject', 'tester', 'instrument'];
+const DICTIONARY_TYPES: DictionaryType[] = [
+  'testProject',
+  'tester',
+  'instrument',
+  'sampleCode',
+  'sampleOwner'
+];
 const STEP1_SUGGESTION_LIMIT = 8;
 const ANALYSIS_CHART_COLORS = [
   '#1d4ed8',
@@ -482,13 +511,21 @@ const METRIC_NAME_KEYWORDS = [
   '上升时间',
   '下降时间'
 ];
-const DICTIONARY_SECTION_META: DictionaryType[] = ['testProject', 'tester', 'instrument'];
+const DICTIONARY_SECTION_META: DictionaryType[] = [
+  'testProject',
+  'tester',
+  'instrument',
+  'sampleCode',
+  'sampleOwner'
+];
 
 function buildEmptyDictionaryItems(): DictionaryItemsByType {
   return {
     testProject: [],
     tester: [],
-    instrument: []
+    instrument: [],
+    sampleCode: [],
+    sampleOwner: []
   };
 }
 
@@ -496,7 +533,9 @@ function buildEmptyDictionaryInputState(): Record<DictionaryType, string> {
   return {
     testProject: '',
     tester: '',
-    instrument: ''
+    instrument: '',
+    sampleCode: '',
+    sampleOwner: ''
   };
 }
 
@@ -504,7 +543,9 @@ function buildEmptyDictionaryErrorState(): Record<DictionaryType, string> {
   return {
     testProject: '',
     tester: '',
-    instrument: ''
+    instrument: '',
+    sampleCode: '',
+    sampleOwner: ''
   };
 }
 
@@ -618,6 +659,172 @@ function confirmAnalysisPreparationWarnings(warnings: string[]) {
   );
 }
 
+function collectStep1MissingRequiredFieldLabels() {
+  const missing: string[] = [];
+
+  if (!step1FormData.testProject) missing.push(t('step1.field.testProject'));
+  if (!step1FormData.sampleCode) missing.push(t('step1.field.sampleCode'));
+  if (!step1FormData.tester) missing.push(t('step1.field.tester'));
+  if (!step1FormData.instrument) missing.push(t('step1.field.instrument'));
+  if (!hasCompleteLocalDateTimeValue(step1FormData.testTime)) missing.push(t('step1.field.testTime'));
+
+  return missing;
+}
+
+function collectStep1PendingDictionaryLabels() {
+  if (!dictionaryLoaded) {
+    return [];
+  }
+
+  const isDictionaryValueConfirmed = (dictionaryType: DictionaryType, value: string) => {
+    const normalizedValue = value.trim().toLowerCase();
+    if (!normalizedValue) {
+      return true;
+    }
+
+    return dictionaryItems[dictionaryType].some(
+      (item) => item.value.trim().toLowerCase() === normalizedValue
+    );
+  };
+
+  const checks: Array<{ dictionaryType: DictionaryType; value: string; label: string }> = [
+    {
+      dictionaryType: 'testProject',
+      value: step1FormData.testProject,
+      label: t('step1.field.testProject')
+    },
+    {
+      dictionaryType: 'sampleCode',
+      value: step1FormData.sampleCode,
+      label: t('step1.field.sampleCode')
+    },
+    {
+      dictionaryType: 'tester',
+      value: step1FormData.tester,
+      label: t('step1.field.tester')
+    },
+    {
+      dictionaryType: 'instrument',
+      value: step1FormData.instrument,
+      label: t('step1.field.instrument')
+    },
+    {
+      dictionaryType: 'sampleOwner',
+      value: step1FormData.sampleOwner,
+      label: t('step1.field.sampleOwner')
+    }
+  ];
+
+  return checks
+    .filter((check) => check.value && !isDictionaryValueConfirmed(check.dictionaryType, check.value))
+    .map((check) => check.label);
+}
+
+function renderStep1CompletenessStrip() {
+  const missingFields = collectStep1MissingRequiredFieldLabels();
+  const dictionaryPending = collectStep1PendingDictionaryLabels();
+  const isReady = !missingFields.length;
+  const detailText = isReady
+    ? t('step1.status.readyDetail')
+    : t('step1.status.missingFields', {
+        fields: missingFields.join(' / ')
+      });
+  const dictionaryText = dictionaryPending.length
+    ? t('step1.status.dictionaryPending', {
+        fields: dictionaryPending.join(' / ')
+      })
+    : '';
+
+  return `
+    <div class="step1-status-strip ${isReady ? 'step1-status-strip-ready' : 'step1-status-strip-pending'}">
+      <div class="step1-status-main">
+        <span id="step1-status-badge" class="step1-status-badge">${escapeHtml(
+          isReady ? t('step1.status.ready') : t('step1.status.pending')
+        )}</span>
+        <span id="step1-status-text" class="step1-status-text">${escapeHtml(detailText)}</span>
+      </div>
+      ${
+        dictionaryText
+          ? `<div id="step1-status-secondary" class="step1-status-secondary">${escapeHtml(dictionaryText)}</div>`
+          : ''
+      }
+    </div>
+  `;
+}
+
+function renderActiveDraftStatusCard(options?: { compact?: boolean }) {
+  if (!activeEntryDraft) {
+    return '';
+  }
+
+  const sourceText =
+    activeEntryDraft.source === 'copied-record' && activeEntryDraft.originDisplayName
+      ? t('draft.statusCopiedFrom', {
+          label: activeEntryDraft.originDisplayName
+        })
+      : t('draft.statusActive');
+
+  return `
+    <div class="name-preview-card ${options?.compact ? 'name-preview-card-compact' : ''}">
+      <div class="name-preview-label">${escapeHtml(t('draft.statusTitle'))}</div>
+      <div class="name-preview-value">${escapeHtml(sourceText)}</div>
+      <div class="subtitle ${options?.compact ? 'subtitle-compact' : ''}">${escapeHtml(
+        t('draft.statusUpdatedAt', {
+          updatedAt: formatDateTimeForDisplay(activeEntryDraft.updatedAt)
+        })
+      )}</div>
+    </div>
+  `;
+}
+
+function getStep2EntryCounts() {
+  const conditionCount = step2DataItems.filter(
+    (row) => (row.scalarRole || 'metric') === 'condition'
+  ).length;
+  const metricCount = step2DataItems.filter((row) => (row.scalarRole || 'metric') === 'metric').length;
+  const blockCount = step2TemplateBlocks.length;
+
+  return { conditionCount, metricCount, blockCount };
+}
+
+function renderStep2StatusArea() {
+  const counts = getStep2EntryCounts();
+  const hasAnyContent = counts.conditionCount || counts.metricCount || counts.blockCount;
+  const family = getActiveStep2TemplateFamily('create-step2');
+
+  return `
+    <div class="step2-status-area">
+      <div class="step2-status-strip">
+        <span class="step2-status-label">${escapeHtml(t('step2.status.name'))}</span>
+        <span class="step2-status-value">${escapeHtml(buildDisplayName(step1FormData))}</span>
+      </div>
+      <div class="step2-status-strip">
+        <span class="step2-status-badge ${hasAnyContent ? 'step2-status-badge-ready' : ''}">${escapeHtml(
+          hasAnyContent ? t('step2.status.ready') : t('step2.status.pending')
+        )}</span>
+        <span class="step2-status-text">${escapeHtml(
+          hasAnyContent
+            ? t('step2.status.summary', counts)
+            : t('step2.status.empty')
+        )}</span>
+      </div>
+      ${
+        family
+          ? `
+              <div class="step2-status-strip step2-status-strip-template">
+                <span class="step2-status-text">${escapeHtml(
+                  t('step2.status.template', {
+                    family: getLocalizedTemplateFamilyLabel(family)
+                  })
+                )}</span>
+              </div>
+            `
+          : ''
+      }
+    </div>
+  `;
+}
+
 function buildEmptyDataItem(role: ScalarItemRole = 'metric'): DataItem {
   return {
     id: generateId(),
@@ -652,7 +859,8 @@ const onboardingState: OnboardingFormState = {
 
 let databaseSearchKeyword = '';
 let databaseGroupBy: GroupByType = 'sampleCode';
-const databaseSortOrder: ExperimentListSortOrder = 'newest';
+let databaseSortOrder: ExperimentListSortOrder = 'newest';
+let databaseStarredOnly = false;
 let databaseCrossFilters: CrossFilterChip[] = [];
 let databaseFilterDraft: CrossFilterDraftState = {
   open: false,
@@ -666,9 +874,20 @@ let databaseFilterCandidateQuery = '';
 let databaseFilterCandidateValues: string[] = [];
 let databaseFilterCandidateLoading = false;
 let databaseFilterCandidateKey = '';
+let databaseWorkspaceStateLoaded = false;
+let databaseWorkspaceStateLoadPromise: Promise<void> | null = null;
+let frequentDatabaseFilters: FrequentDatabaseFilter[] = [];
+let starredExperimentIds: number[] = [];
+let databaseFrequentFiltersOpen = false;
 let databaseGroups: ExperimentGroup[] = [];
 let currentDetail: ExperimentDetail | null = null;
 let currentEditHistory: ExperimentEditHistoryEntry[] = [];
+let currentRelatedRecords: RelatedExperimentRecords = {
+  sameProject: [],
+  sameSampleCode: [],
+  sameTester: []
+};
+let currentRelatedRecordsLoading = false;
 
 let detailEditMode = false;
 let detailEditReason = '';
@@ -701,6 +920,15 @@ const dictionaryInputValues = buildEmptyDictionaryInputState();
 const dictionarySectionErrors = buildEmptyDictionaryErrorState();
 let dictionarySubmittingType: DictionaryType | null = null;
 let dictionaryDeletingId: string | null = null;
+let activeEntryDraft: ActiveEntryDraft | null = null;
+let activeEntryDraftLoaded = false;
+let activeEntryDraftLoadPromise: Promise<void> | null = null;
+let recentEntrySuggestions: RecentEntrySuggestions = {
+  testProjects: [],
+  instruments: []
+};
+let recentEntrySuggestionsLoaded = false;
+let recentEntrySuggestionsLoadPromise: Promise<void> | null = null;
 let selectedOrphanPaths: string[] = [];
 let operationLogLoading = false;
 let operationLogError = '';
@@ -714,6 +942,7 @@ let analysisRecords: AnalysisRecordCatalogEntry[] = [];
 let analysisCharts: AnalysisChartCard[] = [];
 let analysisInspector: AnalysisInspectorState | null = null;
 let analysisComposer: AnalysisComposerState | null = null;
+let analysisHandoffRecordIds: number[] = [];
 let analysisFilterCandidateQuery = '';
 let analysisExportMenuChartId: string | null = null;
 let analysisChartDragState: AnalysisChartDragState | null = null;
@@ -1066,6 +1295,589 @@ async function reloadDictionaryItems() {
   dictionaryLoadError = '';
 }
 
+async function reloadDatabaseWorkspaceState() {
+  const state: DatabaseWorkspaceState = await window.electronAPI.getDatabaseWorkspaceState();
+  frequentDatabaseFilters = state.frequentFilters || [];
+  starredExperimentIds = state.starredExperimentIds;
+  databaseWorkspaceStateLoaded = true;
+}
+
+async function ensureDatabaseWorkspaceStateLoaded() {
+  if (databaseWorkspaceStateLoaded) {
+    return;
+  }
+
+  if (!databaseWorkspaceStateLoadPromise) {
+    databaseWorkspaceStateLoadPromise = (async () => {
+      try {
+        await reloadDatabaseWorkspaceState();
+      } catch (error) {
+        console.error('load database workspace state failed:', error);
+        frequentDatabaseFilters = [];
+        starredExperimentIds = [];
+        databaseWorkspaceStateLoaded = true;
+      }
+    })();
+  }
+
+  await databaseWorkspaceStateLoadPromise;
+}
+
+function isExperimentStarred(experimentId: number) {
+  return starredExperimentIds.includes(experimentId);
+}
+
+function buildCurrentDatabaseWorkspaceUsagePayload(
+  overrides: Partial<RecordDatabaseWorkspaceUsagePayload> = {}
+): RecordDatabaseWorkspaceUsagePayload {
+  return {
+    query: overrides.query !== undefined ? overrides.query : databaseSearchKeyword,
+    groupBy: overrides.groupBy || databaseGroupBy,
+    sortOrder: overrides.sortOrder || databaseSortOrder,
+    starredOnly: overrides.starredOnly !== undefined ? overrides.starredOnly : databaseStarredOnly,
+    crossFilters:
+      overrides.crossFilters !== undefined
+        ? overrides.crossFilters
+        : databaseCrossFilters.map((chip) => ({ ...chip }))
+  };
+}
+
+function applyDatabaseWorkspaceCombination(combination: RecordDatabaseWorkspaceUsagePayload) {
+  databaseSearchKeyword = combination.query || '';
+  databaseGroupBy = combination.groupBy || 'sampleCode';
+  databaseSortOrder = combination.sortOrder || 'newest';
+  databaseStarredOnly = Boolean(combination.starredOnly);
+  databaseCrossFilters = Array.isArray(combination.crossFilters)
+    ? combination.crossFilters.map((chip) => ({ ...chip }))
+    : [];
+  databaseFilterDraft = buildDefaultCrossFilterDraft();
+  resetDatabaseFilterCandidateState();
+}
+
+function closeDatabaseFrequentFiltersPopover() {
+  databaseFrequentFiltersOpen = false;
+}
+
+function hasCustomizedDatabaseWorkspaceState() {
+  return Boolean(
+    databaseSearchKeyword ||
+      databaseCrossFilters.length ||
+      databaseStarredOnly ||
+      databaseGroupBy !== 'sampleCode' ||
+      databaseSortOrder !== 'newest'
+  );
+}
+
+function resetDatabaseWorkspaceControls() {
+  databaseSearchKeyword = '';
+  databaseGroupBy = 'sampleCode';
+  databaseSortOrder = 'newest';
+  databaseStarredOnly = false;
+  databaseCrossFilters = [];
+  databaseFilterDraft = buildDefaultCrossFilterDraft();
+  resetDatabaseFilterCandidateState();
+  closeDatabaseFrequentFiltersPopover();
+}
+
+async function recordCurrentDatabaseWorkspaceUsage() {
+  if (!hasCustomizedDatabaseWorkspaceState()) {
+    return;
+  }
+
+  try {
+    await window.electronAPI.recordDatabaseWorkspaceUsage(
+      buildCurrentDatabaseWorkspaceUsagePayload()
+    );
+    await reloadDatabaseWorkspaceState();
+  } catch (error) {
+    console.error('record database workspace usage failed:', error);
+  }
+}
+
+async function reloadCurrentRelatedRecords(experimentId: number) {
+  currentRelatedRecordsLoading = true;
+
+  try {
+    currentRelatedRecords = await window.electronAPI.listRelatedExperimentRecords(experimentId);
+  } catch (error) {
+    console.error('load related experiment records failed:', error);
+    currentRelatedRecords = {
+      sameProject: [],
+      sameSampleCode: [],
+      sameTester: []
+    };
+  } finally {
+    currentRelatedRecordsLoading = false;
+  }
+}
+
+async function reloadActiveEntryDraft() {
+  activeEntryDraft = await window.electronAPI.getActiveEntryDraft();
+  activeEntryDraftLoaded = true;
+}
+
+async function ensureActiveEntryDraftLoaded() {
+  if (activeEntryDraftLoaded) {
+    return activeEntryDraft;
+  }
+
+  if (!activeEntryDraftLoadPromise) {
+    activeEntryDraftLoadPromise = (async () => {
+      try {
+        await reloadActiveEntryDraft();
+      } catch (error) {
+        console.error('load active entry draft failed:', error);
+        activeEntryDraft = null;
+        activeEntryDraftLoaded = true;
+      }
+    })();
+  }
+
+  await activeEntryDraftLoadPromise;
+  return activeEntryDraft;
+}
+
+async function reloadRecentEntrySuggestions() {
+  recentEntrySuggestions = await window.electronAPI.getRecentEntrySuggestions();
+  recentEntrySuggestionsLoaded = true;
+}
+
+async function ensureRecentEntrySuggestionsLoaded() {
+  if (recentEntrySuggestionsLoaded) {
+    return recentEntrySuggestions;
+  }
+
+  if (!recentEntrySuggestionsLoadPromise) {
+    recentEntrySuggestionsLoadPromise = (async () => {
+      try {
+        await reloadRecentEntrySuggestions();
+      } catch (error) {
+        console.error('load recent entry suggestions failed:', error);
+        recentEntrySuggestions = {
+          testProjects: [],
+          instruments: []
+        };
+        recentEntrySuggestionsLoaded = true;
+      }
+    })();
+  }
+
+  await recentEntrySuggestionsLoadPromise;
+  return recentEntrySuggestions;
+}
+
+async function ensureEntryWorkflowAssistDataLoaded() {
+  await Promise.all([
+    ensureDictionaryItemsLoaded().catch((error) => {
+      console.error('load dictionary items for entry workflow failed:', error);
+    }),
+    ensureRecentEntrySuggestionsLoaded().catch((error) => {
+      console.error('load recent entry workflow suggestions failed:', error);
+    })
+  ]);
+}
+
+function resetCreateFormToBlank() {
+  resetFormState();
+  currentView = 'add-step1';
+}
+
+async function openAddDataEntry() {
+  const draft = await ensureActiveEntryDraftLoaded();
+  if (draft) {
+    await resumeActiveDraft();
+    return;
+  }
+
+  resetCreateFormToBlank();
+  await ensureEntryWorkflowAssistDataLoaded();
+  void render();
+}
+
+function buildSaveDraftPayload(
+  resumeStep: SaveActiveEntryDraftPayload['resumeStep'],
+  overrides: Partial<Pick<SaveActiveEntryDraftPayload, 'source' | 'originExperimentId' | 'originDisplayName'>> = {}
+): SaveActiveEntryDraftPayload {
+  return {
+    source: overrides.source || activeEntryDraft?.source || 'new',
+    originExperimentId:
+      overrides.originExperimentId !== undefined
+        ? overrides.originExperimentId
+        : activeEntryDraft?.originExperimentId,
+    originDisplayName:
+      overrides.originDisplayName !== undefined
+        ? overrides.originDisplayName
+        : activeEntryDraft?.originDisplayName,
+    resumeStep,
+    step1: {
+      testProject: step1FormData.testProject,
+      sampleCode: step1FormData.sampleCode,
+      tester: step1FormData.tester,
+      instrument: step1FormData.instrument,
+      testTime: step1FormData.testTime,
+      sampleOwner: step1FormData.sampleOwner,
+      dynamicFields: step1FormData.dynamicFields.map((field): EntryDraftDynamicField => ({
+        id: field.id,
+        name: field.name,
+        value: field.value
+      }))
+    },
+    step2: step2DataItems.map((item): EntryDraftDataItem => ({
+      id: item.id,
+      scalarRole: item.scalarRole,
+      itemName: item.itemName,
+      itemValue: item.itemValue,
+      itemUnit: item.itemUnit,
+      sourceFileName: item.sourceFileName,
+      sourceFilePath: item.sourceFilePath,
+      originalFileName: item.originalFileName,
+      originalFilePath: item.originalFilePath
+    })),
+    templateBlocks: step2TemplateBlocks.map((block): EntryDraftTemplateBlock => ({
+      id: block.id,
+      templateType: block.templateType,
+      purposeType: block.purposeType,
+      blockTitle: block.blockTitle,
+      primaryLabel: block.primaryLabel,
+      primaryUnit: block.primaryUnit,
+      secondaryLabel: block.secondaryLabel,
+      secondaryUnit: block.secondaryUnit,
+      dataText: block.dataText,
+      note: block.note,
+      sourceFileName: block.sourceFileName,
+      sourceFilePath: block.sourceFilePath,
+      originalFileName: block.originalFileName,
+      originalFilePath: block.originalFilePath
+    }))
+  };
+}
+
+function applyActiveEntryDraftToCreateForm(draft: ActiveEntryDraft) {
+  step1FormData = {
+    testProject: draft.step1.testProject,
+    sampleCode: draft.step1.sampleCode,
+    tester: draft.step1.tester,
+    instrument: draft.step1.instrument,
+    testTime: draft.step1.testTime,
+    sampleOwner: draft.step1.sampleOwner,
+    dynamicFields: draft.step1.dynamicFields.map((field) => ({
+      id: field.id,
+      name: field.name,
+      value: field.value
+    }))
+  };
+
+  step2DataItems = draft.step2.map((item) => ({
+    id: item.id,
+    scalarRole: item.scalarRole,
+    itemName: item.itemName,
+    itemValue: item.itemValue,
+    itemUnit: item.itemUnit,
+    sourceFileName: item.sourceFileName,
+    sourceFilePath: item.sourceFilePath,
+    originalFileName: item.originalFileName,
+    originalFilePath: item.originalFilePath,
+    replacementSourcePath: '',
+    replacementOriginalName: ''
+  }));
+
+  step2TemplateBlocks = draft.templateBlocks.map((block) => ({
+    id: block.id,
+    templateType: block.templateType,
+    purposeType: block.purposeType || '',
+    blockTitle: block.blockTitle,
+    primaryLabel: block.primaryLabel,
+    primaryUnit: block.primaryUnit,
+    secondaryLabel: block.secondaryLabel,
+    secondaryUnit: block.secondaryUnit,
+    dataText: block.dataText,
+    note: block.note,
+    sourceFileName: block.sourceFileName,
+    sourceFilePath: block.sourceFilePath,
+    originalFileName: block.originalFileName,
+    originalFilePath: block.originalFilePath,
+    replacementSourcePath: '',
+    replacementOriginalName: '',
+    importPreviewLoading: false,
+    importPreviewError: '',
+    importParserLabel: '',
+    importWarnings: [] as string[],
+    importPreviewSelectedName: '',
+    importPreviewSelectedPath: ''
+  }));
+
+  resetTemplateBlockImportState('create-step2');
+}
+
+async function discardActiveDraftAndRefresh() {
+  const result = await window.electronAPI.discardActiveEntryDraft();
+  if (!result.success) {
+    alert(result.error || t('draft.discardFailed'));
+    return false;
+  }
+
+  activeEntryDraft = null;
+  activeEntryDraftLoaded = true;
+  activeEntryDraftLoadPromise = null;
+  return true;
+}
+
+async function resumeActiveDraft() {
+  const draft = await ensureActiveEntryDraftLoaded();
+  if (!draft) {
+    alert(t('draft.resumeMissing'));
+    requestRender(true);
+    return;
+  }
+
+  await ensureEntryWorkflowAssistDataLoaded();
+  applyActiveEntryDraftToCreateForm(draft);
+  currentView = draft.resumeStep === 'step2' ? 'add-step2' : 'add-step1';
+  void render();
+}
+
+function hasAnyCreateDraftContent() {
+  return Boolean(
+    step1FormData.testProject ||
+      step1FormData.sampleCode ||
+      step1FormData.tester ||
+      step1FormData.instrument ||
+      step1FormData.testTime ||
+      step1FormData.sampleOwner ||
+      step1FormData.dynamicFields.some((field) => field.name || field.value) ||
+      step2DataItems.some((item) =>
+        item.itemName ||
+        item.itemValue ||
+        item.itemUnit ||
+        item.sourceFileName ||
+        item.originalFileName
+      ) ||
+      step2TemplateBlocks.some((block) =>
+        block.purposeType ||
+        block.blockTitle ||
+        block.primaryLabel ||
+        block.primaryUnit ||
+        block.secondaryLabel ||
+        block.secondaryUnit ||
+        block.dataText ||
+        block.note ||
+        block.sourceFileName ||
+        block.originalFileName
+      )
+  );
+}
+
+function buildComparableEntryDraftPayload(
+  payload: SaveActiveEntryDraftPayload
+): SaveActiveEntryDraftPayload {
+  return {
+    source: payload.source,
+    originExperimentId:
+      Number.isInteger(payload.originExperimentId) && Number(payload.originExperimentId) > 0
+        ? Number(payload.originExperimentId)
+        : undefined,
+    originDisplayName: payload.originDisplayName || undefined,
+    resumeStep: payload.resumeStep,
+    step1: {
+      ...payload.step1,
+      dynamicFields: payload.step1.dynamicFields.map((field) => ({
+        id: field.id,
+        name: field.name,
+        value: field.value
+      }))
+    },
+    step2: payload.step2.map((item) => ({
+      id: item.id,
+      scalarRole: item.scalarRole,
+      itemName: item.itemName,
+      itemValue: item.itemValue,
+      itemUnit: item.itemUnit,
+      sourceFileName: item.sourceFileName,
+      sourceFilePath: item.sourceFilePath,
+      originalFileName: item.originalFileName,
+      originalFilePath: item.originalFilePath
+    })),
+    templateBlocks: payload.templateBlocks.map((block) => ({
+      id: block.id,
+      templateType: block.templateType,
+      purposeType: block.purposeType || undefined,
+      blockTitle: block.blockTitle,
+      primaryLabel: block.primaryLabel,
+      primaryUnit: block.primaryUnit,
+      secondaryLabel: block.secondaryLabel,
+      secondaryUnit: block.secondaryUnit,
+      dataText: block.dataText,
+      note: block.note,
+      sourceFileName: block.sourceFileName,
+      sourceFilePath: block.sourceFilePath,
+      originalFileName: block.originalFileName,
+      originalFilePath: block.originalFilePath
+    }))
+  };
+}
+
+function hasPendingCreateFlowChanges(
+  resumeStep: SaveActiveEntryDraftPayload['resumeStep']
+) {
+  if (!activeEntryDraft) {
+    return hasAnyCreateDraftContent();
+  }
+
+  const currentPayload = buildComparableEntryDraftPayload(buildSaveDraftPayload(resumeStep));
+  const savedDraftPayload = buildComparableEntryDraftPayload(activeEntryDraft);
+  return JSON.stringify(currentPayload) !== JSON.stringify(savedDraftPayload);
+}
+
+async function saveCurrentDraft(
+  resumeStep: SaveActiveEntryDraftPayload['resumeStep']
+) {
+  if (!hasAnyCreateDraftContent()) {
+    alert(t('draft.nothingToSave'));
+    return false;
+  }
+
+  const result = await window.electronAPI.saveActiveEntryDraft(buildSaveDraftPayload(resumeStep));
+  if (!result.success) {
+    alert(result.error || t('draft.saveFailed'));
+    return false;
+  }
+
+  await reloadActiveEntryDraft();
+  return true;
+}
+
+async function saveCurrentDraftAndReturn(resumeStep: SaveActiveEntryDraftPayload['resumeStep']) {
+  const saved = await saveCurrentDraft(resumeStep);
+  if (!saved) {
+    return;
+  }
+
+  currentView = 'home';
+  void render();
+}
+
+async function attemptLeaveCreateFlow(
+  resumeStep: SaveActiveEntryDraftPayload['resumeStep'],
+  navigate: () => Promise<void> | void
+) {
+  const hasPendingChanges = hasPendingCreateFlowChanges(resumeStep);
+  if (!hasPendingChanges) {
+    await navigate();
+    return;
+  }
+
+  const canSaveDraft = hasAnyCreateDraftContent();
+  if (canSaveDraft && window.confirm(t('draft.leaveConfirm'))) {
+    const saved = await saveCurrentDraft(resumeStep);
+    if (!saved) {
+      return;
+    }
+
+    await navigate();
+    return;
+  }
+
+  const confirmedDiscard = window.confirm(t('draft.leaveDiscardConfirm'));
+  if (!confirmedDiscard) {
+    return;
+  }
+
+  if (activeEntryDraft) {
+    const discarded = await discardActiveDraftAndRefresh();
+    if (!discarded) {
+      return;
+    }
+  }
+
+  resetFormState();
+  await navigate();
+}
+
+function buildCopiedRecordDraftPayload(detail: ExperimentDetail): SaveActiveEntryDraftPayload {
+  return {
+    source: 'copied-record',
+    originExperimentId: detail.id,
+    originDisplayName: detail.displayName,
+    resumeStep: 'step1',
+    step1: {
+      testProject: detail.testProject,
+      sampleCode: detail.sampleCode,
+      tester: detail.tester,
+      instrument: detail.instrument,
+      testTime: '',
+      sampleOwner: detail.sampleOwner || '',
+      dynamicFields: detail.customFields.map((field) => ({
+        id: generateId(),
+        name: field.fieldName,
+        value: field.fieldValue
+      }))
+    },
+    step2: detail.dataItems.map((item) => ({
+      id: generateId(),
+      scalarRole: resolveScalarItemRole(item),
+      itemName: item.itemName,
+      itemValue: '',
+      itemUnit: item.itemUnit || '',
+      sourceFileName: '',
+      sourceFilePath: '',
+      originalFileName: '',
+      originalFilePath: ''
+    })),
+    templateBlocks: detail.templateBlocks.map((block) => ({
+      id: generateId(),
+      templateType: block.templateType,
+      purposeType: block.purposeType || '',
+      blockTitle: block.blockTitle,
+      primaryLabel:
+        block.templateType === XY_TEMPLATE_TYPE ? block.xLabel : block.spectrumAxisLabel,
+      primaryUnit:
+        block.templateType === XY_TEMPLATE_TYPE ? block.xUnit : block.spectrumAxisUnit,
+      secondaryLabel:
+        block.templateType === XY_TEMPLATE_TYPE ? block.yLabel : block.signalLabel,
+      secondaryUnit:
+        block.templateType === XY_TEMPLATE_TYPE ? block.yUnit : block.signalUnit,
+      dataText: '',
+      note: block.note,
+      sourceFileName: '',
+      sourceFilePath: '',
+      originalFileName: '',
+      originalFilePath: ''
+    }))
+  };
+}
+
+async function createNewDraftFromExperimentDetail(detail: ExperimentDetail) {
+  const existingDraft = await ensureActiveEntryDraftLoaded();
+  if (existingDraft) {
+    const confirmed = window.confirm(
+      t('draft.replaceConfirm', {
+        label: existingDraft.originDisplayName || buildDisplayName(existingDraft.step1)
+      })
+    );
+    if (!confirmed) {
+      return;
+    }
+  }
+
+  const result = await window.electronAPI.saveActiveEntryDraft(buildCopiedRecordDraftPayload(detail));
+  if (!result.success) {
+    alert(result.error || t('draft.copyFailed'));
+    return;
+  }
+
+  await reloadActiveEntryDraft();
+  const draft = activeEntryDraft;
+  if (!draft) {
+    alert(t('draft.resumeMissing'));
+    return;
+  }
+
+  await ensureEntryWorkflowAssistDataLoaded();
+  applyActiveEntryDraftToCreateForm(draft);
+  currentView = 'add-step1';
+  void render();
+}
+
 function saveDictionaryInputsToState() {
   DICTIONARY_TYPES.forEach((dictionaryType) => {
     const input = document.getElementById(
@@ -1153,6 +1965,431 @@ function toggleSelectAllVisible() {
   }
 }
 
+async function toggleExperimentStarStatus(
+  experimentId: number,
+  options: { reloadDatabaseList?: boolean; preserveScroll?: boolean } = {}
+) {
+  const result = await window.electronAPI.toggleStarredExperiment({ experimentId });
+  if (!result.success) {
+    alert(result.error || t('database.star.toggleFailed'));
+    return;
+  }
+
+  await reloadDatabaseWorkspaceState();
+
+  if (options.reloadDatabaseList) {
+    await loadDatabaseList();
+  }
+
+  if (options.preserveScroll) {
+    void renderPreservingContentScroll();
+    return;
+  }
+
+  void render();
+}
+
+function getDatabaseGroupByOptions(): Array<{ key: GroupByType; label: string }> {
+  return [
+    { key: 'sampleCode', label: t('database.groupBy.sampleCode') },
+    { key: 'testProject', label: t('database.groupBy.testProject') },
+    { key: 'testTime', label: t('database.groupBy.testTime') },
+    { key: 'instrument', label: t('database.groupBy.instrument') },
+    { key: 'tester', label: t('database.groupBy.tester') },
+    { key: 'sampleOwner', label: t('database.groupBy.sampleOwner') }
+  ];
+}
+
+function getDatabaseGroupByLabel(groupBy: GroupByType) {
+  return getDatabaseGroupByOptions().find((option) => option.key === groupBy)?.label || '';
+}
+
+function renderDatabaseBulkActionBar() {
+  const allVisibleSelected = areAllVisibleSelected();
+  const hasSelection = selectedExperimentIds.length > 0;
+  const hasVisibleResults = getVisibleExperimentIds().length > 0;
+
+  return `
+    <section class="database-bulk-bar">
+      <div class="database-bulk-meta">
+        <div class="database-bulk-title">${escapeHtml(t('database.selectedResults', { count: selectedExperimentIds.length }))}</div>
+      </div>
+      <div class="database-bulk-actions">
+        <button
+          id="db-select-all-btn"
+          class="secondary-btn database-toolbar-btn"
+          type="button"
+          ${hasVisibleResults ? '' : 'disabled'}
+        >
+          ${escapeHtml(allVisibleSelected ? t('database.cancelCurrentResults') : t('database.selectCurrentResults'))}
+        </button>
+        <button
+          id="db-export-btn"
+          class="secondary-btn database-toolbar-btn"
+          type="button"
+          ${hasSelection ? '' : 'disabled'}
+          title="${escapeHtml(t('analysis.chart.export'))}"
+        >
+          ↓ ${escapeHtml(t('analysis.chart.export'))}
+        </button>
+        <button
+          id="db-delete-btn"
+          class="danger-btn database-toolbar-btn ${hasSelection ? '' : 'disabled-danger-btn'}"
+          type="button"
+          ${hasSelection ? '' : 'disabled'}
+          title="${escapeHtml(t('dictionary.delete'))}"
+        >
+          ✕ ${escapeHtml(t('dictionary.delete'))}
+        </button>
+        <button id="db-clear-selection-btn" class="text-btn database-clear-selection-btn" type="button" ${hasSelection ? '' : 'disabled'}>
+          ${escapeHtml(t('database.clearSelection'))}
+        </button>
+      </div>
+    </section>
+  `;
+}
+
+function renderDatabaseFilterChipStrip() {
+  if (!databaseCrossFilters.length) {
+    return '';
+  }
+
+  return `
+    <section class="database-chip-strip">
+      <div class="cross-filter-chip-row database-cross-filter-chip-row">
+        ${databaseCrossFilters
+          .map(
+            (chip) => `
+              <span class="cross-filter-chip">
+                <span class="cross-filter-chip-label">${escapeHtml(formatLocalizedCrossFilterChipLabel(chip))}</span>
+                <button
+                  class="cross-filter-chip-remove"
+                  type="button"
+                  title="${escapeHtml(t('database.filter.removeCondition'))}"
+                  data-cross-filter-remove="database::${chip.id}"
+                >
+                  ×
+                </button>
+              </span>
+            `
+          )
+          .join('')}
+        <button id="db-filter-clear-btn" class="text-btn cross-filter-clear-btn" type="button">
+          ${escapeHtml(t('database.filter.clearAll'))}
+        </button>
+      </div>
+    </section>
+  `;
+}
+
+function formatFrequentDatabaseFilterLabel(item: FrequentDatabaseFilter) {
+  const parts: string[] = [];
+
+  if (item.query) {
+    parts.push(t('database.frequent.searchLabel', { query: item.query }));
+  }
+
+  item.crossFilters.slice(0, 2).forEach((chip) => {
+    parts.push(formatLocalizedCrossFilterChipLabel(chip));
+  });
+
+  if (item.starredOnly) {
+    parts.push(t('database.star.filterOn'));
+  }
+
+  if (item.groupBy !== 'sampleCode') {
+    parts.push(t('database.frequent.groupByLabel', { label: getDatabaseGroupByLabel(item.groupBy) }));
+  }
+
+  return parts.join('，');
+}
+
+function shouldDisplayFrequentDatabaseFilter(item: FrequentDatabaseFilter) {
+  return Boolean(item.query || item.crossFilters.length);
+}
+
+function renderFrequentDatabaseFiltersEntry() {
+  const visibleFrequentFilters = frequentDatabaseFilters.filter(shouldDisplayFrequentDatabaseFilter);
+
+  return `
+    <div class="database-frequent-entry">
+      <button
+        id="db-frequent-filters-btn"
+        class="secondary-btn database-toolbar-btn database-frequent-trigger"
+        type="button"
+        aria-expanded="${databaseFrequentFiltersOpen ? 'true' : 'false'}"
+      >
+        ${escapeHtml(t('database.savedViews.title'))}
+      </button>
+      ${
+        databaseFrequentFiltersOpen
+          ? `
+              <div class="database-frequent-popover">
+                <div class="database-frequent-popover-header">
+                  <div class="database-inline-label">${escapeHtml(t('database.savedViews.title'))}</div>
+                  <button id="db-frequent-filters-close-btn" class="text-btn" type="button">×</button>
+                </div>
+                ${
+                  visibleFrequentFilters.length
+                    ? `<div class="database-frequent-list">
+                        ${visibleFrequentFilters
+                          .map(
+                            (item) => `
+                              <button
+                                class="database-frequent-item"
+                                type="button"
+                                data-apply-frequent-filter-id="${item.id}"
+                              >
+                                <span>${escapeHtml(formatFrequentDatabaseFilterLabel(item))}</span>
+                              </button>
+                            `
+                          )
+                          .join('')}
+                      </div>`
+                    : `<div class="database-frequent-empty">${escapeHtml(t('database.savedViews.empty'))}</div>`
+                }
+              </div>
+            `
+          : ''
+      }
+    </div>
+  `;
+}
+
+function renderDatabaseFilterPanel() {
+  if (!databaseFilterDraft.open) {
+    return '';
+  }
+
+  const fieldOptions = getCrossFilterFieldOptions();
+  const operatorOptions = getCrossFilterOperatorOptions();
+  const supportsRange = supportsCrossFilterRangeOperator(databaseFilterDraft.field);
+  const supportsPendingValues = supportsCrossFilterPendingMultiValue(databaseFilterDraft.operator);
+  const supportsCandidatePicker = supportsCrossFilterCandidatePicker(
+    databaseFilterDraft.field,
+    databaseFilterDraft.operator
+  );
+  const candidateValues = getDatabaseFilterCandidateValues();
+
+  return `
+    <div id="db-filter-mask" class="database-filter-mask">
+      <div class="database-filter-popover" role="dialog" aria-modal="true">
+        <div class="database-filter-popover-header">
+          <div class="detail-section-title">${escapeHtml(t('database.filter.panelTitle'))}</div>
+          <button id="db-filter-close-btn" class="text-btn" type="button">×</button>
+        </div>
+        <div class="cross-filter-draft-row ${supportsRange ? 'cross-filter-draft-row-range' : ''}">
+          <select id="db-filter-field" class="form-input cross-filter-field-select">
+            ${fieldOptions
+              .map(
+                (option) => `
+                  <option value="${option.field}" ${databaseFilterDraft.field === option.field ? 'selected' : ''}>
+                    ${option.label}
+                  </option>
+                `
+              )
+              .join('')}
+          </select>
+          ${
+            supportsRange
+              ? `
+                  <select id="db-filter-operator" class="form-input cross-filter-operator-select">
+                    ${operatorOptions
+                      .map(
+                        (option) => `
+                          <option value="${option.operator}" ${databaseFilterDraft.operator === option.operator ? 'selected' : ''}>
+                            ${option.label}
+                          </option>
+                        `
+                      )
+                      .join('')}
+                  </select>
+                `
+              : ''
+          }
+          <input
+            id="db-filter-value"
+            class="form-input cross-filter-value-input"
+            placeholder="${escapeHtml(
+              supportsRange && databaseFilterDraft.operator !== 'eq'
+                ? databaseFilterDraft.operator === 'between'
+                  ? t('database.filter.rangeStart')
+                  : t('database.filter.threshold')
+                : getLocalizedCrossFilterFieldPlaceholder(databaseFilterDraft.field)
+            )}"
+            value="${escapeHtml(databaseFilterDraft.value)}"
+          />
+          ${
+            supportsPendingValues
+              ? `
+                  <button id="db-filter-pending-add-btn" class="secondary-btn cross-filter-pending-add-btn" type="button">
+                    ${escapeHtml(t('database.filter.addValue'))}
+                  </button>
+                `
+              : ''
+          }
+          ${
+            supportsRange && databaseFilterDraft.operator === 'between'
+              ? `
+                  <input
+                    id="db-filter-value2"
+                    class="form-input cross-filter-value-input"
+                    placeholder="${escapeHtml(t('database.filter.rangeEnd'))}"
+                    value="${escapeHtml(databaseFilterDraft.value2)}"
+                  />
+                `
+              : ''
+          }
+        </div>
+        ${
+          supportsPendingValues
+            ? `
+                <div class="cross-filter-draft-hint">
+                  ${
+                    supportsCandidatePicker
+                      ? escapeHtml(t('database.filter.multiValueHint'))
+                      : escapeHtml(t('database.filter.manualMultiValueHint'))
+                  }
+                </div>
+                <div class="cross-filter-pending-row">
+                  ${databaseFilterDraft.pendingValues
+                    .map(
+                      (value) => `
+                        <span class="cross-filter-pending-chip">
+                          <span class="cross-filter-pending-chip-label">${escapeHtml(value)}</span>
+                          <button
+                            class="cross-filter-chip-remove"
+                            type="button"
+                            title="${escapeHtml(t('database.filter.removePendingValue'))}"
+                            data-cross-filter-pending-remove="database::${encodeURIComponent(value)}"
+                          >
+                            ×
+                          </button>
+                        </span>
+                      `
+                    )
+                    .join('')}
+                </div>
+                ${
+                  supportsCandidatePicker
+                    ? `
+                        <div class="cross-filter-candidate-shell">
+                          <div class="cross-filter-candidate-search-row">
+                            <input
+                              id="db-filter-candidate-search"
+                              class="form-input cross-filter-candidate-search"
+                              placeholder="${escapeHtml(t('database.filter.candidateSearchPlaceholder'))}"
+                              value="${escapeHtml(databaseFilterCandidateQuery)}"
+                            />
+                            <span class="cross-filter-candidate-count">${escapeHtml(
+                              t('database.filter.candidateCount', { count: candidateValues.length })
+                            )}</span>
+                          </div>
+                          <div class="cross-filter-candidate-list">
+                            ${
+                              databaseFilterCandidateLoading
+                                ? `<div class="cross-filter-candidate-empty">${escapeHtml(t('database.filter.candidateLoading'))}</div>`
+                                : candidateValues.length
+                                  ? candidateValues
+                                      .map(
+                                        (value) => `
+                                          <label class="cross-filter-candidate-option">
+                                            <input
+                                              type="checkbox"
+                                              data-cross-filter-candidate-toggle="database::${encodeURIComponent(value)}"
+                                              ${databaseFilterDraft.pendingValues.includes(value) ? 'checked' : ''}
+                                            />
+                                            <span>${escapeHtml(value)}</span>
+                                          </label>
+                                        `
+                                      )
+                                      .join('')
+                                  : `<div class="cross-filter-candidate-empty">${escapeHtml(t('database.filter.candidateEmpty'))}</div>`
+                            }
+                          </div>
+                        </div>
+                      `
+                    : ''
+                }
+              `
+            : supportsRange
+              ? `<div class="cross-filter-draft-hint">${escapeHtml(t('database.filter.numericHint'))}</div>`
+              : ''
+        }
+        <div class="database-filter-popover-actions">
+          <button id="db-filter-apply-btn" class="primary-btn" type="button">
+            ${escapeHtml(supportsPendingValues ? t('database.filter.apply') : t('database.filter.addCondition'))}
+          </button>
+          <button id="db-filter-cancel-btn" class="secondary-btn" type="button">${escapeHtml(t('database.filter.cancel'))}</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderRelatedRecordItems(records: ExperimentListItem[]) {
+  if (!records.length) {
+    return `<div class="empty-tip">${escapeHtml(t('databaseDetail.relatedEmpty'))}</div>`;
+  }
+
+  return `
+    <div class="detail-list">
+      ${records
+        .map(
+          (record) => `
+            <div class="detail-list-item">
+              <div class="detail-list-key">${escapeHtml(record.displayName)}</div>
+              <div class="detail-list-value">
+                ${escapeHtml(t('database.card.sampleCode'))}：${escapeHtml(record.sampleCode)}<br />
+                ${escapeHtml(t('database.card.testProject'))}：${escapeHtml(record.testProject)}<br />
+                ${escapeHtml(t('database.card.tester'))}：${escapeHtml(record.tester)}
+              </div>
+              <button
+                class="secondary-btn"
+                type="button"
+                data-open-related-detail-id="${record.id}"
+              >
+                ${escapeHtml(t('database.card.viewDetails'))}
+              </button>
+            </div>
+          `
+        )
+        .join('')}
+    </div>
+  `;
+}
+
+function renderRelatedRecordsSection() {
+  if (currentRelatedRecordsLoading) {
+    return `
+      <div class="detail-section">
+        <div class="detail-section-title">${escapeHtml(t('databaseDetail.section.relatedRecords'))}</div>
+        <div class="detail-value">${escapeHtml(t('common.loading'))}</div>
+      </div>
+    `;
+  }
+
+  return `
+    <div class="detail-section">
+      <div class="detail-section-title">${escapeHtml(t('databaseDetail.section.relatedRecords'))}</div>
+      <div class="detail-grid">
+        <div>
+          <div class="detail-section-title">${escapeHtml(t('databaseDetail.related.sameProject'))}</div>
+          ${renderRelatedRecordItems(currentRelatedRecords.sameProject)}
+        </div>
+        <div>
+          <div class="detail-section-title">${escapeHtml(t('databaseDetail.related.sameSampleCode'))}</div>
+          ${renderRelatedRecordItems(currentRelatedRecords.sameSampleCode)}
+        </div>
+        <div>
+          <div class="detail-section-title">${escapeHtml(t('databaseDetail.related.sameTester'))}</div>
+          ${renderRelatedRecordItems(currentRelatedRecords.sameTester)}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
 function closeExportModal() {
   exportModalVisible = false;
   exportLoading = false;
@@ -1176,6 +2413,8 @@ function closeDuplicateWarning() {
 }
 
 async function openExperimentDetail(experimentId: number) {
+  await ensureDatabaseWorkspaceStateLoaded();
+
   const [detail, editHistory] = await Promise.all([
     window.electronAPI.getExperimentDetail(experimentId),
     window.electronAPI.listExperimentEditLogs({
@@ -1186,6 +2425,9 @@ async function openExperimentDetail(experimentId: number) {
 
   currentDetail = detail;
   currentEditHistory = editHistory;
+  if (detail) {
+    await reloadCurrentRelatedRecords(detail.id);
+  }
   detailEditMode = false;
   detailEditReason = '';
   detailEditor = '';
@@ -1193,6 +2435,16 @@ async function openExperimentDetail(experimentId: number) {
   detailEditStep2 = [];
   detailEditTemplateBlocks = [];
   resetTemplateBlockImportState('detail-edit');
+  if (detail) {
+    await reloadCurrentRelatedRecords(detail.id);
+  } else {
+    currentRelatedRecords = {
+      sameProject: [],
+      sameSampleCode: [],
+      sameTester: []
+    };
+    currentRelatedRecordsLoading = false;
+  }
   currentView = 'database-detail';
   void render();
 }
@@ -1411,6 +2663,7 @@ async function refreshDatabaseFilterCandidateValues(force = false) {
   );
   const requestKey = JSON.stringify({
     query: databaseSearchKeyword.trim(),
+    starredOnly: databaseStarredOnly,
     field: databaseFilterDraft.field,
     crossFilters: baseCrossFilters.map((chip) => ({
       field: chip.field,
@@ -1432,7 +2685,8 @@ async function refreshDatabaseFilterCandidateValues(force = false) {
     const values = await window.electronAPI.listExperimentFilterValueCandidates({
       query: databaseSearchKeyword.trim(),
       crossFilters: baseCrossFilters,
-      field: databaseFilterDraft.field
+      field: databaseFilterDraft.field,
+      starredOnly: databaseStarredOnly
     });
 
     if (databaseFilterCandidateKey !== requestKey) {
@@ -1738,6 +2992,7 @@ function renderCrossFilterControls(params: {
 }
 
 function openDatabaseFilterDraft() {
+  closeDatabaseFrequentFiltersPopover();
   databaseFilterDraft = {
     ...databaseFilterDraft,
     open: true
@@ -1778,8 +3033,10 @@ async function applyDatabaseFilterDraft() {
         databaseFilterDraft.operator,
         databaseFilterDraft.value2
       );
+  closeDatabaseFrequentFiltersPopover();
   closeDatabaseFilterDraft();
   await loadDatabaseList();
+  await recordCurrentDatabaseWorkspaceUsage();
   void render();
 }
 
@@ -1865,13 +3122,56 @@ function applyAnalysisComposerFilterDraft() {
   requestRender(true);
 }
 
-function getAnalysisStructuredBlockDisplayName(block: ExperimentDetail['templateBlocks'][number]) {
+function isGenericStructuredBlockTitle(title: string) {
+  const normalized = trimBlockTitle(title).toLowerCase();
+  if (!normalized) {
+    return true;
+  }
+
+  return [
+    '结构化数据',
+    '结构化数据块',
+    '结构化曲线',
+    '未指定',
+    'unnamed block',
+    'structured data',
+    'structured block',
+    'structured curve'
+  ].includes(normalized);
+}
+
+function getAnalysisStructuredBlockAxisMeta(block: ExperimentDetail['templateBlocks'][number]) {
+  return {
+    xLabel: block.templateType === XY_TEMPLATE_TYPE ? block.xLabel : block.spectrumAxisLabel,
+    xUnit: block.templateType === XY_TEMPLATE_TYPE ? block.xUnit : block.spectrumAxisUnit,
+    yLabel: block.templateType === XY_TEMPLATE_TYPE ? block.yLabel : block.signalLabel,
+    yUnit: block.templateType === XY_TEMPLATE_TYPE ? block.yUnit : block.signalUnit
+  };
+}
+
+function formatAnalysisAxisLabel(label: string, unit: string) {
+  const trimmedLabel = label.trim() || '-';
+  const trimmedUnit = unit.trim();
+  return trimmedUnit ? `${trimmedLabel} (${trimmedUnit})` : trimmedLabel;
+}
+
+function buildAnalysisAxisPairSummary(
+  xLabel: string,
+  xUnit: string,
+  yLabel: string,
+  yUnit: string
+) {
+  return `X：${formatAnalysisAxisLabel(xLabel, xUnit)} · Y：${formatAnalysisAxisLabel(yLabel, yUnit)}`;
+}
+
+function getAnalysisStructuredBlockLegacyDisplayName(
+  block: ExperimentDetail['templateBlocks'][number]
+) {
   const purposeLabel = getStructuredBlockPurposeLabel(block.purposeType || '');
   const hasKnownPurpose = purposeLabel && purposeLabel !== '未指定';
   const trimmedTitle = trimBlockTitle(block.blockTitle);
-  const hasSpecificTitle = trimmedTitle && trimmedTitle !== '结构化数据块';
-  const xLabel = block.templateType === XY_TEMPLATE_TYPE ? block.xLabel : block.spectrumAxisLabel;
-  const yLabel = block.templateType === XY_TEMPLATE_TYPE ? block.yLabel : block.signalLabel;
+  const hasSpecificTitle = trimmedTitle && !isGenericStructuredBlockTitle(trimmedTitle);
+  const { xLabel, yLabel } = getAnalysisStructuredBlockAxisMeta(block);
   const axisSummary = [yLabel.trim(), xLabel.trim()].filter(Boolean).join(' - ') || '结构化数据';
 
   if (hasKnownPurpose && hasSpecificTitle) {
@@ -1889,21 +3189,93 @@ function getAnalysisStructuredBlockDisplayName(block: ExperimentDetail['template
   return axisSummary;
 }
 
+function getAnalysisStructuredBlockDisplayName(
+  block: ExperimentDetail['templateBlocks'][number],
+  index = 0
+) {
+  const trimmedTitle = trimBlockTitle(block.blockTitle);
+  const purposeLabel = getStructuredBlockPurposeLabel(block.purposeType || '');
+  const hasMeaningfulTitle = trimmedTitle && !isGenericStructuredBlockTitle(trimmedTitle);
+  const hasMeaningfulPurpose = purposeLabel && purposeLabel !== '未指定';
+
+  if (hasMeaningfulTitle) {
+    return trimmedTitle;
+  }
+
+  if (hasMeaningfulPurpose) {
+    return purposeLabel;
+  }
+
+  return `结构化曲线 ${index + 1}`;
+}
+
+function getAnalysisStructuredBlockOptionLabel(
+  block: ExperimentDetail['templateBlocks'][number],
+  index: number
+) {
+  const displayName = getAnalysisStructuredBlockDisplayName(block, index);
+  const { xLabel, xUnit, yLabel, yUnit } = getAnalysisStructuredBlockAxisMeta(block);
+  return `${displayName} · ${buildAnalysisAxisPairSummary(xLabel, xUnit, yLabel, yUnit)}`;
+}
+
+function findAnalysisStructuredBlockBySelectionName(
+  blocks: ExperimentDetail['templateBlocks'],
+  selectionName: string
+) {
+  return blocks.find((block, index) => {
+    const displayName = getAnalysisStructuredBlockDisplayName(block, index);
+    if (displayName === selectionName) {
+      return true;
+    }
+
+    return getAnalysisStructuredBlockLegacyDisplayName(block) === selectionName;
+  });
+}
+
+function getTemplateBlockReviewTitle(block: TemplateBlockFormData, index: number) {
+  const trimmedTitle = trimBlockTitle(block.blockTitle);
+  const purposeLabel = getStructuredBlockPurposeLabel(block.purposeType || '');
+  const hasMeaningfulTitle = trimmedTitle && !isGenericStructuredBlockTitle(trimmedTitle);
+  const hasMeaningfulPurpose = purposeLabel && purposeLabel !== '未指定';
+
+  if (hasMeaningfulTitle) {
+    return trimmedTitle;
+  }
+
+  if (hasMeaningfulPurpose) {
+    return purposeLabel;
+  }
+
+  return `结构化曲线 ${index + 1}`;
+}
+
+function getTemplateBlockReviewOrdinal(index: number) {
+  return `#${index + 1}`;
+}
+
 function getAnalysisStructuredBlockNameOptions(recordIds: number[]) {
   if (!recordIds.length) {
     return [];
   }
 
-  const nameSet = new Set<string>();
+  const optionMap = new Map<string, { value: string; label: string }>();
   analysisRecords
     .filter((entry) => recordIds.includes(entry.listItem.id))
     .forEach((entry) => {
-      entry.detail.templateBlocks.forEach((block) => {
-        nameSet.add(getAnalysisStructuredBlockDisplayName(block));
+      entry.detail.templateBlocks.forEach((block, index) => {
+        const value = getAnalysisStructuredBlockDisplayName(block, index);
+        if (!optionMap.has(value)) {
+          optionMap.set(value, {
+            value,
+            label: getAnalysisStructuredBlockOptionLabel(block, index)
+          });
+        }
       });
     });
 
-  return Array.from(nameSet).sort((left, right) => left.localeCompare(right, 'zh-CN'));
+  return Array.from(optionMap.values()).sort((left, right) =>
+    left.value.localeCompare(right.value, 'zh-CN')
+  );
 }
 
 function matchesAnalysisRecordFilters(
@@ -1946,12 +3318,17 @@ function reconcileAnalysisComposerSelection(composer: AnalysisComposerState) {
   };
 }
 
-function pickSingleAnalysisOption(options: string[], currentValue: string) {
-  if (options.includes(currentValue)) {
+function pickSingleAnalysisOption(
+  options: Array<string | { value: string }>,
+  currentValue: string
+) {
+  const values = options.map((option) => (typeof option === 'string' ? option : option.value));
+
+  if (values.includes(currentValue)) {
     return currentValue;
   }
 
-  return options.length === 1 ? options[0] : '';
+  return values.length === 1 ? values[0] : '';
 }
 
 function getVisibleAnalysisScalarSeries(chart: AnalysisChartCard) {
@@ -2460,11 +3837,9 @@ function buildAnalysisStructuredSeriesFromBlock(
     return { error: t('analysis.composer.blockMissing') };
   }
 
-  const xLabel = block.templateType === XY_TEMPLATE_TYPE ? block.xLabel : block.spectrumAxisLabel;
-  const xUnit = block.templateType === XY_TEMPLATE_TYPE ? block.xUnit : block.spectrumAxisUnit;
-  const yLabel = block.templateType === XY_TEMPLATE_TYPE ? block.yLabel : block.signalLabel;
-  const yUnit = block.templateType === XY_TEMPLATE_TYPE ? block.yUnit : block.signalUnit;
-  const defaultName = getAnalysisStructuredBlockDisplayName(block);
+  const blockIndex = entry.detail.templateBlocks.findIndex((item) => item.id === block.id);
+  const { xLabel, xUnit, yLabel, yUnit } = getAnalysisStructuredBlockAxisMeta(block);
+  const defaultName = getAnalysisStructuredBlockDisplayName(block, blockIndex >= 0 ? blockIndex : 0);
   const defaultColor = getAnalysisChartColor(chart.structuredSeries.length);
 
   return {
@@ -2505,9 +3880,12 @@ function buildAnalysisStructuredSeries(
 
   composer.selectedRecordIds.forEach((recordId) => {
     const entry = getAnalysisRecordEntry(recordId);
-    const matchedBlock = entry?.detail.templateBlocks.find(
-      (block) => getAnalysisStructuredBlockDisplayName(block) === composer.selectedBlockName
-    );
+    const matchedBlock = entry?.detail
+      ? findAnalysisStructuredBlockBySelectionName(
+          entry.detail.templateBlocks,
+          composer.selectedBlockName
+        )
+      : undefined;
 
     if (!matchedBlock) {
       skippedRecordIds.push(recordId);
@@ -2779,18 +4157,18 @@ function refreshAnalysisChartsFromCatalog() {
         series.blockId
       );
 
-      if (buildResult.series) {
-        rebuiltSeries.push({
-          ...buildResult.series,
-          hidden: series.hidden,
-          name: series.name,
-          color: series.color,
-          defaultName: buildResult.series.defaultName,
-          defaultColor: buildResult.series.defaultColor,
-          sourceBlockDisplayName: series.sourceBlockDisplayName
-        });
-      }
-    });
+        if (buildResult.series) {
+          rebuiltSeries.push({
+            ...buildResult.series,
+            hidden: series.hidden,
+            name: series.name,
+            color: series.color,
+            defaultName: buildResult.series.defaultName,
+            defaultColor: buildResult.series.defaultColor,
+            sourceBlockDisplayName: buildResult.series.sourceBlockDisplayName
+          });
+        }
+      });
 
     const nextChart: AnalysisChartCard = {
       ...chart,
@@ -2862,6 +4240,33 @@ async function loadAnalysisWorkspaceData() {
   analysisLoadError = '';
 }
 
+function getAnalysisHandoffSelectedRecordIds() {
+  if (!analysisHandoffRecordIds.length) {
+    return [];
+  }
+
+  const availableRecordIds = new Set(analysisRecords.map((entry) => entry.listItem.id));
+  return analysisHandoffRecordIds.filter((recordId) => availableRecordIds.has(recordId));
+}
+
+function clearAnalysisHandoffSelection() {
+  analysisHandoffRecordIds = [];
+}
+
+function renderAnalysisHandoffNotice() {
+  const handoffRecordIds = getAnalysisHandoffSelectedRecordIds();
+  if (!handoffRecordIds.length) {
+    return '';
+  }
+
+  return `
+    <div class="name-preview-card">
+      <div class="name-preview-label">${escapeHtml(t('database.analysisHandoff.noticeTitle'))}</div>
+      <div class="name-preview-value">${escapeHtml(t('database.analysisHandoff.noticeBody', { count: handoffRecordIds.length }))}</div>
+    </div>
+  `;
+}
+
 async function openAnalysisWorkspace() {
   currentView = 'analysis';
   analysisChartDragState = null;
@@ -2899,6 +4304,7 @@ function closeAnalysisComposer() {
 }
 
 function openAnalysisComposer(chartId: string, chartType: AnalysisChartType) {
+  const handoffSelectedRecordIds = getAnalysisHandoffSelectedRecordIds();
   analysisFilterCandidateQuery = '';
   analysisComposer =
     chartType === 'scalar'
@@ -2915,7 +4321,7 @@ function openAnalysisComposer(chartId: string, chartType: AnalysisChartType) {
           filterDraftValue: '',
           filterDraftValue2: '',
           filterDraftPendingValues: [],
-          selectedRecordIds: [],
+          selectedRecordIds: [...handoffSelectedRecordIds],
           step1FieldKey: 'testTime',
           yItemName: '',
           pending: false,
@@ -2934,7 +4340,7 @@ function openAnalysisComposer(chartId: string, chartType: AnalysisChartType) {
           filterDraftValue: '',
           filterDraftValue2: '',
           filterDraftPendingValues: [],
-          selectedRecordIds: [],
+          selectedRecordIds: [...handoffSelectedRecordIds],
           selectedBlockName: '',
           pending: false,
           error: ''
@@ -4175,19 +5581,16 @@ function renderAnalysisBlockSummaryList(
   return `
     <div class="analysis-summary-list">
       ${blocks
-        .map((block) => {
-          const xLabel = block.templateType === XY_TEMPLATE_TYPE ? block.xLabel : block.spectrumAxisLabel;
-          const xUnit = block.templateType === XY_TEMPLATE_TYPE ? block.xUnit : block.spectrumAxisUnit;
-          const yLabel = block.templateType === XY_TEMPLATE_TYPE ? block.yLabel : block.signalLabel;
-          const yUnit = block.templateType === XY_TEMPLATE_TYPE ? block.yUnit : block.signalUnit;
+        .map((block, index) => {
+          const { xLabel, xUnit, yLabel, yUnit } = getAnalysisStructuredBlockAxisMeta(block);
 
           return `
             <div class="analysis-summary-item ${block.id === activeBlockId ? 'active' : ''}">
-              <div class="analysis-summary-key">${escapeHtml(getAnalysisStructuredBlockDisplayName(block))}</div>
+              <div class="analysis-summary-key">${escapeHtml(getAnalysisStructuredBlockDisplayName(block, index))}</div>
               <div class="analysis-summary-value">
                 ${escapeHtml(getStructuredBlockPurposeLabel(block.purposeType || ''))}
-                · ${escapeHtml(xLabel)}${xUnit ? ` (${escapeHtml(xUnit)})` : ''}
-                → ${escapeHtml(yLabel)}${yUnit ? ` (${escapeHtml(yUnit)})` : ''}
+                · ${escapeHtml(formatAnalysisAxisLabel(xLabel, xUnit))}
+                → ${escapeHtml(formatAnalysisAxisLabel(yLabel, yUnit))}
                 · ${block.points.length} 点
               </div>
             </div>
@@ -4498,6 +5901,22 @@ function renderAnalysisChartCard(chart: AnalysisChartCard, expanded = false) {
                           </div>
                         `
                       : ''}
+                    ${chart.chartType === 'structured'
+                      ? `
+                          <div class="analysis-legend-meta">
+                            ${escapeHtml((series as AnalysisStructuredSeries).recordDisplayName)}
+                            ·
+                            ${escapeHtml(
+                              buildAnalysisAxisPairSummary(
+                                (series as AnalysisStructuredSeries).xLabel,
+                                (series as AnalysisStructuredSeries).xUnit,
+                                (series as AnalysisStructuredSeries).yLabel,
+                                (series as AnalysisStructuredSeries).yUnit
+                              )
+                            )}
+                          </div>
+                        `
+                      : ''}
                   </div>
                 `
               )
@@ -4635,6 +6054,7 @@ function renderAnalysisInspector() {
   }
 
   const currentBlock = detail.templateBlocks.find((block) => block.id === inspector.blockId);
+  const currentBlockIndex = detail.templateBlocks.findIndex((block) => block.id === inspector.blockId);
   const xLabel = currentBlock
     ? currentBlock.templateType === XY_TEMPLATE_TYPE
       ? currentBlock.xLabel
@@ -4655,6 +6075,9 @@ function renderAnalysisInspector() {
       ? currentBlock.yUnit
       : currentBlock.signalUnit
     : inspector.yUnit;
+  const currentBlockDisplayName = currentBlock
+    ? getAnalysisStructuredBlockDisplayName(currentBlock, currentBlockIndex >= 0 ? currentBlockIndex : 0)
+    : inspector.seriesName;
 
   return `
     <div class="analysis-inspector-title">${escapeHtml(t('analysis.inspector.currentStructured'))}</div>
@@ -4665,7 +6088,7 @@ function renderAnalysisInspector() {
       t('analysis.section.currentStructured'),
       renderAnalysisDataList([
         { label: t('analysis.label.chart'), value: inspector.chartTitle },
-        { label: t('analysis.label.block'), value: currentBlock?.blockTitle || inspector.blockTitle },
+        { label: t('analysis.label.block'), value: currentBlockDisplayName },
         {
           label: t('analysis.label.dataPurpose'),
           value: getStructuredBlockPurposeLabel(currentBlock?.purposeType || inspector.purposeType)
@@ -4908,9 +6331,9 @@ function renderAnalysisComposerModal() {
             <option value="">${escapeHtml(structuredBlockOptions.length ? t('analysis.composer.structuredBlockPlaceholder') : t('analysis.composer.structuredBlockEmpty'))}</option>
             ${structuredBlockOptions
               .map(
-                (blockName) => `
-                  <option value="${escapeHtml(blockName)}" ${composer.selectedBlockName === blockName ? 'selected' : ''}>
-                    ${escapeHtml(blockName)}
+                (option) => `
+                  <option value="${escapeHtml(option.value)}" ${composer.selectedBlockName === option.value ? 'selected' : ''}>
+                    ${escapeHtml(option.label)}
                   </option>
                 `
               )
@@ -4946,15 +6369,19 @@ function bindDatabaseCrossFilterEvents() {
       }
 
       databaseCrossFilters = removeCrossFilterChip(databaseCrossFilters, chipId);
+      closeDatabaseFrequentFiltersPopover();
       await loadDatabaseList();
+      await recordCurrentDatabaseWorkspaceUsage();
       void render();
     });
   });
 
   document.getElementById('db-filter-clear-btn')?.addEventListener('click', async () => {
     databaseCrossFilters = [];
+    closeDatabaseFrequentFiltersPopover();
     closeDatabaseFilterDraft();
     await loadDatabaseList();
+    await recordCurrentDatabaseWorkspaceUsage();
     void render();
   });
 
@@ -5050,6 +6477,20 @@ function bindDatabaseCrossFilterEvents() {
   });
 
   document.getElementById('db-filter-cancel-btn')?.addEventListener('click', () => {
+    closeDatabaseFilterDraft();
+    void renderPreservingContentScroll();
+  });
+
+  document.getElementById('db-filter-close-btn')?.addEventListener('click', () => {
+    closeDatabaseFilterDraft();
+    void renderPreservingContentScroll();
+  });
+
+  document.getElementById('db-filter-mask')?.addEventListener('click', (event) => {
+    if (event.target !== event.currentTarget) {
+      return;
+    }
+
     closeDatabaseFilterDraft();
     void renderPreservingContentScroll();
   });
@@ -5326,17 +6767,25 @@ function bindAnalysisWorkspaceEvents() {
   });
 
   document.getElementById('analysis-menu-home')?.addEventListener('click', () => {
+    clearAnalysisHandoffSelection();
     currentView = 'home';
     void render();
   });
 
+  document.getElementById('analysis-menu-add')?.addEventListener('click', async () => {
+    clearAnalysisHandoffSelection();
+    await openAddDataEntry();
+  });
+
   document.getElementById('analysis-menu-data')?.addEventListener('click', async () => {
+    clearAnalysisHandoffSelection();
     await loadDatabaseListView();
     currentView = 'database-list';
     void render();
   });
 
   document.getElementById('analysis-menu-settings')?.addEventListener('click', () => {
+    clearAnalysisHandoffSelection();
     void openSettingsView();
   });
 
@@ -6079,6 +7528,16 @@ async function performCreateSave(payload: SaveExperimentPayload) {
     return;
   }
 
+  const discardResult = await window.electronAPI.discardActiveEntryDraft();
+  if (!discardResult.success) {
+    console.error('discard active draft after save failed:', discardResult.error);
+    await reloadActiveEntryDraft();
+    alert(t('draft.discardAfterSaveFailed'));
+  } else {
+    activeEntryDraft = null;
+    activeEntryDraftLoaded = true;
+    activeEntryDraftLoadPromise = null;
+  }
   lastSavedExperimentId = result.experimentId;
   currentView = 'save-success';
   void render();
@@ -6301,13 +7760,338 @@ async function ensureDictionaryItemsLoaded() {
 
 function getStep1SuggestionMatches(dictionaryType: DictionaryType, rawValue: string) {
   const query = rawValue.trim();
+  const recentValues =
+    dictionaryType === 'testProject'
+      ? recentEntrySuggestions.testProjects
+      : dictionaryType === 'instrument'
+        ? recentEntrySuggestions.instruments
+      : [];
+  const dictionaryValues = dictionaryItems[dictionaryType]
+    .filter((item) => item.isActive)
+    .map((item) => item.value);
+
   if (!query) {
-    return [];
+    return Array.from(new Set([...recentValues, ...dictionaryValues])).slice(0, STEP1_SUGGESTION_LIMIT);
   }
 
-  return dictionaryItems[dictionaryType]
-    .filter((item) => item.isActive && item.value.includes(query))
-    .slice(0, STEP1_SUGGESTION_LIMIT);
+  const dictionaryMatches = dictionaryValues.filter((value) => value.includes(query));
+  const recentMatches = recentValues.filter((value) => value.includes(query));
+
+  return Array.from(new Set([...recentMatches, ...dictionaryMatches])).slice(0, STEP1_SUGGESTION_LIMIT);
+}
+
+function splitLocalDateTimeValue(value: string) {
+  if (!value) {
+    return { date: '', time: '' };
+  }
+
+  if (value.includes('T')) {
+    const [datePart, timePart] = value.split('T');
+    return {
+      date: datePart || '',
+      time: (timePart || '').slice(0, 5)
+    };
+  }
+
+  const parsedDate = new Date(value);
+  if (Number.isNaN(parsedDate.getTime())) {
+    return { date: '', time: '' };
+  }
+
+  return {
+    date: `${parsedDate.getFullYear()}-${String(parsedDate.getMonth() + 1).padStart(2, '0')}-${String(parsedDate.getDate()).padStart(2, '0')}`,
+    time: `${String(parsedDate.getHours()).padStart(2, '0')}:${String(parsedDate.getMinutes()).padStart(2, '0')}`
+  };
+}
+
+function buildLocalDateTimeValue(date: string, time: string) {
+  if (!date && !time) {
+    return '';
+  }
+
+  if (!date) {
+    return '';
+  }
+
+  return `${date}T${time ? time.slice(0, 5) : ''}`;
+}
+
+function hasCompleteLocalDateTimeValue(value: string) {
+  const { date, time } = splitLocalDateTimeValue(value);
+  return Boolean(date && time);
+}
+
+function pad2(value: number | string) {
+  return String(value).padStart(2, '0');
+}
+
+function getDaysInMonth(year: number, month: number) {
+  return new Date(year, month, 0).getDate();
+}
+
+function getDefaultDateTimePickerParts(value: string) {
+  const parsed = splitLocalDateTimeValue(value);
+  const now = new Date();
+  const fallbackDate = `${now.getFullYear()}-${pad2(now.getMonth() + 1)}-${pad2(now.getDate())}`;
+  const fallbackTime = `${pad2(now.getHours())}:${pad2(now.getMinutes())}`;
+  const [year, month, day] = (parsed.date || fallbackDate).split('-');
+  const [hour, minute] = (parsed.time || fallbackTime).split(':');
+
+  return {
+    year: year || String(now.getFullYear()),
+    month: month || pad2(now.getMonth() + 1),
+    day: day || pad2(now.getDate()),
+    hour: hour || pad2(now.getHours()),
+    minute: minute || pad2(now.getMinutes())
+  };
+}
+
+function shiftCalendarMonth(year: number, month: number, delta: number) {
+  const shifted = new Date(year, month - 1 + delta, 1);
+  return {
+    year: shifted.getFullYear(),
+    month: shifted.getMonth() + 1
+  };
+}
+
+function formatLocalDateTimePickerDisplay(value: string) {
+  const { date, time } = splitLocalDateTimeValue(value);
+
+  if (!date && !time) {
+    return t('step1.testTime.placeholder');
+  }
+
+  if (!date) {
+    return time;
+  }
+
+  if (!time) {
+    return `${date} --:--`;
+  }
+
+  return `${date} ${time}`;
+}
+
+function buildDateTimeCalendarLabel(year: number, month: number) {
+  return `${year}-${pad2(month)}`;
+}
+
+function buildDateTimeCalendarGrid(
+  baseId: string,
+  viewYear: number,
+  viewMonth: number,
+  selectedValue: string
+) {
+  const selectedParts = splitLocalDateTimeValue(selectedValue);
+  const [selectedYear, selectedMonth, selectedDay] = selectedParts.date
+    ? selectedParts.date.split('-').map((part) => Number(part))
+    : [0, 0, 0];
+  const firstWeekday = new Date(viewYear, viewMonth - 1, 1).getDay();
+  const dayCount = getDaysInMonth(viewYear, viewMonth);
+  const today = new Date();
+  const cells: string[] = [];
+
+  for (let index = 0; index < firstWeekday; index += 1) {
+    cells.push('<span class="datetime-picker-day-cell datetime-picker-day-placeholder"></span>');
+  }
+
+  for (let day = 1; day <= dayCount; day += 1) {
+    const isSelected = selectedYear === viewYear && selectedMonth === viewMonth && selectedDay === day;
+    const isToday =
+      today.getFullYear() === viewYear &&
+      today.getMonth() + 1 === viewMonth &&
+      today.getDate() === day;
+
+    cells.push(`
+      <button
+        type="button"
+        class="datetime-picker-day-cell datetime-picker-day-btn ${isSelected ? 'selected' : ''} ${
+          isToday ? 'today' : ''
+        }"
+        data-datetime-picker-base="${baseId}"
+        data-datetime-picker-day="${day}"
+      >
+        ${day}
+      </button>
+    `);
+  }
+
+  const trailingCount = (7 - (cells.length % 7)) % 7;
+  for (let index = 0; index < trailingCount; index += 1) {
+    cells.push('<span class="datetime-picker-day-cell datetime-picker-day-placeholder"></span>');
+  }
+
+  return cells.join('');
+}
+
+const DATETIME_PICKER_WHEEL_REPEAT_COUNT = 5;
+
+function renderDateTimePickerWheel(
+  id: string,
+  wheelType: 'hour' | 'minute',
+  label: string,
+  value: string,
+  options: Array<{ value: string; label: string }>
+) {
+  return `
+    <div class="datetime-picker-select-group">
+      <div class="datetime-picker-select-label">${escapeHtml(label)}</div>
+      <div class="datetime-picker-wheel-shell">
+        <div
+          id="${id}"
+          class="datetime-picker-wheel-list"
+          tabindex="0"
+          role="listbox"
+          aria-label="${escapeHtml(label)}"
+          data-datetime-picker-wheel="${wheelType}"
+          data-datetime-picker-selected-value="${escapeHtml(value)}"
+        >
+          ${Array.from({ length: DATETIME_PICKER_WHEEL_REPEAT_COUNT }, (_, repeatIndex) =>
+            options
+              .map(
+                (option) => `
+                  <button
+                    type="button"
+                    class="datetime-picker-wheel-option ${option.value === value &&
+                    repeatIndex === Math.floor(DATETIME_PICKER_WHEEL_REPEAT_COUNT / 2)
+                      ? 'selected'
+                      : ''}"
+                    data-datetime-picker-wheel="${wheelType}"
+                    data-datetime-picker-wheel-value="${escapeHtml(option.value)}"
+                    aria-selected="${option.value === value &&
+                    repeatIndex === Math.floor(DATETIME_PICKER_WHEEL_REPEAT_COUNT / 2)
+                      ? 'true'
+                      : 'false'}"
+                  >
+                    ${escapeHtml(option.label)}
+                  </button>
+            `
+              )
+              .join('')
+          ).join('')}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderDateTimePicker(baseId: string, value: string) {
+  const displayValue = formatLocalDateTimePickerDisplay(value);
+  const hasValue = hasCompleteLocalDateTimeValue(value);
+  const pickerParts = getDefaultDateTimePickerParts(value);
+  const initialViewYear = Number(pickerParts.year);
+  const initialViewMonth = Number(pickerParts.month);
+  const hourOptions = Array.from({ length: 24 }, (_, index) => {
+    const hourValue = pad2(index);
+    return { value: hourValue, label: hourValue };
+  });
+  const minuteOptions = Array.from({ length: 60 }, (_, index) => {
+    const minuteValue = pad2(index);
+    return { value: minuteValue, label: minuteValue };
+  });
+
+  return `
+    <div id="${baseId}PickerShell" class="datetime-picker-shell">
+      <input id="${baseId}Value" type="hidden" value="${escapeHtml(value)}" />
+      <input id="${baseId}PickerViewYear" type="hidden" value="${initialViewYear}" />
+      <input id="${baseId}PickerViewMonth" type="hidden" value="${pad2(initialViewMonth)}" />
+      <input id="${baseId}PickerDraftDay" type="hidden" value="${pickerParts.day}" />
+      <div class="datetime-picker-field-row">
+        <input
+          id="${baseId}PickerDisplay"
+          class="form-input datetime-picker-display ${hasValue ? '' : 'datetime-picker-display-placeholder'}"
+          value="${escapeHtml(displayValue)}"
+          placeholder="${escapeHtml(t('step1.testTime.placeholder'))}"
+          readonly
+        />
+        <button
+          id="${baseId}PickerTrigger"
+          class="secondary-btn datetime-picker-icon-btn"
+          type="button"
+          aria-expanded="false"
+          aria-haspopup="dialog"
+          title="${escapeHtml(t('step1.testTime.openPicker'))}"
+          aria-label="${escapeHtml(t('step1.testTime.openPicker'))}"
+        >
+          ◷
+        </button>
+      </div>
+      <div id="${baseId}PickerPopover" class="datetime-picker-popover" role="dialog" aria-modal="false">
+        <div class="datetime-picker-preview" id="${baseId}PickerPreview">${escapeHtml(
+          hasValue
+            ? displayValue
+            : `${pickerParts.year}-${pickerParts.month}-${pickerParts.day} ${pickerParts.hour}:${pickerParts.minute}`
+        )}</div>
+        <div class="datetime-picker-main">
+          <div class="datetime-picker-calendar-panel">
+            <div class="datetime-picker-calendar-header">
+              <button
+                id="${baseId}PickerPrevMonth"
+                class="secondary-btn datetime-picker-nav-btn"
+                type="button"
+                title="${escapeHtml(t('step1.testTime.prevMonth'))}"
+                aria-label="${escapeHtml(t('step1.testTime.prevMonth'))}"
+              >
+                ‹
+              </button>
+              <div id="${baseId}PickerCalendarLabel" class="datetime-picker-calendar-label">${escapeHtml(
+                buildDateTimeCalendarLabel(initialViewYear, initialViewMonth)
+              )}</div>
+              <button
+                id="${baseId}PickerNextMonth"
+                class="secondary-btn datetime-picker-nav-btn"
+                type="button"
+                title="${escapeHtml(t('step1.testTime.nextMonth'))}"
+                aria-label="${escapeHtml(t('step1.testTime.nextMonth'))}"
+              >
+                ›
+              </button>
+            </div>
+            <div class="datetime-picker-weekday-row">
+              <span>${escapeHtml(t('step1.testTime.weekdaySun'))}</span>
+              <span>${escapeHtml(t('step1.testTime.weekdayMon'))}</span>
+              <span>${escapeHtml(t('step1.testTime.weekdayTue'))}</span>
+              <span>${escapeHtml(t('step1.testTime.weekdayWed'))}</span>
+              <span>${escapeHtml(t('step1.testTime.weekdayThu'))}</span>
+              <span>${escapeHtml(t('step1.testTime.weekdayFri'))}</span>
+              <span>${escapeHtml(t('step1.testTime.weekdaySat'))}</span>
+            </div>
+            <div
+              id="${baseId}PickerCalendarGrid"
+              class="datetime-picker-calendar-grid"
+            >
+              ${buildDateTimeCalendarGrid(baseId, initialViewYear, initialViewMonth, value)}
+            </div>
+          </div>
+          <div class="datetime-picker-time-panel">
+            <div class="datetime-picker-time-title">${escapeHtml(t('step1.testTime.timeLabel'))}</div>
+            <div class="datetime-picker-grid datetime-picker-grid-time">
+              ${renderDateTimePickerWheel(
+                `${baseId}HourWheel`,
+                'hour',
+                t('step1.testTime.hourLabel'),
+                pickerParts.hour,
+                hourOptions
+              )}
+              ${renderDateTimePickerWheel(
+                `${baseId}MinuteWheel`,
+                'minute',
+                t('step1.testTime.minuteLabel'),
+                pickerParts.minute,
+                minuteOptions
+              )}
+            </div>
+          </div>
+        </div>
+        <div class="datetime-picker-actions">
+          <button id="${baseId}PickerClear" class="text-btn" type="button">${escapeHtml(t('common.clear'))}</button>
+          <button id="${baseId}PickerDone" class="secondary-btn database-toolbar-btn" type="button">${escapeHtml(
+            t('common.done')
+          )}</button>
+        </div>
+      </div>
+    </div>
+  `;
 }
 
 function hideStep1Suggestions(containerId: string) {
@@ -6338,13 +8122,13 @@ function renderStep1Suggestions(params: {
 
   container.innerHTML = matches
     .map(
-      (item) => `
+      (value) => `
         <button
           type="button"
           class="step1-suggestion-item"
-          data-step1-suggestion-value="${escapeHtml(item.value)}"
+          data-step1-suggestion-value="${escapeHtml(value)}"
         >
-          ${escapeHtml(item.value)}
+          ${escapeHtml(value)}
         </button>
       `
     )
@@ -6436,12 +8220,6 @@ function setTemplateBlocksForContext(context: TemplateBlockEditContext, blocks: 
   step2TemplateBlocks = blocks;
 }
 
-function getActiveTemplateBlockImportId(context: TemplateBlockEditContext) {
-  return context === 'detail-edit'
-    ? detailActiveTemplateBlockImportId
-    : step2ActiveTemplateBlockImportId;
-}
-
 function setActiveTemplateBlockImportId(context: TemplateBlockEditContext, blockId: string) {
   if (context === 'detail-edit') {
     detailActiveTemplateBlockImportId = blockId;
@@ -6530,7 +8308,7 @@ function renderScalarRecommendationButtons(
                 data-template-scalar-name="${escapeHtml(item.name)}"
                 data-template-scalar-unit="${escapeHtml(item.defaultUnit)}"
               >
-                <span>${escapeHtml(item.name)}${escapeHtml(defaultUnit)}</span>
+                <span>+ ${escapeHtml(item.name)}${escapeHtml(defaultUnit)}</span>
                 ${valueNature
                   ? `<span class="step2-template-pill-meta">${escapeHtml(valueNature)}</span>`
                   : ''}
@@ -6564,7 +8342,7 @@ function renderStructuredRecommendationButtons(
                 data-template-block-context="${context}"
                 data-template-block-recommendation-index="${index}"
               >
-                <span>${escapeHtml(item.label)}</span>
+                <span>+ ${escapeHtml(item.label)}</span>
                 <span class="step2-template-pill-meta">${escapeHtml(
                   getStructuredBlockPurposeLabel(item.purposeType)
                 )}</span>
@@ -6621,18 +8399,44 @@ function buildManualReviewState(
     return undefined;
   }
 
+  const firstNumericRow = file.manualReview.previewRows.find((row) => {
+    const numericColumnCount = row.columns.filter((value) => value !== '' && Number.isFinite(Number(value))).length;
+    return numericColumnCount >= 2;
+  });
+  const defaultStartRow = firstNumericRow?.rowNumber || (file.manualReview.previewRows[0]?.rowNumber || 1);
+  const numericColumnIndices = firstNumericRow
+    ? firstNumericRow.columns
+        .map((value, index) => ({ value, index }))
+        .filter((entry) => entry.value !== '' && Number.isFinite(Number(entry.value)))
+        .map((entry) => entry.index)
+    : [];
+  const defaultXColumnIndex = numericColumnIndices[0] ?? 0;
+  const defaultYColumnIndex =
+    numericColumnIndices.find((columnIndex) => columnIndex !== defaultXColumnIndex) ??
+    Math.min(defaultXColumnIndex + 1, Math.max(0, file.manualReview.maxColumnCount - 1));
+
   return {
     available: true,
+    textEncoding: file.selectedEncoding,
+    resolvedEncoding: file.resolvedEncoding,
+    recognitionStatus: file.recognitionStatus,
+    recognitionMessage: file.recognitionMessage,
     delimiter: file.manualReview.suggestedDelimiter,
     suggestedDelimiter: file.manualReview.suggestedDelimiter,
     previewRows: file.manualReview.previewRows,
     maxColumnCount: file.manualReview.maxColumnCount,
-    dataStartRow: file.manualReview.previewRows.length > 1 ? 2 : 1,
+    dataStartRow: defaultStartRow,
+    dataEndRow: null,
+    dataStartColumn: 1,
+    dataEndColumn: file.manualReview.maxColumnCount,
     xSourceMode: file.manualReview.maxColumnCount > 1 ? 'column' : 'generated',
-    xColumnIndex: 0,
-    yColumnIndex: file.manualReview.maxColumnCount > 1 ? 1 : 0,
+    xColumnIndex: Math.max(0, Math.min(defaultXColumnIndex, Math.max(0, file.manualReview.maxColumnCount - 1))),
+    yColumnIndex: Math.max(0, Math.min(defaultYColumnIndex, Math.max(0, file.manualReview.maxColumnCount - 1))),
     generatedXStart: 0,
     generatedXStep: 1,
+    ignoreEmptyRows: true,
+    ignoreNonNumericRows: true,
+    collapseWhitespace: true,
     previewLoading: false,
     previewError: ''
   };
@@ -6650,15 +8454,56 @@ function updateManualReviewPreviewRows(
 
   return {
     ...existing,
+    resolvedEncoding: existing.resolvedEncoding,
     delimiter: next.suggestedDelimiter,
     suggestedDelimiter: next.suggestedDelimiter,
     previewRows: next.previewRows,
     maxColumnCount: nextMaxColumnCount,
     xSourceMode: nextXSourceMode,
-    yColumnIndex:
-      nextMaxColumnCount > 1
-        ? Math.min(existing.yColumnIndex, nextMaxColumnCount - 1)
-        : 0
+    dataEndRow:
+      existing.dataEndRow && next.previewRows.length
+        ? Math.min(existing.dataEndRow, next.previewRows[next.previewRows.length - 1]?.rowNumber || existing.dataEndRow)
+        : existing.dataEndRow,
+    dataEndColumn:
+      existing.dataEndColumn && nextMaxColumnCount
+        ? Math.min(existing.dataEndColumn, nextMaxColumnCount)
+        : existing.dataEndColumn,
+    xColumnIndex: Math.min(existing.xColumnIndex, Math.max(0, nextMaxColumnCount - 1)),
+    yColumnIndex: nextMaxColumnCount > 1 ? Math.min(existing.yColumnIndex, nextMaxColumnCount - 1) : 0
+  };
+}
+
+function normalizeImportManualReviewState(review: ImportReviewManualState): ImportReviewManualState {
+  const lastPreviewRow = review.previewRows[review.previewRows.length - 1]?.rowNumber || review.dataStartRow;
+  const maxColumnCount = Math.max(1, review.maxColumnCount);
+  const startRow = Math.max(1, review.dataStartRow);
+  const endRow = review.dataEndRow ? Math.max(startRow, Math.min(review.dataEndRow, lastPreviewRow)) : null;
+  const startColumn = Math.max(1, Math.min(review.dataStartColumn, maxColumnCount));
+  const endColumn = review.dataEndColumn
+    ? Math.max(startColumn, Math.min(review.dataEndColumn, maxColumnCount))
+    : Math.max(startColumn, maxColumnCount);
+  const allowedColumnIndices = Array.from(
+    { length: Math.max(0, endColumn - startColumn + 1) },
+    (_, index) => startColumn - 1 + index
+  );
+  const nextXColumnIndex = allowedColumnIndices.includes(review.xColumnIndex)
+    ? review.xColumnIndex
+    : allowedColumnIndices[0] || 0;
+  const fallbackYColumnIndex =
+    (allowedColumnIndices.includes(review.yColumnIndex) && review.yColumnIndex !== nextXColumnIndex
+      ? review.yColumnIndex
+      : undefined) ??
+    allowedColumnIndices.find((columnIndex) => columnIndex !== nextXColumnIndex) ??
+    nextXColumnIndex;
+
+  return {
+    ...review,
+    dataStartRow: startRow,
+    dataEndRow: endRow,
+    dataStartColumn: startColumn,
+    dataEndColumn: review.dataEndColumn ? endColumn : null,
+    xColumnIndex: nextXColumnIndex,
+    yColumnIndex: fallbackYColumnIndex
   };
 }
 
@@ -6670,57 +8515,97 @@ function syncTemplateBlockImportInputsToState(context: TemplateBlockEditContext)
         return block;
       }
 
+      const nextReview: ImportReviewManualState = {
+        ...block.importManualReview,
+        textEncoding:
+          ((document.getElementById(
+            `template-block-import-encoding-${block.id}`
+          ) as HTMLSelectElement | null)?.value as ImportTextEncoding | undefined) ||
+          block.importManualReview.textEncoding,
+        xSourceMode:
+          ((document.getElementById(
+            `template-block-import-x-source-${block.id}`
+          ) as HTMLSelectElement | null)?.value as ImportManualXAxisSourceMode | undefined) ||
+          block.importManualReview.xSourceMode,
+        delimiter:
+          ((document.getElementById(
+            `template-block-import-delimiter-${block.id}`
+          ) as HTMLSelectElement | null)?.value as ImportManualDelimiter | undefined) ||
+          block.importManualReview.delimiter,
+        dataStartRow:
+          Number(
+            (document.getElementById(
+              `template-block-import-start-row-${block.id}`
+            ) as HTMLInputElement | null)?.value || block.importManualReview.dataStartRow
+          ) || block.importManualReview.dataStartRow,
+        dataEndRow:
+          Number(
+            (document.getElementById(
+              `template-block-import-end-row-${block.id}`
+            ) as HTMLInputElement | null)?.value || 0
+          ) || null,
+        dataStartColumn:
+          Math.max(
+            1,
+            Number(
+              (document.getElementById(
+                `template-block-import-start-column-${block.id}`
+              ) as HTMLInputElement | null)?.value || block.importManualReview.dataStartColumn
+            ) || block.importManualReview.dataStartColumn
+          ),
+        dataEndColumn:
+          Number(
+            (document.getElementById(
+              `template-block-import-end-column-${block.id}`
+            ) as HTMLInputElement | null)?.value || 0
+          ) || null,
+        xColumnIndex:
+          Math.max(
+            0,
+            Number(
+              (document.getElementById(
+                `template-block-import-x-column-${block.id}`
+              ) as HTMLInputElement | null)?.value || block.importManualReview.xColumnIndex + 1
+            ) - 1
+          ),
+        yColumnIndex:
+          Math.max(
+            0,
+            Number(
+              (document.getElementById(
+                `template-block-import-y-column-${block.id}`
+              ) as HTMLSelectElement | null)?.value || block.importManualReview.yColumnIndex + 1
+            ) - 1
+          ),
+        generatedXStart:
+          Number(
+            (document.getElementById(
+              `template-block-import-generated-start-${block.id}`
+            ) as HTMLInputElement | null)?.value || block.importManualReview.generatedXStart
+          ) || 0,
+        generatedXStep:
+          Number(
+            (document.getElementById(
+              `template-block-import-generated-step-${block.id}`
+            ) as HTMLInputElement | null)?.value || block.importManualReview.generatedXStep
+          ) || block.importManualReview.generatedXStep,
+        ignoreEmptyRows:
+          (document.getElementById(
+            `template-block-import-ignore-empty-${block.id}`
+          ) as HTMLInputElement | null)?.checked ?? block.importManualReview.ignoreEmptyRows,
+        ignoreNonNumericRows:
+          (document.getElementById(
+            `template-block-import-ignore-nonnumeric-${block.id}`
+          ) as HTMLInputElement | null)?.checked ?? block.importManualReview.ignoreNonNumericRows,
+        collapseWhitespace:
+          (document.getElementById(
+            `template-block-import-collapse-whitespace-${block.id}`
+          ) as HTMLInputElement | null)?.checked ?? block.importManualReview.collapseWhitespace
+      };
+
       return {
         ...block,
-        importManualReview: {
-          ...block.importManualReview,
-          xSourceMode:
-            ((document.getElementById(
-              `template-block-import-x-source-${block.id}`
-            ) as HTMLSelectElement | null)?.value as ImportManualXAxisSourceMode | undefined) ||
-            block.importManualReview.xSourceMode,
-          delimiter:
-            ((document.getElementById(
-              `template-block-import-delimiter-${block.id}`
-            ) as HTMLSelectElement | null)?.value as ImportManualDelimiter | undefined) ||
-            block.importManualReview.delimiter,
-          dataStartRow:
-            Number(
-              (document.getElementById(
-                `template-block-import-start-row-${block.id}`
-              ) as HTMLInputElement | null)?.value || block.importManualReview.dataStartRow
-            ) || block.importManualReview.dataStartRow,
-          xColumnIndex:
-            Math.max(
-              0,
-              Number(
-                (document.getElementById(
-                  `template-block-import-x-column-${block.id}`
-                ) as HTMLInputElement | null)?.value || block.importManualReview.xColumnIndex + 1
-              ) - 1
-            ),
-          yColumnIndex:
-            Math.max(
-              0,
-              Number(
-                (document.getElementById(
-                  `template-block-import-y-column-${block.id}`
-                ) as HTMLInputElement | null)?.value || block.importManualReview.yColumnIndex + 1
-              ) - 1
-            ),
-          generatedXStart:
-            Number(
-              (document.getElementById(
-                `template-block-import-generated-start-${block.id}`
-              ) as HTMLInputElement | null)?.value || block.importManualReview.generatedXStart
-            ) || 0,
-          generatedXStep:
-            Number(
-              (document.getElementById(
-                `template-block-import-generated-step-${block.id}`
-              ) as HTMLInputElement | null)?.value || block.importManualReview.generatedXStep
-            ) || block.importManualReview.generatedXStep,
-        }
+        importManualReview: normalizeImportManualReviewState(nextReview)
       };
     })
   );
@@ -6777,7 +8662,6 @@ function applyTemplateBlockImportCandidate(params: {
       };
     })
   );
-  setActiveTemplateBlockImportId(params.context, '');
 }
 
 async function handleTemplateBlockImportSelection(
@@ -6847,7 +8731,7 @@ async function handleTemplateBlockImportSelection(
         return {
           ...block,
           importPreviewLoading: false,
-          importPreviewError: previewFile.error || '',
+          importPreviewError: previewFile.recognitionStatus === 'failed' ? previewFile.error || '' : '',
           importParserLabel: previewFile.parserLabel || '',
           importWarnings: previewFile.warnings,
           importPreviewCandidate: previewFile.candidates[0],
@@ -6921,13 +8805,20 @@ async function regenerateTemplateBlockImportFromManualReview(
   try {
     const result = await window.electronAPI.previewManualImportXY({
       filePath: importFilePath,
+      textEncoding: targetBlock.importManualReview.textEncoding,
       delimiter: targetBlock.importManualReview.delimiter,
       dataStartRow: targetBlock.importManualReview.dataStartRow,
+      dataEndRow: targetBlock.importManualReview.dataEndRow,
+      dataStartColumn: targetBlock.importManualReview.dataStartColumn,
+      dataEndColumn: targetBlock.importManualReview.dataEndColumn,
       xSourceMode: targetBlock.importManualReview.xSourceMode,
       xColumnIndex: targetBlock.importManualReview.xColumnIndex,
       yColumnIndex: targetBlock.importManualReview.yColumnIndex,
       generatedXStart: targetBlock.importManualReview.generatedXStart,
       generatedXStep: targetBlock.importManualReview.generatedXStep,
+      ignoreEmptyRows: targetBlock.importManualReview.ignoreEmptyRows,
+      ignoreNonNumericRows: targetBlock.importManualReview.ignoreNonNumericRows,
+      collapseWhitespace: targetBlock.importManualReview.collapseWhitespace,
       purposeType: targetBlock.purposeType || '',
       blockTitle: targetBlock.blockTitle,
       xLabel: targetBlock.primaryLabel,
@@ -6971,6 +8862,10 @@ async function regenerateTemplateBlockImportFromManualReview(
             ...(result.manualReview
               ? updateManualReviewPreviewRows(block.importManualReview, result.manualReview)
               : block.importManualReview),
+            textEncoding: result.selectedEncoding || block.importManualReview.textEncoding,
+            resolvedEncoding: result.resolvedEncoding || block.importManualReview.resolvedEncoding,
+            recognitionStatus: result.recognitionStatus || block.importManualReview.recognitionStatus,
+            recognitionMessage: result.recognitionMessage || block.importManualReview.recognitionMessage,
             previewLoading: false,
             previewError: ''
           },
@@ -6999,6 +8894,92 @@ async function regenerateTemplateBlockImportFromManualReview(
           }
         };
       })
+    );
+  }
+
+  requestRender(true);
+}
+
+async function refreshTemplateBlockImportPreviewFromCurrentFile(
+  context: TemplateBlockEditContext,
+  blockId: string
+) {
+  if (context === 'detail-edit') {
+    collectDetailEditState();
+  } else {
+    saveStep2InputsToState();
+  }
+
+  syncTemplateBlockImportInputsToState(context);
+  const targetBlock = getTemplateBlocksForContext(context).find((block) => block.id === blockId);
+  const importFilePath = targetBlock?.importPreviewSelectedPath || targetBlock?.originalFilePath;
+  const importFileName = targetBlock?.importPreviewSelectedName || targetBlock?.originalFileName;
+  if (!targetBlock || !importFilePath) {
+    return;
+  }
+
+  setTemplateBlocksForContext(
+    context,
+    getTemplateBlocksForContext(context).map((block) =>
+      block.id === blockId ? { ...block, importPreviewLoading: true, importPreviewError: '' } : block
+    )
+  );
+  requestRender(true);
+
+  try {
+    const previewResult = await window.electronAPI.previewImportFiles({
+      filePaths: [importFilePath],
+      textEncoding: targetBlock.importManualReview?.textEncoding || 'auto'
+    });
+    const previewFile = previewResult.files[0];
+    if (!previewFile) {
+      return;
+    }
+
+    setTemplateBlocksForContext(
+      context,
+      getTemplateBlocksForContext(context).map((block) => {
+        if (block.id !== blockId) {
+          return block;
+        }
+
+        const nextManualReview = previewFile.manualReview
+          ? block.importManualReview
+            ? normalizeImportManualReviewState({
+                ...updateManualReviewPreviewRows(block.importManualReview, previewFile.manualReview),
+                textEncoding: previewFile.selectedEncoding,
+                resolvedEncoding: previewFile.resolvedEncoding,
+                recognitionStatus: previewFile.recognitionStatus,
+                recognitionMessage: previewFile.recognitionMessage
+              })
+            : buildManualReviewState(block, previewFile)
+          : undefined;
+
+        return {
+          ...block,
+          importPreviewLoading: false,
+          importPreviewError: previewFile.recognitionStatus === 'failed' ? previewFile.error || '' : '',
+          importParserLabel: previewFile.parserLabel || '',
+          importWarnings: previewFile.warnings,
+          importPreviewCandidate: previewFile.candidates[0],
+          importPreviewSelectedName: importFileName,
+          importPreviewSelectedPath: importFilePath,
+          importManualReview: nextManualReview
+        };
+      })
+    );
+  } catch (error) {
+    setTemplateBlocksForContext(
+      context,
+      getTemplateBlocksForContext(context).map((block) =>
+        block.id === blockId
+          ? {
+              ...block,
+              importPreviewLoading: false,
+              importPreviewError: getErrorMessage(error) || '导入预览失败'
+            }
+          : block
+      )
     );
   }
 
@@ -7108,6 +9089,24 @@ function bindTemplateBlockEditorEvents(params: {
         saveStep2InputsToState();
       }
 
+      const targetBlock = getTemplateBlocksForContext(params.context).find((block) => block.id === blockId);
+      const candidate =
+        targetBlock?.importPreviewCandidate?.candidateType === 'templateBlock'
+          ? targetBlock.importPreviewCandidate
+          : null;
+      if (!targetBlock || !candidate) {
+        window.alert(t('step2.import.writeUnavailable'));
+        return;
+      }
+
+      const nextDataText = formatXYPointInput(candidate.templateBlock.points);
+      if (targetBlock.dataText.trim() && targetBlock.dataText.trim() !== nextDataText.trim()) {
+        const shouldOverwrite = window.confirm(t('step2.import.overwriteConfirm'));
+        if (!shouldOverwrite) {
+          return;
+        }
+      }
+
       applyTemplateBlockImportCandidate({
         context: params.context,
         blockId
@@ -7116,49 +9115,174 @@ function bindTemplateBlockEditorEvents(params: {
     });
   });
 
-  document.querySelectorAll('[data-template-block-toggle-import-id]').forEach((button) => {
-    button.addEventListener('click', () => {
-      const target = button as HTMLElement;
-      const blockId = target.dataset.templateBlockToggleImportId;
-      if (!blockId) return;
-
-      if (params.context === 'detail-edit') {
-        collectDetailEditState();
-      } else {
-        saveStep2InputsToState();
-      }
-
-      syncTemplateBlockImportInputsToState(params.context);
-      setActiveTemplateBlockImportId(
-        params.context,
-        getActiveTemplateBlockImportId(params.context) === blockId ? '' : blockId
-      );
-      requestRender(true);
-    });
-  });
-
-  document.querySelectorAll('[data-template-block-manual-preview-id]').forEach((button) => {
-    button.addEventListener('click', async () => {
-      const target = button as HTMLElement;
-      const blockId = target.dataset.templateBlockManualPreviewId;
-      if (!blockId) return;
-
-      await regenerateTemplateBlockImportFromManualReview(params.context, blockId);
-    });
-  });
+  const triggerAutoImportPreview = async (blockId: string) => {
+    await regenerateTemplateBlockImportFromManualReview(params.context, blockId);
+  };
 
   document.querySelectorAll('[data-template-block-import-x-source-id]').forEach((select) => {
-    select.addEventListener('change', () => {
-      if (params.context === 'detail-edit') {
-        collectDetailEditState();
-      } else {
-        saveStep2InputsToState();
+    select.addEventListener('change', async () => {
+      const blockId = (select as HTMLElement).dataset.templateBlockImportXSourceId;
+      if (!blockId) {
+        return;
       }
 
-      syncTemplateBlockImportInputsToState(params.context);
-      requestRender(true);
+      await triggerAutoImportPreview(blockId);
     });
   });
+
+  document.querySelectorAll('[id^="template-block-import-encoding-"]').forEach((select) => {
+    select.addEventListener('change', async () => {
+      const blockId = (select as HTMLSelectElement).id.replace('template-block-import-encoding-', '');
+      await refreshTemplateBlockImportPreviewFromCurrentFile(params.context, blockId);
+    });
+  });
+
+  document.querySelectorAll('[id^="template-block-import-delimiter-"]').forEach((select) => {
+    select.addEventListener('change', async () => {
+      const blockId = (select as HTMLSelectElement).id.replace('template-block-import-delimiter-', '');
+      await triggerAutoImportPreview(blockId);
+    });
+  });
+
+  document
+    .querySelectorAll(
+      '[id^="template-block-import-start-row-"], [id^="template-block-import-end-row-"], [id^="template-block-import-start-column-"], [id^="template-block-import-end-column-"], [id^="template-block-import-x-column-"], [id^="template-block-import-y-column-"], [id^="template-block-import-generated-start-"], [id^="template-block-import-generated-step-"], [id^="template-block-import-ignore-empty-"], [id^="template-block-import-ignore-nonnumeric-"], [id^="template-block-import-collapse-whitespace-"]'
+    )
+    .forEach((input) => {
+      input.addEventListener('change', async () => {
+        const id = (input as HTMLElement).id;
+        const blockId = id.split('-').slice(-1)[0];
+        if (!blockId) {
+          return;
+        }
+
+        syncTemplateBlockImportInputsToState(params.context);
+        await triggerAutoImportPreview(blockId);
+      });
+    });
+
+  document.querySelectorAll('[data-template-import-set-x]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const encoded = (button as HTMLElement).dataset.templateImportSetX;
+      if (!encoded) {
+        return;
+      }
+
+      const [blockId, columnIndexText] = encoded.split('::');
+      const input = document.getElementById(`template-block-import-x-column-${blockId}`) as
+        | HTMLSelectElement
+        | null;
+      if (!input) {
+        return;
+      }
+
+      input.value = String(Number(columnIndexText) + 1);
+      syncTemplateBlockImportInputsToState(params.context);
+      await triggerAutoImportPreview(blockId);
+    });
+  });
+
+  document.querySelectorAll('[data-template-import-set-y]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const encoded = (button as HTMLElement).dataset.templateImportSetY;
+      if (!encoded) {
+        return;
+      }
+
+      const [blockId, columnIndexText] = encoded.split('::');
+      const input = document.getElementById(`template-block-import-y-column-${blockId}`) as
+        | HTMLSelectElement
+        | null;
+      if (!input) {
+        return;
+      }
+
+      input.value = String(Number(columnIndexText) + 1);
+      syncTemplateBlockImportInputsToState(params.context);
+      await triggerAutoImportPreview(blockId);
+    });
+  });
+
+  let dragSelection:
+    | {
+        blockId: string;
+        startRow: number;
+      }
+    | null = null;
+
+  const handleDragSelectionMouseUp = () => {
+    if (!dragSelection) {
+      return;
+    }
+
+    const blockId = dragSelection.blockId;
+    syncTemplateBlockImportInputsToState(params.context);
+    dragSelection = null;
+    document.removeEventListener('mouseup', handleDragSelectionMouseUp);
+    void triggerAutoImportPreview(blockId);
+  };
+
+  const updateImportSelectionInputs = (blockId: string, endRow: number) => {
+    if (!dragSelection || dragSelection.blockId !== blockId) {
+      return;
+    }
+
+    const startRow = Math.min(dragSelection.startRow, endRow);
+    const finalRow = Math.max(dragSelection.startRow, endRow);
+
+    const startRowInput = document.getElementById(`template-block-import-start-row-${blockId}`) as
+      | HTMLInputElement
+      | null;
+    const endRowInput = document.getElementById(`template-block-import-end-row-${blockId}`) as
+      | HTMLInputElement
+      | null;
+
+    if (startRowInput) startRowInput.value = String(startRow);
+    if (endRowInput) endRowInput.value = String(finalRow);
+  };
+
+  const bindRowSelectionTarget = (selector: string, blockIdKey: string) => {
+    document.querySelectorAll(selector).forEach((node) => {
+      node.addEventListener('mousedown', (event) => {
+        event.preventDefault();
+        const target = node as HTMLElement;
+        const blockId = target.dataset[blockIdKey];
+        const rowNumber = Number(target.dataset.templateImportRow);
+        if (!blockId || Number.isNaN(rowNumber)) {
+          return;
+        }
+
+        dragSelection = {
+          blockId,
+          startRow: rowNumber
+        };
+        document.removeEventListener('mouseup', handleDragSelectionMouseUp);
+        document.addEventListener('mouseup', handleDragSelectionMouseUp);
+        updateImportSelectionInputs(blockId, rowNumber);
+      });
+
+      node.addEventListener('mouseenter', (event) => {
+        if (!dragSelection || !(event as MouseEvent).buttons) {
+          return;
+        }
+
+        const target = node as HTMLElement;
+        const blockId = target.dataset[blockIdKey];
+        const rowNumber = Number(target.dataset.templateImportRow);
+        if (!blockId || Number.isNaN(rowNumber)) {
+          return;
+        }
+
+        updateImportSelectionInputs(blockId, rowNumber);
+      });
+    });
+  };
+
+  bindRowSelectionTarget('[data-template-import-cell-block-id]', 'templateImportCellBlockId');
+  bindRowSelectionTarget(
+    '[data-template-import-row-select-block-id]',
+    'templateImportRowSelectBlockId'
+  );
 }
 
 function refreshDetailEditTemplateRecommendations() {
@@ -7210,7 +9334,7 @@ function syncDetailEditStep1InputsToState() {
   detailEditStep1.instrument =
     (document.getElementById('edit-instrument') as HTMLInputElement)?.value.trim() || '';
   detailEditStep1.testTime =
-    (document.getElementById('edit-testTime') as HTMLInputElement)?.value || '';
+    (document.getElementById('edit-testTimeValue') as HTMLInputElement)?.value || '';
   detailEditStep1.sampleOwner =
     (document.getElementById('edit-sampleOwner') as HTMLInputElement)?.value.trim() || '';
 
@@ -7248,7 +9372,12 @@ function refreshDetailEditDerivedNamePreview() {
 
 function bindDetailEditTemplateContextReactivity() {
   const testProjectInput = document.getElementById('edit-testProject') as HTMLInputElement | null;
-  const previewFieldIds = ['edit-sampleCode', 'edit-tester', 'edit-instrument', 'edit-testTime'];
+  const previewFieldIds = [
+    'edit-sampleCode',
+    'edit-tester',
+    'edit-instrument',
+    'edit-testTimeValue'
+  ];
 
   previewFieldIds.forEach((fieldId) => {
     const input = document.getElementById(fieldId) as HTMLInputElement | null;
@@ -7294,16 +9423,27 @@ function renderEditableScalarSection(
     role === 'condition'
       ? `${contextPrefix}-add-condition-row-btn`
       : `${contextPrefix}-add-metric-row-btn`;
+  const addButtonTitle = role === 'condition' ? t('step2.condition.addButton') : t('step2.metric.addButton');
+  const startedCount = rows.length;
+  const emptySummary = t('step2.added.empty');
 
   return `
-    <div class="detail-section">
-      <div class="dynamic-header">
+    <div class="detail-section step2-entry-section">
+      <div class="dynamic-header step2-section-header">
         <div>
           <div class="dynamic-title">${meta.title}</div>
-          <div class="dynamic-subtitle">${meta.subtitle}</div>
+          <div class="dynamic-subtitle step2-section-subtitle">${meta.subtitle}</div>
         </div>
-        <div class="table-toolbar">
-          <button id="${addButtonId}" class="secondary-btn" type="button">${meta.addButtonLabel}</button>
+        <div class="table-toolbar step2-section-toolbar">
+          <button
+            id="${addButtonId}"
+            class="secondary-btn step2-compact-add-btn"
+            type="button"
+            title="${escapeHtml(addButtonTitle)}"
+            aria-label="${escapeHtml(addButtonTitle)}"
+          >
+            ${escapeHtml(t('step2.addCompact'))}
+          </button>
         </div>
       </div>
 
@@ -7315,9 +9455,13 @@ function renderEditableScalarSection(
           : family?.recommendedMetrics || []
       )}
 
+      <div class="step2-added-summary">${escapeHtml(
+        startedCount ? t('step2.added.summary', { count: startedCount }) : emptySummary
+      )}</div>
+
       ${rows.length
         ? `
-            <div class="data-table-wrapper">
+            <div class="data-table-wrapper step2-data-table-wrapper">
               <table class="data-table">
                 <thead>
                   <tr>
@@ -7407,7 +9551,7 @@ function renderEditableScalarSection(
               </table>
             </div>
           `
-        : `<div class="empty-tip">${meta.emptyText}</div>`}
+        : `<div class="empty-tip step2-empty-tip">${escapeHtml(emptySummary)}</div>`}
     </div>
   `;
 }
@@ -7483,9 +9627,10 @@ function renderScalarSections(
 ) {
   const conditionRows = rows.filter((row) => (row.scalarRole || 'metric') === 'condition');
   const metricRows = rows.filter((row) => (row.scalarRole || 'metric') === 'metric');
+  const showTemplateContext = context !== 'create-step2';
 
   return `
-    ${renderStep2TemplateContextHint(context)}
+    ${showTemplateContext ? renderStep2TemplateContextHint(context) : ''}
     ${renderEditableScalarSection(context, 'condition', conditionRows)}
     ${renderEditableScalarSection(context, 'metric', metricRows)}
   `;
@@ -7495,14 +9640,12 @@ function validateScalarItems(rows: DataItem[]) {
   for (const row of rows) {
     const hasName = !!row.itemName;
     const hasValue = !!row.itemValue;
-    const hasUnit = !!row.itemUnit;
-    const hasFile = !!row.sourceFileName || !!row.replacementOriginalName || !!row.originalFileName;
 
-    if ((hasName || hasValue || hasUnit || hasFile) && !hasName) {
+    if (isStartedScalarRow(row) && !hasName) {
       return t('step2.validation.missingName');
     }
 
-    if ((hasName || hasValue || hasUnit || hasFile) && !hasValue) {
+    if (isStartedScalarRow(row) && !hasValue) {
       return t('step2.validation.missingValue');
     }
   }
@@ -7692,30 +9835,253 @@ function countTemplateBlockPointLines(dataText: string) {
     .filter(Boolean).length;
 }
 
+function getImportEncodingOptions() {
+  return [
+    { value: 'auto' as ImportTextEncoding, label: t('step2.import.encoding.auto') },
+    { value: 'utf8' as ImportTextEncoding, label: t('step2.import.encoding.utf8') },
+    { value: 'gbk' as ImportTextEncoding, label: t('step2.import.encoding.gbk') },
+    { value: 'utf16' as ImportTextEncoding, label: t('step2.import.encoding.utf16') }
+  ];
+}
+
+function getTemplateBlockImportRange(block: TemplateBlockFormData) {
+  const review = block.importManualReview;
+  const previewRows = review?.previewRows || [];
+  const lastPreviewRow = previewRows[previewRows.length - 1]?.rowNumber || review?.dataStartRow || 1;
+
+  return {
+    startRow: review?.dataStartRow || 1,
+    endRow: review?.dataEndRow || lastPreviewRow,
+    startColumn: review?.dataStartColumn || 1,
+    endColumn: review?.dataEndColumn || Math.max(review?.dataStartColumn || 1, review?.maxColumnCount || 1)
+  };
+}
+
+function getTemplateBlockSelectedColumns(block: TemplateBlockFormData) {
+  const range = getTemplateBlockImportRange(block);
+  return Array.from(
+    { length: Math.max(0, range.endColumn - range.startColumn + 1) },
+    (_, index) => range.startColumn + index
+  );
+}
+
+function renderTemplateBlockImportPreviewTable(block: TemplateBlockFormData) {
+  const review = block.importManualReview;
+  if (!review) {
+    return '';
+  }
+
+  const range = getTemplateBlockImportRange(block);
+  const yColumnNumber = review.yColumnIndex + 1;
+
+  return `
+    <div class="import-preview-table-region-help">${escapeHtml(t('step2.import.regionHelp'))}</div>
+    <div class="import-preview-table-wrapper">
+      <table class="import-preview-table-grid">
+        <thead>
+          <tr>
+            <th class="import-preview-corner">#</th>
+            ${Array.from({ length: review.maxColumnCount }, (_, index) => {
+              const columnNumber = index + 1;
+              const isX = review.xColumnIndex + 1 === columnNumber;
+              const isY = yColumnNumber === columnNumber;
+              return `
+                <th class="import-preview-column-header ${isX ? 'column-x' : ''} ${isY ? 'column-y' : ''}">
+                  <div class="import-preview-column-top">
+                    <span>${escapeHtml(t('step2.import.columnNumber', { index: columnNumber }))}</span>
+                    <span class="import-preview-column-badges">
+                      ${isX ? '<span class="import-preview-column-badge">X</span>' : ''}
+                      ${isY ? '<span class="import-preview-column-badge import-preview-column-badge-y">Y</span>' : ''}
+                    </span>
+                  </div>
+                  <div class="import-preview-column-actions">
+                    ${
+                      review.xSourceMode === 'column'
+                        ? `
+                            <button
+                              type="button"
+                              class="import-preview-column-action ${isX ? 'active' : ''}"
+                              data-template-import-set-x="${block.id}::${index}"
+                            >
+                              ${escapeHtml(t('step2.import.setAsX'))}
+                            </button>
+                          `
+                        : ''
+                    }
+                    <button
+                      type="button"
+                      class="import-preview-column-action ${isY ? 'active' : ''}"
+                      data-template-import-set-y="${block.id}::${index}"
+                    >
+                      ${escapeHtml(t('step2.import.setAsY'))}
+                    </button>
+                  </div>
+                </th>
+              `;
+            }).join('')}
+          </tr>
+        </thead>
+        <tbody>
+          ${review.previewRows
+            .map((row) => {
+              const rowSelected = row.rowNumber >= range.startRow && row.rowNumber <= range.endRow;
+              return `
+                <tr>
+                  <th
+                    class="import-preview-row-header ${rowSelected ? 'selected-range' : ''}"
+                    data-template-import-row-select-block-id="${block.id}"
+                    data-template-import-row="${row.rowNumber}"
+                  >
+                    ${row.rowNumber}
+                  </th>
+                  ${Array.from({ length: review.maxColumnCount }, (_, index) => {
+                    const columnNumber = index + 1;
+                    const value = row.columns[index] || '';
+                    const isX = review.xColumnIndex + 1 === columnNumber;
+                    const isY = yColumnNumber === columnNumber;
+                    return `
+                      <td class="import-preview-cell ${rowSelected ? 'selected-range' : ''} ${isX ? 'column-x' : ''} ${
+                        isY ? 'column-y' : ''
+                      }">
+                        <button
+                          type="button"
+                          class="import-preview-cell-btn"
+                          data-template-import-cell-block-id="${block.id}"
+                          data-template-import-row="${row.rowNumber}"
+                          title="${escapeHtml(value)}"
+                        >
+                          ${escapeHtml(value || ' ')}
+                        </button>
+                      </td>
+                    `;
+                  }).join('')}
+                </tr>
+              `;
+            })
+            .join('')}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function renderTemplateBlockImportColumnSelect(
+  block: TemplateBlockFormData,
+  mode: 'x' | 'y'
+) {
+  const review = block.importManualReview;
+  if (!review) {
+    return '';
+  }
+
+  return `
+    <select
+      id="template-block-import-${mode}-column-${block.id}"
+      class="form-input import-inline-select"
+    >
+      ${getTemplateBlockSelectedColumns(block)
+        .map((columnNumber) => {
+          const columnIndex = columnNumber - 1;
+          return `
+            <option
+              value="${columnNumber}"
+              ${
+                (mode === 'x' ? review.xColumnIndex : review.yColumnIndex) === columnIndex
+                  ? 'selected'
+                  : ''
+              }
+            >
+              ${escapeHtml(t('step2.import.columnNumber', { index: columnNumber }))}
+            </option>
+          `;
+        })
+        .join('')}
+    </select>
+  `;
+}
+
+function renderTemplateBlockImportSummary(block: TemplateBlockFormData) {
+  const review = block.importManualReview;
+  if (!review) {
+    return '';
+  }
+
+  const range = getTemplateBlockImportRange(block);
+  const pointCount =
+    block.importPreviewCandidate?.candidateType === 'templateBlock'
+      ? block.importPreviewCandidate.templateBlock.points.length
+      : 0;
+
+  return `
+    <div class="import-preview-summary">
+      <div>${escapeHtml(t('step2.import.rowRangeSummary', { startRow: range.startRow, endRow: range.endRow }))}</div>
+      <div>X：${escapeHtml(t('step2.import.columnNumber', { index: review.xColumnIndex + 1 }))}</div>
+      <div>Y：${escapeHtml(t('step2.import.columnNumber', { index: review.yColumnIndex + 1 }))}</div>
+      <div>${escapeHtml(t('step2.import.pointCount', { count: pointCount }))}</div>
+    </div>
+  `;
+}
+
 function renderTemplateBlockImportPanel(block: TemplateBlockFormData) {
   const manualReview = block.importManualReview;
   const warnings = block.importWarnings || [];
-  const importCandidate =
+  const pointCount =
     block.importPreviewCandidate?.candidateType === 'templateBlock'
-      ? block.importPreviewCandidate
-      : null;
+      ? block.importPreviewCandidate.templateBlock.points.length
+      : 0;
 
   if (
     !block.importPreviewError &&
     !warnings.length &&
     !block.importParserLabel &&
     !manualReview?.available &&
-    !importCandidate
+    !pointCount
   ) {
     return '';
   }
 
   return `
     <div class="import-manual-review-panel">
-      ${block.importPreviewSelectedName
-        ? `<div class="import-preview-file-status">${escapeHtml(t('step2.import.previewFile', { file: block.importPreviewSelectedName }))}</div>`
+      <div class="import-preview-file-bar">
+        ${block.importPreviewSelectedName
+          ? `<div class="import-preview-file-status">${escapeHtml(t('step2.import.previewFile', { file: block.importPreviewSelectedName }))}</div>`
+          : ''}
+        ${manualReview
+          ? `
+              <div class="import-preview-file-controls">
+                <div class="import-inline-control">
+                  <label class="form-label">${escapeHtml(t('step2.import.encoding'))}</label>
+                  <select id="template-block-import-encoding-${block.id}" class="form-input import-inline-select">
+                    ${getImportEncodingOptions()
+                      .map(
+                        (option) => `
+                          <option value="${option.value}" ${manualReview.textEncoding === option.value ? 'selected' : ''}>
+                            ${escapeHtml(option.label)}
+                          </option>
+                        `
+                      )
+                      .join('')}
+                  </select>
+                </div>
+                <div class="import-inline-control">
+                  <label class="form-label">${escapeHtml(t('step2.import.delimiter'))}</label>
+                  <select id="template-block-import-delimiter-${block.id}" class="form-input import-inline-select">
+                    <option value="comma" ${manualReview.delimiter === 'comma' ? 'selected' : ''}>${escapeHtml(t('step2.import.delimiterComma'))}</option>
+                    <option value="tab" ${manualReview.delimiter === 'tab' ? 'selected' : ''}>${escapeHtml(t('step2.import.delimiterTab'))}</option>
+                    <option value="semicolon" ${manualReview.delimiter === 'semicolon' ? 'selected' : ''}>${escapeHtml(t('step2.import.delimiterSemicolon'))}</option>
+                    <option value="whitespace" ${manualReview.delimiter === 'whitespace' ? 'selected' : ''}>${escapeHtml(t('step2.import.delimiterWhitespace'))}</option>
+                  </select>
+                </div>
+              </div>
+            `
+          : ''}
+      </div>
+      ${manualReview
+        ? `<div class="import-preview-file-status">${escapeHtml(t('step2.import.recognitionStatus'))}：${escapeHtml(
+            manualReview.recognitionMessage
+          )}</div>`
         : ''}
-      ${block.importParserLabel
+      ${block.importParserLabel && manualReview?.recognitionStatus === 'success'
         ? `<div class="import-preview-file-status">${escapeHtml(t('step2.import.detectedParser', { parser: block.importParserLabel }))}</div>`
         : ''}
       ${warnings.length
@@ -7730,51 +10096,39 @@ function renderTemplateBlockImportPanel(block: TemplateBlockFormData) {
       ${block.importPreviewError
         ? `<div class="error-message">${escapeHtml(block.importPreviewError)}</div>`
         : ''}
-      ${importCandidate
-        ? `
-            <div class="import-manual-review-title">${escapeHtml(t('step2.import.previewTitle'))}</div>
-            <div class="import-manual-review-subtitle">${escapeHtml(t('step2.import.previewSubtitle'))}</div>
-            <div class="template-block-grid">
-              <div class="form-group">
-                <label class="form-label">${escapeHtml(t('step2.import.previewBlockName'))}</label>
-                <div class="detail-list-value">${escapeHtml(importCandidate.templateBlock.blockTitle || '-')}</div>
-              </div>
-              <div class="form-group">
-                <label class="form-label">${escapeHtml(t('step2.import.previewPointCount'))}</label>
-                <div class="detail-list-value">${importCandidate.templateBlock.points.length}</div>
-              </div>
-            </div>
-            <button
-              class="secondary-btn"
-              type="button"
-              data-template-block-apply-import-id="${block.id}"
-            >
-              ${escapeHtml(t('step2.import.applyPreview'))}
-            </button>
-          `
-        : ''}
       ${manualReview?.available
         ? `
-            <div class="import-manual-review-title">${escapeHtml(t('step2.import.manualReviewTitle'))}</div>
-            <div class="import-manual-review-subtitle">${escapeHtml(t('step2.import.manualReviewSubtitle'))}</div>
+            <div class="import-manual-review-title">${escapeHtml(t('step2.import.mappingToolbarTitle'))}</div>
+            <div class="import-manual-review-subtitle">${escapeHtml(t('step2.import.singleCurveHint'))}</div>
 
-            <div class="template-block-grid">
-              <div class="form-group">
-                <label class="form-label">${escapeHtml(t('step2.import.dataStartRow'))}</label>
+            <div class="import-mapping-toolbar">
+              <div class="import-inline-control">
+                <label class="form-label">${escapeHtml(t('step2.import.rangeStartRow'))}</label>
                 <input
                   id="template-block-import-start-row-${block.id}"
-                  class="form-input"
+                  class="form-input import-inline-input"
                   type="number"
                   min="1"
                   value="${manualReview.dataStartRow}"
                 />
               </div>
 
-              <div class="form-group">
+              <div class="import-inline-control">
+                <label class="form-label">${escapeHtml(t('step2.import.rangeEndRow'))}</label>
+                <input
+                  id="template-block-import-end-row-${block.id}"
+                  class="form-input import-inline-input"
+                  type="number"
+                  min="${manualReview.dataStartRow}"
+                  value="${manualReview.dataEndRow || ''}"
+                />
+              </div>
+
+              <div class="import-inline-control">
                 <label class="form-label">${escapeHtml(t('step2.import.xSource'))}</label>
                 <select
                   id="template-block-import-x-source-${block.id}"
-                  class="form-input"
+                  class="form-input import-inline-select"
                   data-template-block-import-x-source-id="${block.id}"
                 >
                   <option value="column" ${manualReview.xSourceMode === 'column' ? 'selected' : ''}>${escapeHtml(t('step2.import.xSourceColumn'))}</option>
@@ -7782,102 +10136,100 @@ function renderTemplateBlockImportPanel(block: TemplateBlockFormData) {
                 </select>
               </div>
 
-              <div class="form-group">
-                <label class="form-label">${escapeHtml(t('step2.import.delimiter'))}</label>
-                <select
-                  id="template-block-import-delimiter-${block.id}"
-                  class="form-input"
-                >
-                  <option value="comma" ${manualReview.delimiter === 'comma' ? 'selected' : ''}>${escapeHtml(t('step2.import.delimiterComma'))}</option>
-                  <option value="tab" ${manualReview.delimiter === 'tab' ? 'selected' : ''}>${escapeHtml(t('step2.import.delimiterTab'))}</option>
-                  <option value="semicolon" ${manualReview.delimiter === 'semicolon' ? 'selected' : ''}>${escapeHtml(t('step2.import.delimiterSemicolon'))}</option>
-                  <option value="whitespace" ${manualReview.delimiter === 'whitespace' ? 'selected' : ''}>${escapeHtml(t('step2.import.delimiterWhitespace'))}</option>
-                </select>
-              </div>
-
               ${manualReview.xSourceMode === 'column'
                 ? `
-                    <div class="form-group">
-                      <label class="form-label">${escapeHtml(t('step2.import.xColumn'))}</label>
-                      <input
-                        id="template-block-import-x-column-${block.id}"
-                        class="form-input"
-                        type="number"
-                        min="1"
-                        value="${manualReview.xColumnIndex + 1}"
-                      />
+                    <div class="import-inline-control">
+                      <label class="form-label">${escapeHtml(t('step2.import.xColumnSingle'))}</label>
+                      ${renderTemplateBlockImportColumnSelect(block, 'x')}
                     </div>
                   `
                 : `
-                    <div class="form-group">
+                    <div class="import-inline-control">
                       <label class="form-label">${escapeHtml(t('step2.import.generatedStart'))}</label>
                       <input
                         id="template-block-import-generated-start-${block.id}"
-                        class="form-input"
+                        class="form-input import-inline-input"
                         type="number"
                         value="${manualReview.generatedXStart}"
                       />
                     </div>
-                    <div class="form-group">
+                    <div class="import-inline-control">
                       <label class="form-label">${escapeHtml(t('step2.import.generatedStep'))}</label>
                       <input
                         id="template-block-import-generated-step-${block.id}"
-                        class="form-input"
+                        class="form-input import-inline-input"
                         type="number"
                         value="${manualReview.generatedXStep}"
                       />
                     </div>
                   `}
 
-              <div class="form-group">
+              <div class="import-inline-control">
                 <label class="form-label">${escapeHtml(t('step2.import.yColumn'))}</label>
-                <input
-                  id="template-block-import-y-column-${block.id}"
-                  class="form-input"
-                  type="number"
-                  min="1"
-                  value="${manualReview.yColumnIndex + 1}"
-                />
+                ${renderTemplateBlockImportColumnSelect(block, 'y')}
               </div>
+
+              <div class="import-preview-count-chip">${escapeHtml(t('step2.import.pointCount', { count: pointCount }))}</div>
             </div>
 
-            <button
-              class="secondary-btn"
-              type="button"
-              data-template-block-manual-preview-id="${block.id}"
-              ${manualReview.previewLoading ? 'disabled' : ''}
-            >
-              ${escapeHtml(manualReview.previewLoading ? t('step2.import.generating') : t('step2.import.regenerate'))}
-            </button>
+            <details class="import-advanced-range">
+              <summary>${escapeHtml(t('step2.import.advancedColumns'))}</summary>
+              <div class="import-advanced-range-grid">
+                <div class="import-inline-control">
+                  <label class="form-label">${escapeHtml(t('step2.import.rangeStartColumn'))}</label>
+                  <input
+                    id="template-block-import-start-column-${block.id}"
+                    class="form-input import-inline-input"
+                    type="number"
+                    min="1"
+                    max="${Math.max(1, manualReview.maxColumnCount)}"
+                    value="${manualReview.dataStartColumn}"
+                  />
+                </div>
+                <div class="import-inline-control">
+                  <label class="form-label">${escapeHtml(t('step2.import.rangeEndColumn'))}</label>
+                  <input
+                    id="template-block-import-end-column-${block.id}"
+                    class="form-input import-inline-input"
+                    type="number"
+                    min="${manualReview.dataStartColumn}"
+                    max="${Math.max(1, manualReview.maxColumnCount)}"
+                    value="${manualReview.dataEndColumn || ''}"
+                  />
+                </div>
+              </div>
+            </details>
+
+            <div class="import-cleaning-row">
+              <label class="import-cleaning-option">
+                <input id="template-block-import-ignore-empty-${block.id}" type="checkbox" ${manualReview.ignoreEmptyRows ? 'checked' : ''} />
+                <span>${escapeHtml(t('step2.import.ignoreEmptyRows'))}</span>
+              </label>
+              <label class="import-cleaning-option">
+                <input id="template-block-import-ignore-nonnumeric-${block.id}" type="checkbox" ${manualReview.ignoreNonNumericRows ? 'checked' : ''} />
+                <span>${escapeHtml(t('step2.import.ignoreNonNumericRows'))}</span>
+              </label>
+              <label class="import-cleaning-option">
+                <input id="template-block-import-collapse-whitespace-${block.id}" type="checkbox" ${manualReview.collapseWhitespace ? 'checked' : ''} />
+                <span>${escapeHtml(t('step2.import.collapseWhitespace'))}</span>
+              </label>
+            </div>
+
+            ${renderTemplateBlockImportSummary(block)}
+            ${renderTemplateBlockImportPreviewTable(block)}
+
+            <div class="import-action-row">
+              <button
+                class="secondary-btn"
+                type="button"
+                data-template-block-apply-import-id="${block.id}"
+                ${manualReview.previewLoading || pointCount < 2 ? 'disabled' : ''}
+              >
+                ${escapeHtml(t('step2.import.writeCurrentBlock'))}
+              </button>
+            </div>
 
             ${manualReview.previewError ? `<div class="error-message">${escapeHtml(manualReview.previewError)}</div>` : ''}
-
-            <div class="import-manual-preview-table-wrapper">
-              <table class="import-manual-preview-table">
-                <thead>
-                  <tr>
-                    <th>${escapeHtml(t('step2.import.rowNumber'))}</th>
-                    ${Array.from({ length: manualReview.maxColumnCount })
-                      .map((_, index) => `<th>${escapeHtml(t('step2.import.columnNumber', { index: index + 1 }))}</th>`)
-                      .join('')}
-                  </tr>
-                </thead>
-                <tbody>
-                  ${manualReview.previewRows
-                    .map(
-                      (row) => `
-                        <tr>
-                          <td>${row.rowNumber}</td>
-                          ${Array.from({ length: manualReview.maxColumnCount })
-                            .map((_, index) => `<td>${escapeHtml(row.columns[index] || '')}</td>`)
-                            .join('')}
-                        </tr>
-                      `
-                    )
-                    .join('')}
-                </tbody>
-              </table>
-            </div>
           `
         : ''}
     </div>
@@ -7900,12 +10252,15 @@ function getTemplateBlockDisplayedOriginalName(block: TemplateBlockFormData) {
   return block.replacementOriginalName || block.originalFileName || '-';
 }
 
-function shouldShowTemplateBlockAdjustButton(
+function shouldRenderTemplateBlockImportPanel(
   block: TemplateBlockFormData
 ) {
   return (
-    !!(block.importPreviewSelectedPath || block.originalFilePath) &&
-    !!block.importManualReview?.available
+    !!block.importPreviewLoading ||
+    !!block.importPreviewError ||
+    !!block.importManualReview?.available ||
+    !!block.importPreviewSelectedPath ||
+    !!block.originalFilePath
   );
 }
 
@@ -7928,12 +10283,107 @@ function getTemplateBlockFieldConfig(templateType?: TemplateBlockType) {
   };
 }
 
+function renderEditableTemplateBlockBasicFields(
+  block: TemplateBlockFormData,
+  fieldConfig: ReturnType<typeof getTemplateBlockFieldConfig>
+) {
+  return `
+    <div class="template-block-grid">
+      <div class="form-group">
+        <label class="form-label">${escapeHtml(t('step2.structured.purposeLabel'))}</label>
+        <select id="template-block-purpose-${block.id}" class="form-input">
+          ${STRUCTURED_BLOCK_PURPOSE_OPTIONS.map(
+            (option) => `
+              <option value="${option.value}" ${block.purposeType === option.value ? 'selected' : ''}>
+                ${option.label}
+              </option>
+            `
+          ).join('')}
+        </select>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">${escapeHtml(t('step2.structured.blockTitleLabel'))} <span class="required-star">*</span></label>
+        <input
+          id="template-block-title-${block.id}"
+          class="form-input"
+          placeholder="${fieldConfig.titlePlaceholder}"
+          value="${escapeHtml(block.blockTitle)}"
+        />
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">${fieldConfig.primaryLabelText}</label>
+        <input
+          id="template-block-primary-label-${block.id}"
+          class="form-input"
+          placeholder="${fieldConfig.primaryLabelPlaceholder}"
+          value="${escapeHtml(block.primaryLabel)}"
+        />
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">${fieldConfig.primaryUnitText}</label>
+        <input
+          id="template-block-primary-unit-${block.id}"
+          class="form-input"
+          placeholder="${fieldConfig.primaryUnitPlaceholder}"
+          value="${escapeHtml(block.primaryUnit)}"
+        />
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">${fieldConfig.secondaryLabelText}</label>
+        <input
+          id="template-block-secondary-label-${block.id}"
+          class="form-input"
+          placeholder="${fieldConfig.secondaryLabelPlaceholder}"
+          value="${escapeHtml(block.secondaryLabel)}"
+        />
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">${fieldConfig.secondaryUnitText}</label>
+        <input
+          id="template-block-secondary-unit-${block.id}"
+          class="form-input"
+          placeholder="${fieldConfig.secondaryUnitPlaceholder}"
+          value="${escapeHtml(block.secondaryUnit)}"
+        />
+      </div>
+    </div>
+  `;
+}
+
+function renderEditableTemplateBlockFinalResult(
+  block: TemplateBlockFormData,
+  fieldConfig: ReturnType<typeof getTemplateBlockFieldConfig>
+) {
+  return `
+    <div class="template-block-data-section">
+      <div class="form-group">
+        <label class="form-label">${fieldConfig.dataLabel} <span class="required-star">*</span></label>
+        <textarea id="template-block-data-${block.id}" class="template-block-textarea" placeholder="${fieldConfig.dataPlaceholder}">${escapeHtml(block.dataText)}</textarea>
+      </div>
+      <div class="form-group">
+        <label class="form-label">${escapeHtml(t('step2.structured.noteLabel'))}</label>
+        <input
+          id="template-block-note-${block.id}"
+          class="form-input"
+          placeholder="${escapeHtml(t('step2.structured.notePlaceholder'))}"
+          value="${escapeHtml(block.note)}"
+        />
+      </div>
+    </div>
+  `;
+}
+
 function renderTemplateBlockCards(
   blocks: TemplateBlockFormData[],
   context: TemplateBlockEditContext
 ) {
   if (!blocks.length) {
-    return `<div class="empty-tip">${escapeHtml(t('step2.structured.empty'))}</div>`;
+    return `<div class="empty-tip step2-empty-tip">${escapeHtml(t('step2.added.empty'))}</div>`;
   }
 
   return blocks
@@ -7946,7 +10396,6 @@ function renderTemplateBlockCards(
           <div class="template-block-header">
             <div>
               <div class="template-block-type">${fieldConfig.typeLabel} ${index + 1}</div>
-              <div class="template-block-subtitle">${fieldConfig.subtitle}</div>
             </div>
             <button
               class="danger-btn small-danger-btn"
@@ -7956,6 +10405,8 @@ function renderTemplateBlockCards(
               ${escapeHtml(t('dictionary.delete'))}
             </button>
           </div>
+
+          ${renderEditableTemplateBlockBasicFields(block, fieldConfig)}
 
           <div class="template-block-file-row">
             <button
@@ -7974,103 +10425,13 @@ function renderTemplateBlockCards(
               ${escapeHtml(t('step2.import.originalFileLabel'))}：${escapeHtml(getTemplateBlockDisplayedOriginalName(block))}
               ${block.sourceFileName ? ` · ${escapeHtml(t('step2.import.savedFileLabel'))}：${escapeHtml(block.sourceFileName)}` : ''}
             </div>
-            ${shouldShowTemplateBlockAdjustButton(block)
-              ? `
-                  <button
-                    class="secondary-btn"
-                    type="button"
-                    data-template-block-toggle-import-id="${block.id}"
-                    data-template-block-toggle-context="${context}"
-                  >
-                    ${escapeHtml(getActiveTemplateBlockImportId(context) === block.id ? t('step2.import.collapseParser') : t('step2.import.adjustParser'))}
-                  </button>
-                `
-              : ''}
           </div>
 
-          ${getActiveTemplateBlockImportId(context) === block.id
+          ${shouldRenderTemplateBlockImportPanel(block)
             ? renderTemplateBlockImportPanel(block)
             : ''}
 
-          <div class="template-block-grid">
-            <div class="form-group">
-              <label class="form-label">${escapeHtml(t('step2.structured.purposeLabel'))}</label>
-              <select id="template-block-purpose-${block.id}" class="form-input">
-                ${STRUCTURED_BLOCK_PURPOSE_OPTIONS.map(
-                  (option) => `
-                    <option value="${option.value}" ${block.purposeType === option.value ? 'selected' : ''}>
-                      ${option.label}
-                    </option>
-                  `
-                ).join('')}
-              </select>
-            </div>
-
-            <div class="form-group">
-              <label class="form-label">${escapeHtml(t('step2.structured.blockTitleLabel'))} <span class="required-star">*</span></label>
-              <input
-                id="template-block-title-${block.id}"
-                class="form-input"
-                placeholder="${fieldConfig.titlePlaceholder}"
-                value="${escapeHtml(block.blockTitle)}"
-              />
-            </div>
-
-            <div class="form-group">
-              <label class="form-label">${fieldConfig.primaryLabelText}</label>
-              <input
-                id="template-block-primary-label-${block.id}"
-                class="form-input"
-                placeholder="${fieldConfig.primaryLabelPlaceholder}"
-                value="${escapeHtml(block.primaryLabel)}"
-              />
-            </div>
-
-            <div class="form-group">
-              <label class="form-label">${fieldConfig.primaryUnitText}</label>
-              <input
-                id="template-block-primary-unit-${block.id}"
-                class="form-input"
-                placeholder="${fieldConfig.primaryUnitPlaceholder}"
-                value="${escapeHtml(block.primaryUnit)}"
-              />
-            </div>
-
-            <div class="form-group">
-              <label class="form-label">${fieldConfig.secondaryLabelText}</label>
-              <input
-                id="template-block-secondary-label-${block.id}"
-                class="form-input"
-                placeholder="${fieldConfig.secondaryLabelPlaceholder}"
-                value="${escapeHtml(block.secondaryLabel)}"
-              />
-            </div>
-
-            <div class="form-group">
-              <label class="form-label">${fieldConfig.secondaryUnitText}</label>
-              <input
-                id="template-block-secondary-unit-${block.id}"
-                class="form-input"
-                placeholder="${fieldConfig.secondaryUnitPlaceholder}"
-                value="${escapeHtml(block.secondaryUnit)}"
-              />
-            </div>
-          </div>
-
-          <div class="form-group">
-            <label class="form-label">${fieldConfig.dataLabel} <span class="required-star">*</span></label>
-            <textarea id="template-block-data-${block.id}" class="template-block-textarea" placeholder="${fieldConfig.dataPlaceholder}">${escapeHtml(block.dataText)}</textarea>
-          </div>
-
-          <div class="form-group">
-            <label class="form-label">${escapeHtml(t('step2.structured.noteLabel'))}</label>
-            <input
-              id="template-block-note-${block.id}"
-              class="form-input"
-              placeholder="${escapeHtml(t('step2.structured.notePlaceholder'))}"
-              value="${escapeHtml(block.note)}"
-            />
-          </div>
+          ${renderEditableTemplateBlockFinalResult(block, fieldConfig)}
         </div>
       `;
         })()}
@@ -8089,57 +10450,112 @@ function renderReadonlyTemplateBlocks(blocks: TemplateBlockFormData[], showReado
       (block, index) => `
         ${(() => {
           const fieldConfig = getTemplateBlockFieldConfig(block.templateType);
+          const reviewTitle = getTemplateBlockReviewTitle(block, index);
+          const purposeLabel = getStructuredBlockPurposeLabel(block.purposeType);
+          const pointCount = countTemplateBlockPointLines(block.dataText);
           return `
         <div class="template-block-card detail-template-block-card">
-          <div class="template-block-header">
-            <div>
-              <div class="template-block-type">${fieldConfig.typeLabel} ${index + 1}</div>
-              <div class="template-block-title">${escapeHtml(block.blockTitle)}</div>
+          <div class="template-block-review-header">
+            <div class="template-block-review-title-row">
+              <div class="template-block-review-title">${escapeHtml(reviewTitle)}</div>
+              ${
+                reviewTitle !== getTemplateBlockReviewOrdinal(index)
+                  ? `<span class="template-block-review-order">${escapeHtml(
+                      getTemplateBlockReviewOrdinal(index)
+                    )}</span>`
+                  : ''
+              }
             </div>
+            <div class="template-block-review-meta">
+              ${escapeHtml(t('step2.structured.pointCountLabel'))}：${pointCount}
+            </div>
+          </div>
+
+          <div class="template-block-review-subrow">
+            <div class="template-block-summary-chips">
+              <span class="template-block-summary-chip">${escapeHtml(
+                purposeLabel && purposeLabel !== '未指定' ? purposeLabel : 'Custom'
+              )}</span>
+            </div>
+            ${
+              block.sourceFileName
+                ? `
+                    <div class="template-block-compact-file" title="${escapeHtml(block.sourceFileName)}">
+                      <span class="template-block-source-label">${escapeHtml(t('step2.import.savedFileLabel'))}</span>
+                      <span class="template-block-source-value template-block-source-value-truncated">${escapeHtml(
+                        block.sourceFileName
+                      )}</span>
+                    </div>
+                  `
+                : ''
+            }
             ${showReadonlyHint ? `<div class="template-block-readonly-hint">${escapeHtml(t('step2.structured.readonlyHint'))}</div>` : ''}
           </div>
 
-          <div class="detail-grid template-block-detail-grid">
-            ${renderDetailPair(t('step2.structured.purposeLabel'), getStructuredBlockPurposeLabel(block.purposeType))}
-            ${renderDetailPair(fieldConfig.primaryLabelText, block.primaryLabel || '-')}
-            ${renderDetailPair(fieldConfig.primaryUnitText, block.primaryUnit || '-')}
-            ${renderDetailPair(fieldConfig.secondaryLabelText, block.secondaryLabel || '-')}
-            ${renderDetailPair(fieldConfig.secondaryUnitText, block.secondaryUnit || '-')}
-            ${renderDetailPair(t('step2.structured.pointCountLabel'), String(countTemplateBlockPointLines(block.dataText)))}
-            ${renderDetailPair(t('step2.structured.noteLabel'), block.note || '-')}
-          </div>
-
-          <div class="form-group">
-            <label class="form-label">${fieldConfig.dataLabel}</label>
-            <textarea class="template-block-textarea template-block-readonly-textarea" readonly>${escapeHtml(block.dataText)}</textarea>
-          </div>
-
-          <div class="template-block-file-row">
-            ${block.sourceFileName && block.sourceFilePath
-              ? `
-                  <div class="saved-file-cell">
-                    <button
-                      class="file-link-btn"
-                      type="button"
-                      data-open-saved-file="${escapeHtml(block.sourceFilePath)}"
-                    >
-                      ${escapeHtml(block.sourceFileName)}
-                    </button>
-                    <button
-                      class="file-folder-btn"
-                      type="button"
-                      data-open-saved-folder="${escapeHtml(block.sourceFilePath)}"
-                      title="${escapeHtml(t('databaseDetail.openFolderTitle'))}"
-                    >
-                      ${escapeHtml(t('databaseDetail.openFolder'))}
-                    </button>
-                  </div>
-                `
-              : `<div class="detail-value">${escapeHtml(t('step2.import.savedFileLabel'))}：-</div>`}
-            <div class="template-block-file-meta">
-              ${escapeHtml(t('step2.import.originalFileLabel'))}：${escapeHtml(block.originalFileName || '-')}
+          <div class="template-block-axis-inline">
+            <div class="template-block-axis-inline-item">
+              <span class="template-block-axis-inline-tag">X</span>
+              <span class="template-block-axis-inline-text">${escapeHtml(
+                `${block.primaryLabel || 'X'} (${block.primaryUnit || '-'})`
+              )}</span>
+            </div>
+            <div class="template-block-axis-inline-item">
+              <span class="template-block-axis-inline-tag">Y</span>
+              <span class="template-block-axis-inline-text">${escapeHtml(
+                `${block.secondaryLabel || 'Y'} (${block.secondaryUnit || '-'})`
+              )}</span>
             </div>
           </div>
+
+          <div class="template-block-source-summary">
+            <div class="template-block-source-line compact">
+              <span class="template-block-source-label">${escapeHtml(t('step2.import.savedFileLabel'))}</span>
+              ${
+                block.sourceFileName && block.sourceFilePath
+                  ? `
+                      <div class="saved-file-cell template-block-source-actions">
+                        <button
+                          class="file-link-btn"
+                          type="button"
+                          data-open-saved-file="${escapeHtml(block.sourceFilePath)}"
+                          title="${escapeHtml(block.sourceFileName)}"
+                        >
+                          <span class="template-block-source-value-truncated">${escapeHtml(block.sourceFileName)}</span>
+                        </button>
+                        <button
+                          class="file-folder-btn"
+                          type="button"
+                          data-open-saved-folder="${escapeHtml(block.sourceFilePath)}"
+                          title="${escapeHtml(t('databaseDetail.openFolderTitle'))}"
+                        >
+                          ${escapeHtml(t('databaseDetail.openFolder'))}
+                        </button>
+                      </div>
+                    `
+                  : `<span class="template-block-source-value">-</span>`
+              }
+            </div>
+            <div class="template-block-source-line compact">
+              <span class="template-block-source-label">${escapeHtml(t('step2.import.originalFileLabel'))}</span>
+              <span
+                class="template-block-source-value template-block-source-value-truncated"
+                title="${escapeHtml(block.originalFileName || '-')}"
+              >${escapeHtml(block.originalFileName || '-')}</span>
+            </div>
+            ${block.note
+              ? `<div class="template-block-summary-note">${escapeHtml(
+                  `${t('step2.structured.noteLabel')}：${block.note}`
+                )}</div>`
+              : ''}
+          </div>
+
+          <details class="template-block-data-details detail-template-block-data-details">
+            <summary>${escapeHtml(t('databaseDetail.viewXYData'))}</summary>
+            <div class="form-group template-block-data-editor detail-template-block-data-scroll">
+              <label class="form-label">${fieldConfig.dataLabel}</label>
+              <textarea class="template-block-textarea template-block-readonly-textarea" readonly>${escapeHtml(block.dataText)}</textarea>
+            </div>
+          </details>
         </div>
       `;
         })()}
@@ -8248,6 +10664,7 @@ function bindStep1DictionaryAddAction(params: {
   feedbackId: string;
   successMessage: string;
   suggestionContainerId?: string;
+  onSuccess?: () => void;
 }) {
   const input = document.getElementById(params.inputId) as HTMLInputElement | null;
   const button = document.getElementById(params.buttonId) as HTMLButtonElement | null;
@@ -8287,6 +10704,7 @@ function bindStep1DictionaryAddAction(params: {
         });
       }
       setFieldFeedback(params.feedbackId, params.successMessage, 'success');
+      params.onSuccess?.();
     } catch (error) {
       setFieldFeedback(
         params.feedbackId,
@@ -8317,13 +10735,8 @@ function bindStep1SuggestionInput(params: {
     clearFieldFeedback(params.feedbackId);
 
     const query = input.value;
-    if (!query.trim()) {
-      hideStep1Suggestions(params.containerId);
-      return;
-    }
-
     try {
-      await ensureDictionaryItemsLoaded();
+      await Promise.all([ensureDictionaryItemsLoaded(), ensureRecentEntrySuggestionsLoaded()]);
       renderStep1Suggestions({
         containerId: params.containerId,
         dictionaryType: params.dictionaryType,
@@ -8335,8 +10748,32 @@ function bindStep1SuggestionInput(params: {
     }
   });
 
-  input.addEventListener('focus', () => {
-    hideStep1Suggestions(params.containerId);
+  input.addEventListener('focus', async () => {
+    try {
+      await Promise.all([ensureDictionaryItemsLoaded(), ensureRecentEntrySuggestionsLoaded()]);
+      renderStep1Suggestions({
+        containerId: params.containerId,
+        dictionaryType: params.dictionaryType,
+        query: input.value
+      });
+    } catch (error) {
+      hideStep1Suggestions(params.containerId);
+      console.error('load step1 suggestions failed:', error);
+    }
+  });
+
+  input.addEventListener('click', async () => {
+    try {
+      await Promise.all([ensureDictionaryItemsLoaded(), ensureRecentEntrySuggestionsLoaded()]);
+      renderStep1Suggestions({
+        containerId: params.containerId,
+        dictionaryType: params.dictionaryType,
+        query: input.value
+      });
+    } catch (error) {
+      hideStep1Suggestions(params.containerId);
+      console.error('load step1 suggestions failed:', error);
+    }
   });
 
   input.addEventListener('blur', () => {
@@ -8358,6 +10795,349 @@ function bindStep1SuggestionInput(params: {
     clearFieldFeedback(params.feedbackId);
     hideStep1Suggestions(params.containerId);
   });
+}
+
+function bindDateTimePicker(baseId: string) {
+  const shell = document.getElementById(`${baseId}PickerShell`);
+  const hiddenInput = document.getElementById(`${baseId}Value`) as HTMLInputElement | null;
+  const viewYearInput = document.getElementById(`${baseId}PickerViewYear`) as HTMLInputElement | null;
+  const viewMonthInput = document.getElementById(`${baseId}PickerViewMonth`) as HTMLInputElement | null;
+  const draftDayInput = document.getElementById(`${baseId}PickerDraftDay`) as HTMLInputElement | null;
+  const displayInput = document.getElementById(`${baseId}PickerDisplay`) as HTMLInputElement | null;
+  const trigger = document.getElementById(`${baseId}PickerTrigger`) as HTMLButtonElement | null;
+  const popover = document.getElementById(`${baseId}PickerPopover`);
+  const preview = document.getElementById(`${baseId}PickerPreview`);
+  const calendarLabel = document.getElementById(`${baseId}PickerCalendarLabel`);
+  const calendarGrid = document.getElementById(`${baseId}PickerCalendarGrid`);
+  const prevMonthButton = document.getElementById(`${baseId}PickerPrevMonth`) as HTMLButtonElement | null;
+  const nextMonthButton = document.getElementById(`${baseId}PickerNextMonth`) as HTMLButtonElement | null;
+  const hourWheel = document.getElementById(`${baseId}HourWheel`) as HTMLElement | null;
+  const minuteWheel = document.getElementById(`${baseId}MinuteWheel`) as HTMLElement | null;
+  const clearButton = document.getElementById(`${baseId}PickerClear`) as HTMLButtonElement | null;
+  const doneButton = document.getElementById(`${baseId}PickerDone`) as HTMLButtonElement | null;
+
+  if (
+    !shell ||
+    !hiddenInput ||
+    !viewYearInput ||
+    !viewMonthInput ||
+    !draftDayInput ||
+    !displayInput ||
+    !trigger ||
+    !popover ||
+    !preview ||
+    !calendarLabel ||
+    !calendarGrid ||
+    !prevMonthButton ||
+    !nextMonthButton ||
+    !hourWheel ||
+    !minuteWheel
+  ) {
+    return;
+  }
+
+  const getWheelOptions = (wheel: HTMLElement) =>
+    Array.from(wheel.querySelectorAll('[data-datetime-picker-wheel-value]')) as HTMLButtonElement[];
+
+  const getWheelValues = (wheel: HTMLElement) =>
+    Array.from(
+      new Set(
+        getWheelOptions(wheel)
+          .map((option) => option.dataset.datetimePickerWheelValue || '')
+          .filter(Boolean)
+      )
+    );
+
+  const getWheelSelectedValue = (wheel: HTMLElement) => {
+    const datasetValue = wheel.dataset.datetimePickerSelectedValue;
+    if (datasetValue) {
+      return datasetValue;
+    }
+
+    const selectedOption = wheel.querySelector('.datetime-picker-wheel-option.selected') as HTMLButtonElement | null;
+    return (
+      selectedOption?.dataset.datetimePickerWheelValue ||
+      getWheelOptions(wheel)[0]?.dataset.datetimePickerWheelValue ||
+      '00'
+    );
+  };
+
+  const updateWheelSelection = (wheel: HTMLElement, nextValue: string, shouldCenter = true) => {
+    const allOptions = getWheelOptions(wheel);
+    const matchingOptions = allOptions.filter(
+      (option) => option.dataset.datetimePickerWheelValue === nextValue
+    );
+    const activeOption = matchingOptions[Math.floor(matchingOptions.length / 2)] || matchingOptions[0] || allOptions[0];
+
+    if (!activeOption) {
+      return;
+    }
+
+    allOptions.forEach((option) => {
+      const isSelected = option === activeOption;
+      option.classList.toggle('selected', isSelected);
+      option.setAttribute('aria-selected', isSelected ? 'true' : 'false');
+      option.classList.remove('wheel-distance-1', 'wheel-distance-2', 'wheel-distance-3');
+    });
+
+    wheel.dataset.datetimePickerSelectedValue = nextValue;
+    const activeIndex = allOptions.indexOf(activeOption);
+    allOptions.forEach((option, index) => {
+      const distance = Math.abs(index - activeIndex);
+      if (distance === 1) {
+        option.classList.add('wheel-distance-1');
+      } else if (distance === 2) {
+        option.classList.add('wheel-distance-2');
+      } else if (distance >= 3) {
+        option.classList.add('wheel-distance-3');
+      }
+    });
+
+    if (shouldCenter) {
+      const nextScrollTop = activeOption.offsetTop - (wheel.clientHeight - activeOption.offsetHeight) / 2;
+      wheel.scrollTo({ top: Math.max(nextScrollTop, 0), behavior: 'auto' });
+    }
+  };
+
+  const syncWheelLoopPosition = (wheel: HTMLElement) => {
+    const cycleHeight = wheel.scrollHeight / DATETIME_PICKER_WHEEL_REPEAT_COUNT;
+    const lowerBound = cycleHeight * 0.75;
+    const upperBound = cycleHeight * (DATETIME_PICKER_WHEEL_REPEAT_COUNT - 1.75);
+    if (wheel.scrollTop <= lowerBound || wheel.scrollTop >= upperBound) {
+      updateWheelSelection(wheel, getWheelSelectedValue(wheel));
+    }
+  };
+
+  const getDraftDate = () => {
+    const dayCount = getDaysInMonth(Number(viewYearInput.value), Number(viewMonthInput.value));
+    const clampedDay = Math.min(Math.max(Number(draftDayInput.value) || 1, 1), dayCount);
+    draftDayInput.value = pad2(clampedDay);
+
+    return `${viewYearInput.value}-${viewMonthInput.value}-${draftDayInput.value}`;
+  };
+
+  const updateCalendar = () => {
+    const viewYear = Number(viewYearInput.value);
+    const viewMonth = Number(viewMonthInput.value);
+    calendarLabel.textContent = buildDateTimeCalendarLabel(viewYear, viewMonth);
+    calendarGrid.innerHTML = buildDateTimeCalendarGrid(baseId, viewYear, viewMonth, hiddenInput.value);
+  };
+
+  const updateDraftPreview = () => {
+    preview.textContent = `${viewYearInput.value}-${viewMonthInput.value}-${draftDayInput.value} ${getWheelSelectedValue(
+      hourWheel
+    )}:${getWheelSelectedValue(minuteWheel)}`;
+    updateCalendar();
+  };
+
+  const syncDisplay = () => {
+    const nextDate = getDraftDate();
+    const nextTime = `${getWheelSelectedValue(hourWheel)}:${getWheelSelectedValue(minuteWheel)}`;
+    const nextValue = buildLocalDateTimeValue(nextDate, nextTime);
+    hiddenInput.value = nextValue;
+    displayInput.value = formatLocalDateTimePickerDisplay(nextValue);
+    preview.textContent = formatLocalDateTimePickerDisplay(nextValue);
+    displayInput.classList.toggle(
+      'datetime-picker-display-placeholder',
+      !hasCompleteLocalDateTimeValue(nextValue)
+    );
+    updateCalendar();
+    hiddenInput.dispatchEvent(new Event('input', { bubbles: true }));
+    hiddenInput.dispatchEvent(new Event('change', { bubbles: true }));
+  };
+
+  const openPopover = () => {
+    shell.classList.add('datetime-picker-open');
+    trigger.setAttribute('aria-expanded', 'true');
+    window.requestAnimationFrame(() => {
+      updateWheelSelection(hourWheel, getWheelSelectedValue(hourWheel));
+      updateWheelSelection(minuteWheel, getWheelSelectedValue(minuteWheel));
+    });
+  };
+
+  const closePopover = () => {
+    shell.classList.remove('datetime-picker-open');
+    trigger.setAttribute('aria-expanded', 'false');
+  };
+
+  const togglePopover = () => {
+    if (shell.classList.contains('datetime-picker-open')) {
+      closePopover();
+      return;
+    }
+
+    openPopover();
+    window.setTimeout(() => {
+      prevMonthButton.focus();
+    }, 0);
+  };
+
+  const bindWheel = (wheel: HTMLElement, onValueChange: () => void) => {
+    let scrollTimer = 0;
+    let scrollingStateTimer = 0;
+
+    const updateSelectionFromScroll = () => {
+      const options = getWheelOptions(wheel);
+      if (!options.length) {
+        return;
+      }
+
+      const centerLine = wheel.scrollTop + wheel.clientHeight / 2;
+      let closestOption = options[0];
+      let smallestDistance = Number.POSITIVE_INFINITY;
+
+      options.forEach((option) => {
+        const optionCenter = option.offsetTop + option.offsetHeight / 2;
+        const distance = Math.abs(optionCenter - centerLine);
+        if (distance < smallestDistance) {
+          smallestDistance = distance;
+          closestOption = option;
+        }
+      });
+
+      const nextValue = closestOption.dataset.datetimePickerWheelValue || getWheelSelectedValue(wheel);
+      updateWheelSelection(wheel, nextValue, false);
+      syncWheelLoopPosition(wheel);
+      onValueChange();
+    };
+
+    wheel.addEventListener('focus', openPopover);
+    wheel.addEventListener('click', (event) => {
+      const target = event.target as HTMLElement;
+      const option = target.closest('[data-datetime-picker-wheel-value]') as HTMLButtonElement | null;
+      if (!option) {
+        return;
+      }
+
+      const nextValue = option.dataset.datetimePickerWheelValue || getWheelSelectedValue(wheel);
+      updateWheelSelection(wheel, nextValue);
+      onValueChange();
+    });
+
+    wheel.addEventListener('scroll', () => {
+      wheel.classList.add('is-scrolling');
+      window.clearTimeout(scrollingStateTimer);
+      window.clearTimeout(scrollTimer);
+      scrollTimer = window.setTimeout(updateSelectionFromScroll, 60);
+      scrollingStateTimer = window.setTimeout(() => {
+        wheel.classList.remove('is-scrolling');
+      }, 140);
+    });
+
+    wheel.addEventListener('keydown', (event) => {
+      const wheelValues = getWheelValues(wheel);
+      if (!wheelValues.length) {
+        return;
+      }
+
+      const currentIndex = Math.max(0, wheelValues.indexOf(getWheelSelectedValue(wheel)));
+      if (event.key === 'ArrowDown') {
+        event.preventDefault();
+        updateWheelSelection(wheel, wheelValues[(currentIndex + 1) % wheelValues.length]);
+        onValueChange();
+      } else if (event.key === 'ArrowUp') {
+        event.preventDefault();
+        updateWheelSelection(wheel, wheelValues[(currentIndex - 1 + wheelValues.length) % wheelValues.length]);
+        onValueChange();
+      }
+    });
+  };
+
+  trigger.addEventListener('click', togglePopover);
+  displayInput.addEventListener('click', togglePopover);
+  bindWheel(hourWheel, syncDisplay);
+  bindWheel(minuteWheel, syncDisplay);
+
+  prevMonthButton.addEventListener('click', () => {
+    const shifted = shiftCalendarMonth(Number(viewYearInput.value), Number(viewMonthInput.value), -1);
+    viewYearInput.value = String(shifted.year);
+    viewMonthInput.value = pad2(shifted.month);
+    const nextDay = Math.min(
+      Number(draftDayInput.value) || 1,
+      getDaysInMonth(shifted.year, shifted.month)
+    );
+    draftDayInput.value = pad2(nextDay);
+    if (hasCompleteLocalDateTimeValue(hiddenInput.value)) {
+      syncDisplay();
+    } else {
+      updateDraftPreview();
+    }
+    openPopover();
+  });
+
+  nextMonthButton.addEventListener('click', () => {
+    const shifted = shiftCalendarMonth(Number(viewYearInput.value), Number(viewMonthInput.value), 1);
+    viewYearInput.value = String(shifted.year);
+    viewMonthInput.value = pad2(shifted.month);
+    const nextDay = Math.min(
+      Number(draftDayInput.value) || 1,
+      getDaysInMonth(shifted.year, shifted.month)
+    );
+    draftDayInput.value = pad2(nextDay);
+    if (hasCompleteLocalDateTimeValue(hiddenInput.value)) {
+      syncDisplay();
+    } else {
+      updateDraftPreview();
+    }
+    openPopover();
+  });
+
+  calendarGrid.addEventListener('click', (event) => {
+    const target = event.target as HTMLElement;
+    const dayButton = target.closest('[data-datetime-picker-day]') as HTMLElement | null;
+    if (!dayButton) {
+      return;
+    }
+
+    draftDayInput.value = pad2(Number(dayButton.dataset.datetimePickerDay) || 1);
+    syncDisplay();
+  });
+
+  clearButton?.addEventListener('click', () => {
+    hiddenInput.value = '';
+    const fallbackParts = getDefaultDateTimePickerParts('');
+    viewYearInput.value = fallbackParts.year;
+    viewMonthInput.value = fallbackParts.month;
+    draftDayInput.value = fallbackParts.day;
+    updateWheelSelection(hourWheel, fallbackParts.hour);
+    updateWheelSelection(minuteWheel, fallbackParts.minute);
+    displayInput.value = t('step1.testTime.placeholder');
+    preview.textContent = `${viewYearInput.value}-${viewMonthInput.value}-${draftDayInput.value} ${getWheelSelectedValue(
+      hourWheel
+    )}:${getWheelSelectedValue(minuteWheel)}`;
+    displayInput.classList.add('datetime-picker-display-placeholder');
+    updateCalendar();
+    hiddenInput.dispatchEvent(new Event('input', { bubbles: true }));
+    hiddenInput.dispatchEvent(new Event('change', { bubbles: true }));
+    closePopover();
+    trigger.focus();
+  });
+
+  doneButton?.addEventListener('click', () => {
+    closePopover();
+    trigger.focus();
+  });
+
+  shell.addEventListener('focusout', () => {
+    window.setTimeout(() => {
+      if (!shell.contains(document.activeElement)) {
+        closePopover();
+      }
+    }, 0);
+  });
+
+  displayInput.value = formatLocalDateTimePickerDisplay(hiddenInput.value);
+  displayInput.classList.toggle(
+    'datetime-picker-display-placeholder',
+    !hasCompleteLocalDateTimeValue(hiddenInput.value)
+  );
+  if (hasCompleteLocalDateTimeValue(hiddenInput.value)) {
+    preview.textContent = formatLocalDateTimePickerDisplay(hiddenInput.value);
+  } else {
+    updateDraftPreview();
+  }
+  updateWheelSelection(hourWheel, getWheelSelectedValue(hourWheel));
+  updateWheelSelection(minuteWheel, getWheelSelectedValue(minuteWheel));
 }
 
 function renderSettingsSubViewTabs() {
@@ -8880,6 +11660,7 @@ async function render() {
           return;
         }
 
+        await Promise.all([ensureActiveEntryDraftLoaded(), ensureRecentEntrySuggestionsLoaded()]);
         currentView = 'home';
         void render();
       } catch (error) {
@@ -8906,10 +11687,41 @@ async function render() {
   }
 
   if (currentView === 'home') {
+    if (!activeEntryDraftLoaded) {
+      void ensureActiveEntryDraftLoaded().then(() => {
+        requestRender(true);
+      });
+    }
+
+    if (!recentEntrySuggestionsLoaded) {
+      void ensureRecentEntrySuggestionsLoaded().then(() => {
+        requestRender(true);
+      });
+    }
+
+    const hasActiveDraft = Boolean(activeEntryDraft);
+    const entryCardTitle = hasActiveDraft ? t('home.resumeDraftTitle') : t('home.addDataTitle');
+    const entryCardDesc = hasActiveDraft
+      ? t('home.resumeDraftDesc', {
+          updatedAt: formatDateTimeForDisplay(activeEntryDraft?.updatedAt || '')
+        })
+      : t('home.addDataDesc');
+    const entryCardPrimaryLabel = hasActiveDraft ? t('draft.resumeButton') : t('common.enter');
+    const entryCardSecondaryActions = hasActiveDraft
+      ? `
+          <div class="form-action-row">
+            <button id="discard-draft-btn" class="secondary-btn action-btn" type="button">${escapeHtml(
+              t('draft.discardButton')
+            )}</button>
+          </div>
+        `
+      : '';
+
     root.innerHTML = `
       <div class="home-layout">
         ${renderAppSidebar(appName, [
           { label: t('common.home'), icon: '⌂', active: true },
+          { id: 'menu-add-home', label: t('common.addData'), icon: '＋' },
           { id: 'menu-data-home', label: t('common.data'), icon: '▣' },
           { id: 'menu-analysis-home', label: t('common.analysis'), icon: '◫' },
           { id: 'menu-settings-home', label: t('common.settings'), icon: '⚙' }
@@ -8934,9 +11746,10 @@ async function render() {
               <div class="entry-grid">
                 <div class="entry-card">
                   <div class="entry-icon">＋</div>
-                  <div class="entry-title">${escapeHtml(t('home.addDataTitle'))}</div>
-                  <div class="entry-desc">${escapeHtml(t('home.addDataDesc'))}</div>
-                  <button id="add-data-btn" class="primary-btn">${escapeHtml(t('common.enter'))}</button>
+                  <div class="entry-title">${escapeHtml(entryCardTitle)}</div>
+                  <div class="entry-desc">${escapeHtml(entryCardDesc)}</div>
+                  <button id="add-data-btn" class="primary-btn">${escapeHtml(entryCardPrimaryLabel)}</button>
+                  ${entryCardSecondaryActions}
                 </div>
 
                 <div class="entry-card">
@@ -8965,9 +11778,36 @@ async function render() {
       void render();
     });
 
-    document.getElementById('add-data-btn')?.addEventListener('click', () => {
-      currentView = 'add-step1';
-      void render();
+    document.getElementById('add-data-btn')?.addEventListener('click', async () => {
+      await openAddDataEntry();
+    });
+
+    document.getElementById('menu-add-home')?.addEventListener('click', async () => {
+      await openAddDataEntry();
+    });
+
+    document.getElementById('discard-draft-btn')?.addEventListener('click', async () => {
+      const draft = await ensureActiveEntryDraftLoaded();
+      if (!draft) {
+        return;
+      }
+
+      const confirmed = window.confirm(
+        t('draft.discardConfirm', {
+          label: draft.originDisplayName || buildDisplayName(draft.step1)
+        })
+      );
+      if (!confirmed) {
+        return;
+      }
+
+      const discarded = await discardActiveDraftAndRefresh();
+      if (!discarded) {
+        return;
+      }
+
+      resetFormState();
+      requestRender(true);
     });
 
     document.getElementById('database-btn')?.addEventListener('click', async () => {
@@ -9002,6 +11842,7 @@ async function render() {
       <div class="home-layout">
         ${renderAppSidebar(appName, [
           { id: 'analysis-menu-home', label: t('common.home'), icon: '⌂' },
+          { id: 'analysis-menu-add', label: t('common.addData'), icon: '＋' },
           { id: 'analysis-menu-data', label: t('common.data'), icon: '▣' },
           { label: t('common.analysis'), icon: '◫', active: true },
           { id: 'analysis-menu-settings', label: t('common.settings'), icon: '⚙' }
@@ -9017,6 +11858,7 @@ async function render() {
           </header>
 
           <section class="content-area">
+            ${renderAnalysisHandoffNotice()}
             <div class="analysis-workspace-layout ${analysisInspectorCollapsed ? 'inspector-collapsed' : ''}">
               <div class="analysis-main-panel">
                 ${analysisLoading
@@ -9073,11 +11915,19 @@ async function render() {
   }
 
   if (currentView === 'add-step1') {
+    if (!dictionaryLoaded || !recentEntrySuggestionsLoaded) {
+      void ensureEntryWorkflowAssistDataLoaded().then(() => {
+        requestRender(true);
+      });
+    }
+
+    const canProceedToStep2 = !validateStep1();
+
     root.innerHTML = `
       <div class="home-layout">
         ${renderAppSidebar(appName, [
           { id: 'menu-home', label: t('common.home'), icon: '⌂' },
-          { label: t('addData.sidebarLabel'), icon: '＋', active: true },
+          { label: t('common.addData'), icon: '＋', active: true },
           { id: 'menu-data-step1', label: t('common.data'), icon: '▣' },
           { id: 'menu-analysis-step1', label: t('common.analysis'), icon: '◫' },
           { id: 'menu-settings-step1', label: t('common.settings'), icon: '⚙' }
@@ -9090,9 +11940,14 @@ async function render() {
           </header>
 
           <section class="content-area">
-            <div class="welcome-card">
+            <div class="welcome-card add-step1-card">
               <h2>${escapeHtml(t('addData.heading'))}</h2>
-              <p class="subtitle">${escapeHtml(t('addData.subtitle'))}</p>
+              <p class="subtitle subtitle-compact">${escapeHtml(t('addData.subtitle'))}</p>
+
+              <div class="step1-status-stack">
+                ${renderActiveDraftStatusCard({ compact: true })}
+                ${renderStep1CompletenessStrip()}
+              </div>
 
               <div class="step-form-grid">
                 <div class="form-group">
@@ -9109,7 +11964,20 @@ async function render() {
 
                 <div class="form-group">
                   <label class="form-label">${escapeHtml(t('step1.field.sampleCode'))} <span class="required-star">*</span></label>
-                  <input id="sampleCode" class="form-input" placeholder="${escapeHtml(t('step1.placeholder.sampleCode'))}" value="${escapeHtml(step1FormData.sampleCode)}" />
+                  <div class="step1-suggestion-shell">
+                    <div class="input-plus-row">
+                      <input
+                        id="sampleCode"
+                        class="form-input"
+                        placeholder="${escapeHtml(t('step1.placeholder.sampleCode'))}"
+                        value="${escapeHtml(step1FormData.sampleCode)}"
+                        autocomplete="off"
+                      />
+                      <button id="sampleCode-plus-btn" class="icon-btn" type="button">＋</button>
+                    </div>
+                    <div id="sampleCode-suggestion-list" class="step1-suggestion-list"></div>
+                  </div>
+                  <div id="sampleCode-dictionary-feedback" class="field-feedback-message"></div>
                 </div>
 
                 <div class="form-group">
@@ -9138,12 +12006,25 @@ async function render() {
 
                 <div class="form-group">
                   <label class="form-label">${escapeHtml(t('step1.field.testTime'))} <span class="required-star">*</span></label>
-                  <input id="testTime" type="datetime-local" class="form-input" value="${escapeHtml(step1FormData.testTime)}" />
+                  ${renderDateTimePicker('testTime', step1FormData.testTime)}
                 </div>
 
                 <div class="form-group">
                   <label class="form-label">${escapeHtml(t('step1.field.sampleOwner'))}</label>
-                  <input id="sampleOwner" class="form-input" placeholder="${escapeHtml(t('step1.placeholder.sampleOwner'))}" value="${escapeHtml(step1FormData.sampleOwner)}" />
+                  <div class="step1-suggestion-shell">
+                    <div class="input-plus-row">
+                      <input
+                        id="sampleOwner"
+                        class="form-input"
+                        placeholder="${escapeHtml(t('step1.placeholder.sampleOwner'))}"
+                        value="${escapeHtml(step1FormData.sampleOwner)}"
+                        autocomplete="off"
+                      />
+                      <button id="sampleOwner-plus-btn" class="icon-btn" type="button">＋</button>
+                    </div>
+                    <div id="sampleOwner-suggestion-list" class="step1-suggestion-list"></div>
+                  </div>
+                  <div id="sampleOwner-dictionary-feedback" class="field-feedback-message"></div>
                 </div>
               </div>
 
@@ -9169,9 +12050,10 @@ async function render() {
 
               <div id="step1-error" class="error-message large-error"></div>
 
-              <div class="form-action-row">
+              <div class="form-action-row form-action-row-compact">
                 <button id="step1-cancel-btn" class="secondary-btn" type="button">${escapeHtml(t('addData.cancelAndReturn'))}</button>
-                <button id="step1-next-btn" class="primary-btn action-btn" type="button">${escapeHtml(t('common.next'))}</button>
+                <button id="step1-save-draft-btn" class="secondary-btn" type="button">${escapeHtml(t('draft.saveAndReturn'))}</button>
+                <button id="step1-next-btn" class="primary-btn action-btn" type="button" ${canProceedToStep2 ? '' : 'disabled'}>${escapeHtml(t('step1.nextButton'))}</button>
               </div>
             </div>
           </section>
@@ -9183,28 +12065,43 @@ async function render() {
     bindStep1Events();
 
     document.getElementById('menu-data-step1')?.addEventListener('click', async () => {
-      await loadDatabaseListView();
-      currentView = 'database-list';
-      void render();
+      saveStep1InputsToState();
+      await attemptLeaveCreateFlow('step1', async () => {
+        await loadDatabaseListView();
+        currentView = 'database-list';
+        void render();
+      });
     });
 
     document.getElementById('menu-analysis-step1')?.addEventListener('click', async () => {
-      await openAnalysisWorkspace();
+      saveStep1InputsToState();
+      await attemptLeaveCreateFlow('step1', async () => {
+        await openAnalysisWorkspace();
+      });
     });
 
-    document.getElementById('menu-settings-step1')?.addEventListener('click', () => {
-      void openSettingsView();
+    document.getElementById('menu-settings-step1')?.addEventListener('click', async () => {
+      saveStep1InputsToState();
+      await attemptLeaveCreateFlow('step1', async () => {
+        await openSettingsView();
+      });
     });
 
     return;
   }
 
   if (currentView === 'add-step2') {
+    if (!dictionaryLoaded || !recentEntrySuggestionsLoaded) {
+      void ensureEntryWorkflowAssistDataLoaded().then(() => {
+        requestRender(true);
+      });
+    }
+
     root.innerHTML = `
       <div class="home-layout">
         ${renderAppSidebar(appName, [
           { id: 'menu-home-step2', label: t('common.home'), icon: '⌂' },
-          { label: t('addData.sidebarLabel'), icon: '＋', active: true },
+          { label: t('common.addData'), icon: '＋', active: true },
           { id: 'menu-data-step2', label: t('common.data'), icon: '▣' },
           { id: 'menu-analysis-step2', label: t('common.analysis'), icon: '◫' },
           { id: 'menu-settings-step2', label: t('common.settings'), icon: '⚙' }
@@ -9213,30 +12110,40 @@ async function render() {
         <main class="main-content">
           <header class="topbar">
             <div class="topbar-title">${escapeHtml(t('step2.topbarTitle'))}</div>
-            <button id="back-step1-btn-top" class="secondary-btn">${escapeHtml(t('common.back'))}</button>
+            <button id="back-step1-btn-top" class="text-btn" type="button">${escapeHtml(t('common.back'))}</button>
           </header>
 
           <section class="content-area">
-            <div class="welcome-card">
+            <div class="welcome-card add-step2-card">
               <h2>${escapeHtml(t('step2.heading'))}</h2>
-              <p class="subtitle">${escapeHtml(t('step2.subtitle'))}</p>
+              <p class="subtitle subtitle-compact">${escapeHtml(t('step2.subtitle'))}</p>
 
-              <div class="name-preview-card">
-                <div class="name-preview-label">${escapeHtml(t('step2.namePreviewLabel'))}</div>
-                <div class="name-preview-value">${escapeHtml(buildDisplayName(step1FormData))}</div>
+              <div class="step2-status-stack">
+                ${renderStep2StatusArea()}
+                ${renderActiveDraftStatusCard({ compact: true })}
               </div>
 
               ${renderScalarSections('create-step2', step2DataItems)}
 
-              <div class="template-block-section">
-                <div class="dynamic-header">
+              <div class="template-block-section step2-entry-section">
+                <div class="dynamic-header step2-section-header">
                   <div>
                     <div class="dynamic-title">${escapeHtml(t('step2.structured.sectionTitle'))}</div>
-                    <div class="dynamic-subtitle">${escapeHtml(t('step2.structured.sectionSubtitle'))}</div>
+                    <div class="dynamic-subtitle step2-section-subtitle">${escapeHtml(
+                      t('step2.structured.sectionSubtitle')
+                    )}</div>
                   </div>
 
-                  <div class="template-block-toolbar">
-                    <button id="add-template-block-btn" class="secondary-btn" type="button">${escapeHtml(t('step2.structured.addButton'))}</button>
+                  <div class="template-block-toolbar step2-section-toolbar">
+                    <button
+                      id="add-template-block-btn"
+                      class="secondary-btn step2-compact-add-btn"
+                      type="button"
+                      title="${escapeHtml(t('step2.structured.addButton'))}"
+                      aria-label="${escapeHtml(t('step2.structured.addButton'))}"
+                    >
+                      ${escapeHtml(t('step2.addCompact'))}
+                    </button>
                   </div>
                 </div>
 
@@ -9245,6 +12152,12 @@ async function render() {
                   getActiveStep2TemplateFamily('create-step2')
                 )}
 
+                <div class="step2-added-summary">${escapeHtml(
+                  step2TemplateBlocks.length
+                    ? t('step2.added.summary', { count: step2TemplateBlocks.length })
+                    : t('step2.added.empty')
+                )}</div>
+
                 <div id="template-blocks-container" class="template-block-list">
                   ${renderTemplateBlockCards(step2TemplateBlocks, 'create-step2')}
                 </div>
@@ -9252,8 +12165,9 @@ async function render() {
 
               <div id="step2-error" class="error-message large-error"></div>
 
-              <div class="form-action-row">
+              <div class="form-action-row form-action-row-compact">
                 <button id="back-step1-btn-bottom" class="secondary-btn" type="button">${escapeHtml(t('common.back'))}</button>
+                <button id="step2-save-draft-btn" class="secondary-btn" type="button">${escapeHtml(t('draft.saveAndReturn'))}</button>
                 <button id="finish-step2-btn" class="primary-btn action-btn" type="button">${escapeHtml(t('step2.finishButton'))}</button>
               </div>
             </div>
@@ -9277,17 +12191,26 @@ async function render() {
     bindDuplicateWarningModalHandlers();
 
     document.getElementById('menu-data-step2')?.addEventListener('click', async () => {
-      await loadDatabaseListView();
-      currentView = 'database-list';
-      void render();
+      saveStep2InputsToState();
+      await attemptLeaveCreateFlow('step2', async () => {
+        await loadDatabaseListView();
+        currentView = 'database-list';
+        void render();
+      });
     });
 
     document.getElementById('menu-analysis-step2')?.addEventListener('click', async () => {
-      await openAnalysisWorkspace();
+      saveStep2InputsToState();
+      await attemptLeaveCreateFlow('step2', async () => {
+        await openAnalysisWorkspace();
+      });
     });
 
-    document.getElementById('menu-settings-step2')?.addEventListener('click', () => {
-      void openSettingsView();
+    document.getElementById('menu-settings-step2')?.addEventListener('click', async () => {
+      saveStep2InputsToState();
+      await attemptLeaveCreateFlow('step2', async () => {
+        await openSettingsView();
+      });
     });
 
     return;
@@ -9310,7 +12233,11 @@ async function render() {
             <strong>${escapeHtml(buildDisplayName(step1FormData))}</strong>
           </div>
 
-          <button id="save-success-home-btn" class="primary-btn">${escapeHtml(t('common.backToHome'))}</button>
+          <div class="form-action-row">
+            <button id="save-success-create-similar-btn" class="primary-btn action-btn">${escapeHtml(t('saveSuccess.createSimilar'))}</button>
+            <button id="save-success-open-detail-btn" class="secondary-btn" type="button">${escapeHtml(t('saveSuccess.openSavedRecord'))}</button>
+            <button id="save-success-home-btn" class="secondary-btn" type="button">${escapeHtml(t('common.backToHome'))}</button>
+          </div>
         </div>
       </div>
     `;
@@ -9321,14 +12248,47 @@ async function render() {
       void render();
     });
 
+    document.getElementById('save-success-open-detail-btn')?.addEventListener('click', async () => {
+      if (!lastSavedExperimentId) {
+        return;
+      }
+
+      await openExperimentDetail(lastSavedExperimentId);
+    });
+
+    document.getElementById('save-success-create-similar-btn')?.addEventListener('click', async () => {
+      if (!lastSavedExperimentId) {
+        return;
+      }
+
+      const detail = await window.electronAPI.getExperimentDetail(lastSavedExperimentId);
+      if (!detail) {
+        alert(t('draft.copyFailed'));
+        return;
+      }
+
+      await createNewDraftFromExperimentDetail(detail);
+    });
+
     return;
   }
 
   if (currentView === 'database-list') {
+    if (!databaseWorkspaceStateLoaded) {
+      void ensureDatabaseWorkspaceStateLoaded().then(() => {
+        requestRender(true);
+      });
+    }
+
+    const visibleResultCount = getVisibleExperimentIds().length;
+    const hasCustomizedWorkspaceState = hasCustomizedDatabaseWorkspaceState();
+    const groupByOptions = getDatabaseGroupByOptions();
+
     root.innerHTML = `
       <div class="home-layout">
         ${renderAppSidebar(appName, [
           { id: 'db-menu-home', label: t('common.home'), icon: '⌂' },
+          { id: 'db-menu-add', label: t('common.addData'), icon: '＋' },
           { label: t('common.data'), icon: '▣', active: true },
           { id: 'db-menu-analysis', label: t('common.analysis'), icon: '◫' },
           { id: 'db-menu-settings', label: t('common.settings'), icon: '⚙' }
@@ -9338,78 +12298,89 @@ async function render() {
 	          <header class="topbar">
 	            <div class="topbar-title">${escapeHtml(t('database.topbarTitle'))}</div>
 	            <div class="detail-top-actions">
-	              <span>${escapeHtml(t('database.currentResults', { count: getVisibleExperimentIds().length }))}</span>
-	              <span>${escapeHtml(t('database.selectedResults', { count: selectedExperimentIds.length }))}</span>
-	              <button id="db-select-all-btn" class="secondary-btn">
-	                ${escapeHtml(areAllVisibleSelected() ? t('database.cancelCurrentResults') : t('database.selectCurrentResults'))}
-	              </button>
-	              <button
-	                id="db-clear-selection-btn"
-                class="secondary-btn"
-                type="button"
-                ${selectedExperimentIds.length ? '' : 'disabled'}
-              >
-                ${escapeHtml(t('database.clearSelection'))}
-              </button>
-              <button
-                id="db-delete-btn"
-                class="danger-btn ${selectedExperimentIds.length ? '' : 'disabled-danger-btn'}"
-                type="button"
-                ${selectedExperimentIds.length ? '' : 'disabled'}
-              >
-                ${escapeHtml(t('dictionary.delete'))}
-              </button>
-              <button id="db-export-btn" class="secondary-btn export-top-btn">⤴</button>
-              <button id="db-refresh-btn" class="secondary-btn">${escapeHtml(t('common.refresh'))}</button>
+                <span>${escapeHtml(t('database.toolbar.resultCount', { count: visibleResultCount }))}</span>
             </div>
           </header>
 
           <section class="content-area">
-            <div class="welcome-card">
-              <h2>${escapeHtml(t('database.title'))}</h2>
-              <p class="subtitle">${escapeHtml(t('database.subtitle'))}</p>
-
-              <div class="search-row">
+            <div class="welcome-card database-workspace-card">
+              <section class="database-search-bar-row">
                 <input
                   id="db-search-input"
-                  class="form-input"
+                  class="form-input database-search-input"
                   placeholder="${escapeHtml(t('database.searchPlaceholder'))}"
                   value="${escapeHtml(databaseSearchKeyword)}"
                 />
-                <button id="db-search-btn" class="primary-btn search-btn">${escapeHtml(t('common.search'))}</button>
+                <button id="db-search-btn" class="secondary-btn database-toolbar-btn search-btn" type="button">${escapeHtml(t('common.search'))}</button>
                 <button
                   id="db-filter-add-btn"
-                  class="secondary-btn search-btn filter-add-btn"
+                  class="secondary-btn database-toolbar-btn database-toolbar-icon-btn"
                   type="button"
                   title="${escapeHtml(t('database.filter.addTooltip'))}"
+                  aria-label="${escapeHtml(t('database.filter.addTooltip'))}"
                 >
                   ＋
                 </button>
-              </div>
-              ${renderCrossFilterControls({
-                scope: 'database',
-                chips: databaseCrossFilters,
-                draftOpen: databaseFilterDraft.open,
-                draftField: databaseFilterDraft.field,
-                draftOperator: databaseFilterDraft.operator,
-                draftValue: databaseFilterDraft.value,
-                draftValue2: databaseFilterDraft.value2,
-                draftPendingValues: databaseFilterDraft.pendingValues,
-                draftCandidateQuery: databaseFilterCandidateQuery,
-                candidateValues: getDatabaseFilterCandidateValues(),
-                candidateLoading: databaseFilterCandidateLoading
-              })}
+                <button
+                  id="db-reset-filters-btn"
+                  class="secondary-btn database-toolbar-btn database-toolbar-icon-btn"
+                  type="button"
+                  title="${escapeHtml(t('database.resetFilters'))}"
+                  aria-label="${escapeHtml(t('database.resetFilters'))}"
+                  ${hasCustomizedWorkspaceState ? '' : 'disabled'}
+                >
+                  ↺
+                </button>
+                ${renderFrequentDatabaseFiltersEntry()}
+              </section>
 
-              <div class="group-tabs">
-                ${renderGroupTabs(databaseGroupBy, {
-                  sampleCode: t('database.groupBy.sampleCode'),
-                  testProject: t('database.groupBy.testProject'),
-                  testTime: t('database.groupBy.testTime'),
-                  instrument: t('database.groupBy.instrument'),
-                  tester: t('database.groupBy.tester'),
-                  sampleOwner: t('database.groupBy.sampleOwner')
-                })}
-              </div>
+              <section class="database-browse-controls">
+                <div class="database-control-group">
+                  <span class="database-inline-label">${escapeHtml(t('database.controls.groupBy'))}</span>
+                  <select id="db-groupby-select" class="form-input database-compact-select">
+                    ${groupByOptions
+                      .map(
+                        (option) => `
+                          <option value="${escapeHtml(option.key)}" ${databaseGroupBy === option.key ? 'selected' : ''}>
+                            ${escapeHtml(option.label)}
+                          </option>
+                        `
+                      )
+                      .join('')}
+                  </select>
+                </div>
+                <div class="database-control-group">
+                  <span class="database-inline-label">${escapeHtml(t('database.controls.sort'))}</span>
+                  <button
+                    id="db-sort-toggle-btn"
+                    class="secondary-btn database-toolbar-btn database-sort-toggle-btn"
+                    type="button"
+                    title="${escapeHtml(
+                      databaseSortOrder === 'newest'
+                        ? t('database.sort.toggleToOldest')
+                        : t('database.sort.toggleToNewest')
+                    )}"
+                  >
+                    ${escapeHtml(
+                      databaseSortOrder === 'newest'
+                        ? t('database.sort.toggleNewest')
+                        : t('database.sort.toggleOldest')
+                    )}
+                  </button>
+                </div>
+                <div class="database-control-group">
+                  <button
+                    id="db-starred-filter-btn"
+                    class="secondary-btn database-toolbar-btn database-pill-btn ${databaseStarredOnly ? 'database-pill-btn-active' : ''}"
+                    type="button"
+                  >
+                    ${escapeHtml(t('database.star.filterLabel'))}
+                  </button>
+                </div>
+              </section>
+
+              ${renderDatabaseFilterChipStrip()}
+              ${renderDatabaseBulkActionBar()}
 
               <div class="database-list-wrapper">
                 ${renderDatabaseGroups(databaseGroups)}
@@ -9418,6 +12389,8 @@ async function render() {
           </section>
         </main>
       </div>
+
+      ${renderDatabaseFilterPanel()}
 
       ${renderExportModal({
         exportModalVisible,
@@ -9441,6 +12414,10 @@ async function render() {
       void render();
     });
 
+    document.getElementById('db-menu-add')?.addEventListener('click', async () => {
+      await openAddDataEntry();
+    });
+
     document.getElementById('db-menu-settings')?.addEventListener('click', () => {
       void openSettingsView();
     });
@@ -9449,15 +12426,12 @@ async function render() {
       await openAnalysisWorkspace();
     });
 
-    document.getElementById('db-refresh-btn')?.addEventListener('click', async () => {
-      await loadDatabaseListView();
-      void render();
-    });
-
     const applyDatabaseSearch = async () => {
       const input = document.getElementById('db-search-input') as HTMLInputElement | null;
       databaseSearchKeyword = input?.value.trim() || '';
+      closeDatabaseFrequentFiltersPopover();
       await loadDatabaseList();
+      await recordCurrentDatabaseWorkspaceUsage();
       void render();
     };
 
@@ -9469,6 +12443,13 @@ async function render() {
       if (event.key !== 'Enter') return;
       event.preventDefault();
       void applyDatabaseSearch();
+    });
+
+    document.getElementById('db-reset-filters-btn')?.addEventListener('click', async () => {
+      resetDatabaseWorkspaceControls();
+      await loadDatabaseList();
+      await recordCurrentDatabaseWorkspaceUsage();
+      void render();
     });
 
     bindDatabaseCrossFilterEvents();
@@ -9497,13 +12478,52 @@ async function render() {
       await openExportModal();
     });
 
-    const groupButtons = document.querySelectorAll('[data-groupby]');
-    groupButtons.forEach((button) => {
+    document.getElementById('db-groupby-select')?.addEventListener('change', async (event) => {
+      databaseGroupBy = (event.target as HTMLSelectElement).value as GroupByType;
+      closeDatabaseFrequentFiltersPopover();
+      await loadDatabaseList();
+      await recordCurrentDatabaseWorkspaceUsage();
+      void render();
+    });
+
+    document.getElementById('db-starred-filter-btn')?.addEventListener('click', async () => {
+      databaseStarredOnly = !databaseStarredOnly;
+      closeDatabaseFrequentFiltersPopover();
+      await loadDatabaseList();
+      await recordCurrentDatabaseWorkspaceUsage();
+      void render();
+    });
+
+    document.getElementById('db-sort-toggle-btn')?.addEventListener('click', async () => {
+      databaseSortOrder = databaseSortOrder === 'newest' ? 'oldest' : 'newest';
+      closeDatabaseFrequentFiltersPopover();
+      await loadDatabaseList();
+      await recordCurrentDatabaseWorkspaceUsage();
+      void render();
+    });
+
+    document.getElementById('db-frequent-filters-btn')?.addEventListener('click', () => {
+      databaseFrequentFiltersOpen = !databaseFrequentFiltersOpen;
+      void renderPreservingContentScroll();
+    });
+
+    document.getElementById('db-frequent-filters-close-btn')?.addEventListener('click', () => {
+      closeDatabaseFrequentFiltersPopover();
+      void renderPreservingContentScroll();
+    });
+
+    document.querySelectorAll('[data-apply-frequent-filter-id]').forEach((button) => {
       button.addEventListener('click', async () => {
-        const target = button as HTMLElement;
-        const groupBy = target.dataset.groupby as GroupByType;
-        databaseGroupBy = groupBy;
+        const filterId = (button as HTMLElement).dataset.applyFrequentFilterId;
+        const target = frequentDatabaseFilters.find((item) => item.id === filterId);
+        if (!target) {
+          return;
+        }
+
+        applyDatabaseWorkspaceCombination(target);
+        closeDatabaseFrequentFiltersPopover();
         await loadDatabaseList();
+        await recordCurrentDatabaseWorkspaceUsage();
         void render();
       });
     });
@@ -9528,6 +12548,20 @@ async function render() {
         if (!id) return;
 
         await openExperimentDetail(id);
+      });
+    });
+
+    const starButtons = document.querySelectorAll('[data-toggle-star-id]');
+    starButtons.forEach((button) => {
+      button.addEventListener('click', async () => {
+        const target = button as HTMLElement;
+        const id = Number(target.dataset.toggleStarId);
+        if (!id) return;
+
+        await toggleExperimentStarStatus(id, {
+          reloadDatabaseList: databaseStarredOnly,
+          preserveScroll: true
+        });
       });
     });
 
@@ -9711,6 +12745,12 @@ async function render() {
       return;
     }
 
+    if (!databaseWorkspaceStateLoaded) {
+      void ensureDatabaseWorkspaceStateLoaded().then(() => {
+        requestRender(true);
+      });
+    }
+
       const editHistoryHtml = renderExperimentEditHistory(currentEditHistory, {
         empty: t('databaseDetail.historyEmpty'),
         editor: t('databaseDetail.historyEditor'),
@@ -9723,6 +12763,7 @@ async function render() {
       <div class="home-layout">
         ${renderAppSidebar(appName, [
           { id: 'detail-menu-home', label: t('common.home'), icon: '⌂' },
+          { id: 'detail-menu-add', label: t('common.addData'), icon: '＋' },
           { id: 'detail-menu-list', label: t('common.data'), icon: '▣', active: true },
           { id: 'detail-menu-analysis', label: t('common.analysis'), icon: '◫' },
           { id: 'detail-menu-settings', label: t('common.settings'), icon: '⚙' }
@@ -9733,10 +12774,46 @@ async function render() {
             <div class="topbar-title">${escapeHtml(detailEditMode ? t('databaseDetail.titleEditing') : t('databaseDetail.titleReadonly'))}</div>
             <div class="detail-top-actions">
               ${detailEditMode
-        ? `<button id="detail-cancel-edit-btn" class="secondary-btn">${escapeHtml(t('databaseDetail.cancelEdit'))}</button>`
-        : `<button id="detail-edit-btn" class="secondary-btn">${escapeHtml(t('databaseDetail.edit'))}</button>`
+        ? `<button id="detail-cancel-edit-btn" class="secondary-btn database-toolbar-btn">${escapeHtml(t('databaseDetail.cancelEdit'))}</button>`
+        : `
+            <button
+              id="detail-back-btn"
+              class="secondary-btn detail-toolbar-icon-btn"
+              type="button"
+              title="${escapeHtml(t('common.backToList'))}"
+            >
+              ←
+            </button>
+            <button
+              id="detail-toggle-star-btn"
+              class="secondary-btn detail-toolbar-icon-btn"
+              type="button"
+              title="${escapeHtml(
+                isExperimentStarred(currentDetail.id) ? t('database.star.remove') : t('database.star.add')
+              )}"
+            >
+              ${isExperimentStarred(currentDetail.id) ? '★' : '☆'}
+            </button>
+            <button
+              id="detail-edit-btn"
+              class="secondary-btn detail-toolbar-icon-btn"
+              type="button"
+              title="${escapeHtml(t('databaseDetail.edit'))}"
+            >
+              ✎
+            </button>
+          `
       }
-              <button id="detail-back-btn" class="secondary-btn">${escapeHtml(t('common.backToList'))}</button>
+              ${detailEditMode
+                ? `<button
+                    id="detail-back-btn"
+                    class="secondary-btn detail-toolbar-icon-btn"
+                    type="button"
+                    title="${escapeHtml(t('common.backToList'))}"
+                  >
+                    ←
+                  </button>`
+                : ''}
             </div>
           </header>
 
@@ -9758,7 +12835,10 @@ async function render() {
                         ${renderDetailEditInput('edit-sampleCode', t('step1.field.sampleCode'), detailEditStep1.sampleCode)}
                         ${renderDetailEditInput('edit-tester', t('step1.field.tester'), detailEditStep1.tester)}
                         ${renderDetailEditInput('edit-instrument', t('step1.field.instrument'), detailEditStep1.instrument)}
-                        ${renderDetailEditInput('edit-testTime', t('step1.field.testTime'), detailEditStep1.testTime, 'datetime-local')}
+                        <div class="detail-item">
+                          <div class="detail-label">${escapeHtml(t('step1.field.testTime'))}</div>
+                          ${renderDateTimePicker('edit-testTime', detailEditStep1.testTime)}
+                        </div>
                         ${renderDetailEditInput('edit-sampleOwner', t('step1.field.sampleOwner'), detailEditStep1.sampleOwner)}
                         ${renderDetailDerivedPreview(
                           'detail-edit-display-name-preview',
@@ -9878,6 +12958,8 @@ async function render() {
       }
               </div>
 
+              ${detailEditMode ? '' : renderRelatedRecordsSection()}
+
               <div class="detail-section">
                 <div class="detail-section-title">${escapeHtml(t('databaseDetail.section.editHistory'))}</div>
                 ${editHistoryHtml}
@@ -9931,6 +13013,10 @@ async function render() {
       void render();
     });
 
+    document.getElementById('detail-menu-add')?.addEventListener('click', async () => {
+      await openAddDataEntry();
+    });
+
     document.getElementById('detail-menu-analysis')?.addEventListener('click', async () => {
       await openAnalysisWorkspace();
     });
@@ -9981,6 +13067,27 @@ async function render() {
       requestRender(true);
     });
 
+    document.getElementById('detail-toggle-star-btn')?.addEventListener('click', async () => {
+      if (!currentDetail) {
+        return;
+      }
+
+      await toggleExperimentStarStatus(currentDetail.id);
+    });
+
+    const relatedDetailButtons = document.querySelectorAll('[data-open-related-detail-id]');
+    relatedDetailButtons.forEach((button) => {
+      button.addEventListener('click', async () => {
+        const target = button as HTMLElement;
+        const experimentId = Number(target.dataset.openRelatedDetailId);
+        if (!experimentId) {
+          return;
+        }
+
+        await openExperimentDetail(experimentId);
+      });
+    });
+
     document.getElementById('detail-cancel-edit-btn')?.addEventListener('click', () => {
       detailEditMode = false;
       detailEditReason = '';
@@ -10004,6 +13111,7 @@ async function render() {
         addButtonId: 'detail-add-template-block-btn'
       });
 
+      bindDateTimePicker('edit-testTime');
       bindDetailEditTemplateContextReactivity();
     }
 
@@ -10030,7 +13138,7 @@ async function render() {
         !collected.step1.sampleCode ||
         !collected.step1.tester ||
         !collected.step1.instrument ||
-        !collected.step1.testTime
+        !hasCompleteLocalDateTimeValue(collected.step1.testTime)
       ) {
         if (errorBox) errorBox.textContent = t('databaseDetail.validation.primaryRequired');
         return;
@@ -10432,6 +13540,7 @@ async function render() {
       <div class="home-layout">
         ${renderAppSidebar(appName, [
           { id: 'settings-menu-home', label: t('common.home'), icon: '⌂' },
+          { id: 'settings-menu-add', label: t('common.addData'), icon: '＋' },
           { id: 'settings-menu-data', label: t('common.data'), icon: '▣' },
           { id: 'settings-menu-analysis', label: t('common.analysis'), icon: '◫' },
           { label: t('common.settings'), icon: '⚙', active: true }
@@ -10488,6 +13597,10 @@ async function render() {
     document.getElementById('settings-menu-home')?.addEventListener('click', () => {
       currentView = 'home';
       void render();
+    });
+
+    document.getElementById('settings-menu-add')?.addEventListener('click', async () => {
+      await openAddDataEntry();
     });
 
     document.getElementById('settings-menu-data')?.addEventListener('click', async () => {
@@ -10907,9 +14020,71 @@ async function render() {
 }
 
 function bindStep1Events() {
-  document.getElementById('back-home-btn')?.addEventListener('click', goHome);
-  document.getElementById('menu-home')?.addEventListener('click', goHome);
-  document.getElementById('step1-cancel-btn')?.addEventListener('click', goHome);
+  bindDateTimePicker('testTime');
+
+  const syncStep1ProgressUI = () => {
+    saveStep1InputsToState();
+
+    const nextButton = document.getElementById('step1-next-btn') as HTMLButtonElement | null;
+    if (nextButton) {
+      nextButton.disabled = Boolean(validateStep1());
+    }
+
+    const strip = document.querySelector('.step1-status-strip');
+    const badge = document.getElementById('step1-status-badge');
+    const text = document.getElementById('step1-status-text');
+    const secondary = document.getElementById('step1-status-secondary');
+    if (!strip || !badge || !text) {
+      return;
+    }
+
+    const missingFields = collectStep1MissingRequiredFieldLabels();
+    const dictionaryPending = collectStep1PendingDictionaryLabels();
+    const isReady = !missingFields.length;
+
+    strip.classList.toggle('step1-status-strip-ready', isReady);
+    strip.classList.toggle('step1-status-strip-pending', !isReady);
+    badge.textContent = isReady ? t('step1.status.ready') : t('step1.status.pending');
+    text.textContent = isReady
+      ? t('step1.status.readyDetail')
+      : t('step1.status.missingFields', {
+          fields: missingFields.join(' / ')
+        });
+
+    const dictionaryText = dictionaryPending.length
+      ? t('step1.status.dictionaryPending', {
+          fields: dictionaryPending.join(' / ')
+        })
+      : '';
+
+    if (secondary) {
+      if (dictionaryText) {
+        secondary.textContent = dictionaryText;
+        secondary.style.display = '';
+      } else {
+        secondary.textContent = '';
+        secondary.style.display = 'none';
+      }
+    } else if (dictionaryText) {
+      strip.insertAdjacentHTML(
+        'beforeend',
+        `<div id="step1-status-secondary" class="step1-status-secondary">${escapeHtml(dictionaryText)}</div>`
+      );
+    }
+  };
+
+  document.getElementById('back-home-btn')?.addEventListener('click', async () => {
+    saveStep1InputsToState();
+    await attemptLeaveCreateFlow('step1', goHome);
+  });
+  document.getElementById('menu-home')?.addEventListener('click', async () => {
+    saveStep1InputsToState();
+    await attemptLeaveCreateFlow('step1', goHome);
+  });
+  document.getElementById('step1-cancel-btn')?.addEventListener('click', async () => {
+    saveStep1InputsToState();
+    await attemptLeaveCreateFlow('step1', goHome);
+  });
 
   bindStep1DictionaryAddAction({
     inputId: 'testProject',
@@ -10917,7 +14092,8 @@ function bindStep1Events() {
     dictionaryType: 'testProject',
     feedbackId: 'testProject-dictionary-feedback',
     successMessage: t('step1.dictionaryAdded.testProject'),
-    suggestionContainerId: 'testProject-suggestion-list'
+    suggestionContainerId: 'testProject-suggestion-list',
+    onSuccess: syncStep1ProgressUI
   });
 
   bindStep1DictionaryAddAction({
@@ -10926,7 +14102,8 @@ function bindStep1Events() {
     dictionaryType: 'tester',
     feedbackId: 'tester-dictionary-feedback',
     successMessage: t('step1.dictionaryAdded.tester'),
-    suggestionContainerId: 'tester-suggestion-list'
+    suggestionContainerId: 'tester-suggestion-list',
+    onSuccess: syncStep1ProgressUI
   });
 
   bindStep1DictionaryAddAction({
@@ -10935,7 +14112,28 @@ function bindStep1Events() {
     dictionaryType: 'instrument',
     feedbackId: 'instrument-dictionary-feedback',
     successMessage: t('step1.dictionaryAdded.instrument'),
-    suggestionContainerId: 'instrument-suggestion-list'
+    suggestionContainerId: 'instrument-suggestion-list',
+    onSuccess: syncStep1ProgressUI
+  });
+
+  bindStep1DictionaryAddAction({
+    inputId: 'sampleCode',
+    buttonId: 'sampleCode-plus-btn',
+    dictionaryType: 'sampleCode',
+    feedbackId: 'sampleCode-dictionary-feedback',
+    successMessage: t('step1.dictionaryAdded.sampleCode'),
+    suggestionContainerId: 'sampleCode-suggestion-list',
+    onSuccess: syncStep1ProgressUI
+  });
+
+  bindStep1DictionaryAddAction({
+    inputId: 'sampleOwner',
+    buttonId: 'sampleOwner-plus-btn',
+    dictionaryType: 'sampleOwner',
+    feedbackId: 'sampleOwner-dictionary-feedback',
+    successMessage: t('step1.dictionaryAdded.sampleOwner'),
+    suggestionContainerId: 'sampleOwner-suggestion-list',
+    onSuccess: syncStep1ProgressUI
   });
 
   bindStep1SuggestionInput({
@@ -10959,6 +14157,27 @@ function bindStep1Events() {
     feedbackId: 'instrument-dictionary-feedback'
   });
 
+  bindStep1SuggestionInput({
+    inputId: 'sampleCode',
+    dictionaryType: 'sampleCode',
+    containerId: 'sampleCode-suggestion-list',
+    feedbackId: 'sampleCode-dictionary-feedback'
+  });
+
+  bindStep1SuggestionInput({
+    inputId: 'sampleOwner',
+    dictionaryType: 'sampleOwner',
+    containerId: 'sampleOwner-suggestion-list',
+    feedbackId: 'sampleOwner-dictionary-feedback'
+  });
+
+  const liveInputIds = ['testProject', 'sampleCode', 'tester', 'instrument', 'sampleOwner', 'testTimeValue'];
+  liveInputIds.forEach((inputId) => {
+    const input = document.getElementById(inputId) as HTMLInputElement | null;
+    input?.addEventListener('input', syncStep1ProgressUI);
+    input?.addEventListener('change', syncStep1ProgressUI);
+  });
+
   document.getElementById('add-dynamic-field-btn')?.addEventListener('click', () => {
     saveStep1InputsToState();
     step1FormData.dynamicFields.push({
@@ -10967,6 +14186,11 @@ function bindStep1Events() {
       value: ''
     });
     requestRender(true);
+  });
+
+  document.getElementById('step1-save-draft-btn')?.addEventListener('click', async () => {
+    saveStep1InputsToState();
+    await saveCurrentDraftAndReturn('step1');
   });
 
   document.getElementById('step1-next-btn')?.addEventListener('click', async () => {
@@ -10998,6 +14222,11 @@ function bindStep1Events() {
   });
 
   bindDynamicFieldEvents();
+  document.querySelectorAll('[id^="dynamic-name-"], [id^="dynamic-value-"]').forEach((input) => {
+    input.addEventListener('input', syncStep1ProgressUI);
+    input.addEventListener('change', syncStep1ProgressUI);
+  });
+  syncStep1ProgressUI();
 }
 
 function bindDynamicFieldEvents() {
@@ -11040,8 +14269,15 @@ function bindStep2Events() {
   });
 
   document.getElementById('menu-home-step2')?.addEventListener('click', () => {
+    void (async () => {
+      saveStep2InputsToState();
+      await attemptLeaveCreateFlow('step2', goHome);
+    })();
+  });
+
+  document.getElementById('step2-save-draft-btn')?.addEventListener('click', async () => {
     saveStep2InputsToState();
-    goHome();
+    await saveCurrentDraftAndReturn('step2');
   });
 
   document.getElementById('finish-step2-btn')?.addEventListener('click', async () => {
@@ -11125,7 +14361,8 @@ async function loadDatabaseList(
     query,
     groupBy,
     crossFilters: databaseCrossFilters,
-    sortOrder: databaseSortOrder
+    sortOrder: databaseSortOrder,
+    starredOnly: databaseStarredOnly
   });
 
   const validIds = databaseGroups.flatMap((group) => group.items.map((item) => item.id));
@@ -11141,7 +14378,7 @@ async function loadDatabaseListView() {
 }
 
 function hasActiveDatabaseSearchOrFilters() {
-  return Boolean(databaseSearchKeyword || databaseCrossFilters.length);
+  return Boolean(databaseSearchKeyword || databaseCrossFilters.length || databaseStarredOnly);
 }
 
 function renderDatabaseGroups(groups: ExperimentGroup[]) {
@@ -11155,12 +14392,12 @@ function renderDatabaseGroups(groups: ExperimentGroup[]) {
     .map(
       (group) => `
         <div class="db-group-block">
-          <div class="db-group-title">${escapeHtml(group.groupLabel)}</div>
+          <div class="db-group-title">${escapeHtml(`${getDatabaseGroupByLabel(databaseGroupBy)}：${group.groupLabel}`)}</div>
           <div class="record-list">
             ${group.items
           .map(
             (item) => `
-	                  <div class="record-card selectable-record-card">
+	                  <div class="record-card selectable-record-card ${isExperimentSelected(item.id) ? 'record-card-selected' : ''}">
 	                    <button
 	                      class="select-circle-btn ${isExperimentSelected(item.id) ? 'selected-circle-btn' : ''}"
                       data-select-experiment-id="${item.id}"
@@ -11175,11 +14412,25 @@ function renderDatabaseGroups(groups: ExperimentGroup[]) {
                         <span>${escapeHtml(t('database.card.sampleCode'))}：${escapeHtml(item.sampleCode)}</span>
                         <span>${escapeHtml(t('database.card.testProject'))}：${escapeHtml(item.testProject)}</span>
                         <span>${escapeHtml(t('database.card.tester'))}：${escapeHtml(item.tester)}</span>
-                        <span>${escapeHtml(t('database.card.instrument'))}：${escapeHtml(item.instrument)}</span>
+	                        <span>${escapeHtml(t('database.card.instrument'))}：${escapeHtml(item.instrument)}</span>
 	                      </div>
 	                    </div>
-	
-	                    <button class="secondary-btn" type="button" data-open-detail-id="${item.id}">${escapeHtml(t('database.card.viewDetails'))}</button>
+
+                      <div class="record-actions">
+                        <button
+                          class="secondary-btn database-icon-btn"
+                          type="button"
+                          data-toggle-star-id="${item.id}"
+                          title="${escapeHtml(
+                            isExperimentStarred(item.id) ? t('database.star.remove') : t('database.star.add')
+                          )}"
+                        >
+                          ${isExperimentStarred(item.id) ? '★' : '☆'}
+                        </button>
+	                    <button class="secondary-btn record-detail-btn" type="button" data-open-detail-id="${item.id}">${escapeHtml(
+                        t('database.card.viewDetails')
+                      )}</button>
+                      </div>
 	                  </div>
 	                `
           )
@@ -11300,13 +14551,13 @@ function collectDetailEditState() {
     return {
       ...block,
       purposeType: (purposeType?.value as StructuredBlockPurpose | undefined) || block.purposeType || '',
-      blockTitle: blockTitle?.value || '',
-      primaryLabel: primaryLabel?.value || '',
-      primaryUnit: primaryUnit?.value || '',
-      secondaryLabel: secondaryLabel?.value || '',
-      secondaryUnit: secondaryUnit?.value || '',
-      dataText: dataText?.value || '',
-      note: note?.value || ''
+      blockTitle: blockTitle ? blockTitle.value : block.blockTitle,
+      primaryLabel: primaryLabel ? primaryLabel.value : block.primaryLabel,
+      primaryUnit: primaryUnit ? primaryUnit.value : block.primaryUnit,
+      secondaryLabel: secondaryLabel ? secondaryLabel.value : block.secondaryLabel,
+      secondaryUnit: secondaryUnit ? secondaryUnit.value : block.secondaryUnit,
+      dataText: dataText ? dataText.value : block.dataText,
+      note: note ? note.value : block.note
     };
   });
 
@@ -11329,14 +14580,14 @@ function saveStep1InputsToState() {
   const sampleCode = document.getElementById('sampleCode') as HTMLInputElement | null;
   const tester = document.getElementById('tester') as HTMLInputElement | null;
   const instrument = document.getElementById('instrument') as HTMLInputElement | null;
-  const testTime = document.getElementById('testTime') as HTMLInputElement | null;
+  const testTimeValue = document.getElementById('testTimeValue') as HTMLInputElement | null;
   const sampleOwner = document.getElementById('sampleOwner') as HTMLInputElement | null;
 
   step1FormData.testProject = testProject?.value.trim() || '';
   step1FormData.sampleCode = sampleCode?.value.trim() || '';
   step1FormData.tester = tester?.value.trim() || '';
   step1FormData.instrument = instrument?.value.trim() || '';
-  step1FormData.testTime = testTime?.value || '';
+  step1FormData.testTime = testTimeValue?.value || '';
   step1FormData.sampleOwner = sampleOwner?.value.trim() || '';
 
   step1FormData.dynamicFields = step1FormData.dynamicFields.map((field) => {
@@ -11394,13 +14645,13 @@ function saveStep2InputsToState() {
     return {
       ...block,
       purposeType: (purposeType?.value as StructuredBlockPurpose | undefined) || block.purposeType || '',
-      blockTitle: blockTitle?.value || '',
-      primaryLabel: primaryLabel?.value || '',
-      primaryUnit: primaryUnit?.value || '',
-      secondaryLabel: secondaryLabel?.value || '',
-      secondaryUnit: secondaryUnit?.value || '',
-      dataText: dataText?.value || '',
-      note: note?.value || ''
+      blockTitle: blockTitle ? blockTitle.value : block.blockTitle,
+      primaryLabel: primaryLabel ? primaryLabel.value : block.primaryLabel,
+      primaryUnit: primaryUnit ? primaryUnit.value : block.primaryUnit,
+      secondaryLabel: secondaryLabel ? secondaryLabel.value : block.secondaryLabel,
+      secondaryUnit: secondaryUnit ? secondaryUnit.value : block.secondaryUnit,
+      dataText: dataText ? dataText.value : block.dataText,
+      note: note ? note.value : block.note
     };
   });
 
@@ -11412,7 +14663,7 @@ function validateStep1() {
   if (!step1FormData.sampleCode) return t('step1.validation.sampleCodeRequired');
   if (!step1FormData.tester) return t('step1.validation.testerRequired');
   if (!step1FormData.instrument) return t('step1.validation.instrumentRequired');
-  if (!step1FormData.testTime) return t('step1.validation.testTimeRequired');
+  if (!hasCompleteLocalDateTimeValue(step1FormData.testTime)) return t('step1.validation.testTimeRequired');
 
   for (const field of step1FormData.dynamicFields) {
     if ((field.name && !field.value) || (!field.name && field.value)) {
@@ -11448,6 +14699,16 @@ async function validateStep1DictionaryMembership() {
       dictionaryType: 'instrument',
       value: step1FormData.instrument,
       message: t('step1.dictionaryMissing.instrument', { value: step1FormData.instrument })
+    },
+    {
+      dictionaryType: 'sampleCode',
+      value: step1FormData.sampleCode,
+      message: t('step1.dictionaryMissing.sampleCode', { value: step1FormData.sampleCode })
+    },
+    {
+      dictionaryType: 'sampleOwner',
+      value: step1FormData.sampleOwner,
+      message: t('step1.dictionaryMissing.sampleOwner', { value: step1FormData.sampleOwner })
     }
   ];
 
@@ -11498,6 +14759,17 @@ function validateStep2() {
 function goHome() {
   currentView = 'home';
   void render();
+}
+
+function isStartedScalarRow(row: DataItem) {
+  return Boolean(
+    row.itemName ||
+      row.itemValue ||
+      row.itemUnit ||
+      row.sourceFileName ||
+      row.replacementOriginalName ||
+      row.originalFileName
+  );
 }
 
 function resetFormState() {

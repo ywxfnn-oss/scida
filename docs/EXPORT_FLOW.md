@@ -1,6 +1,6 @@
 # EXPORT_FLOW.md
 
-Export Flow Guide for Scidata Manager
+Export Flow Guide for Scida
 
 ## Current Export Modes
 

@@ -22,6 +22,15 @@ const electronAPI: ElectronAPI = {
     savePersistedAnalysisUIState: (payload) =>
         ipcRenderer.invoke('ui:savePersistedAnalysisUIState', payload),
 
+    getActiveEntryDraft: () => ipcRenderer.invoke('entry:getActiveDraft'),
+
+    saveActiveEntryDraft: (payload) =>
+        ipcRenderer.invoke('entry:saveActiveDraft', payload),
+
+    discardActiveEntryDraft: () => ipcRenderer.invoke('entry:discardActiveDraft'),
+
+    getRecentEntrySuggestions: () => ipcRenderer.invoke('entry:getRecentSuggestions'),
+
     listDictionaryItems: (payload) => ipcRenderer.invoke('dictionary:list', payload),
 
     addDictionaryItem: (payload) => ipcRenderer.invoke('dictionary:add', payload),
@@ -49,12 +58,21 @@ const electronAPI: ElectronAPI = {
     saveExperiment: (payload) => ipcRenderer.invoke('experiment:save', payload),
 
     listExperiments: (payload) => ipcRenderer.invoke('experiment:list', payload),
+    getDatabaseWorkspaceState: () => ipcRenderer.invoke('database:getWorkspaceState'),
+    recordDatabaseWorkspaceUsage: (payload) =>
+      ipcRenderer.invoke('database:recordWorkspaceUsage', payload),
+    saveDatabaseView: (payload) => ipcRenderer.invoke('database:saveView', payload),
+    renameSavedDatabaseView: (payload) => ipcRenderer.invoke('database:renameView', payload),
+    deleteSavedDatabaseView: (payload) => ipcRenderer.invoke('database:deleteView', payload),
+    toggleStarredExperiment: (payload) => ipcRenderer.invoke('database:toggleStarred', payload),
     listExperimentFilterValueCandidates: (payload) =>
       ipcRenderer.invoke('experiment:listFilterValueCandidates', payload),
     listExperimentFilterOptions: () => ipcRenderer.invoke('experiment:listFilterOptions'),
 
     getExperimentDetail: (experimentId: number) =>
         ipcRenderer.invoke('experiment:getDetail', experimentId),
+    listRelatedExperimentRecords: (experimentId: number) =>
+        ipcRenderer.invoke('experiment:listRelatedRecords', experimentId),
     listExperimentEditLogs: (payload) => ipcRenderer.invoke('experiment:listEditLogs', payload),
 
     deleteExperiment: (payload) => ipcRenderer.invoke('experiment:delete', payload),

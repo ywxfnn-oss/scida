@@ -1,10 +1,10 @@
 # ARCHITECTURE.md
 
-Application Architecture for **Scidata Manager**
+Application Architecture for **Scida**
 
 ## Overview
 
-Scidata Manager is a local-first Electron application for storing, browsing, editing, and exporting scientific experiment data.
+Scida is a local-first Electron application for storing, browsing, editing, and exporting scientific experiment data.
 
 The app keeps structured records in SQLite through Prisma and stores raw experiment files on disk under a configurable storage root.
 

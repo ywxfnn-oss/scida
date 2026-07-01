@@ -41,7 +41,13 @@ export type ImportFormatParser = {
 export function buildUnmatchedImportResult(
   file: ImportSelectedFile,
   error: string,
-  manualReview?: ImportManualXYReviewSupport
+  manualReview?: ImportManualXYReviewSupport,
+  options?: {
+    selectedEncoding?: 'auto' | 'utf8' | 'gbk' | 'utf16';
+    resolvedEncoding?: 'utf8' | 'gbk' | 'utf16';
+    recognitionStatus?: 'success' | 'uncertain' | 'failed';
+    recognitionMessage?: string;
+  }
 ): ImportPreviewFileResult {
   return {
     filePath: file.filePath,
@@ -52,13 +58,24 @@ export function buildUnmatchedImportResult(
     warnings: [],
     error,
     manualReview,
+    selectedEncoding: options?.selectedEncoding || 'auto',
+    resolvedEncoding: options?.resolvedEncoding || 'utf8',
+    recognitionStatus: options?.recognitionStatus || 'failed',
+    recognitionMessage: options?.recognitionMessage || error,
     candidates: []
   };
 }
 
 export function convertParserResultToPreviewFile(
   file: ImportSelectedFile,
-  result: ImportParserResult
+  result: ImportParserResult,
+  options?: {
+    selectedEncoding?: 'auto' | 'utf8' | 'gbk' | 'utf16';
+    resolvedEncoding?: 'utf8' | 'gbk' | 'utf16';
+    recognitionStatus?: 'success' | 'uncertain' | 'failed';
+    recognitionMessage?: string;
+    manualReview?: ImportManualXYReviewSupport;
+  }
 ): ImportPreviewFileResult {
   if (!result.matched) {
     const failureResult = result as ImportParserFailure;
@@ -71,7 +88,11 @@ export function convertParserResultToPreviewFile(
       parserLabel: failureResult.parserLabel,
       warnings: failureResult.warnings,
       error: failureResult.error,
-      manualReview: undefined,
+      manualReview: options?.manualReview,
+      selectedEncoding: options?.selectedEncoding || 'auto',
+      resolvedEncoding: options?.resolvedEncoding || 'utf8',
+      recognitionStatus: options?.recognitionStatus || 'failed',
+      recognitionMessage: options?.recognitionMessage || failureResult.error,
       candidates: []
     };
   }
@@ -83,7 +104,11 @@ export function convertParserResultToPreviewFile(
     parserId: result.parserId,
     parserLabel: result.parserLabel,
     warnings: result.warnings,
-    manualReview: undefined,
+    manualReview: options?.manualReview,
+    selectedEncoding: options?.selectedEncoding || 'auto',
+    resolvedEncoding: options?.resolvedEncoding || 'utf8',
+    recognitionStatus: options?.recognitionStatus || 'success',
+    recognitionMessage: options?.recognitionMessage || `自动识别成功：${result.parserLabel}`,
     candidates: result.candidates
   };
 }

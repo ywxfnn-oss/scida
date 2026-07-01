@@ -128,7 +128,7 @@ export type CompleteOnboardingPayload = {
   acceptedPrivacy: boolean;
 };
 
-export type DictionaryType = 'testProject' | 'tester' | 'instrument';
+export type DictionaryType = 'testProject' | 'tester' | 'instrument' | 'sampleCode' | 'sampleOwner';
 
 export type DictionaryItem = {
   id: string;
@@ -144,6 +144,8 @@ export type DictionaryItemsByType = {
   testProject: DictionaryItem[];
   tester: DictionaryItem[];
   instrument: DictionaryItem[];
+  sampleCode: DictionaryItem[];
+  sampleOwner: DictionaryItem[];
 };
 
 export type ListDictionaryItemsPayload = {
@@ -178,6 +180,9 @@ export type SelectImportFilesResult = ImportSelectedFile[];
 
 export type ImportManualDelimiter = 'comma' | 'tab' | 'semicolon' | 'whitespace';
 export type ImportManualXAxisSourceMode = 'column' | 'generated';
+export type ImportTextEncoding = 'auto' | 'utf8' | 'gbk' | 'utf16';
+export type ImportResolvedEncoding = 'utf8' | 'gbk' | 'utf16';
+export type ImportRecognitionStatus = 'success' | 'uncertain' | 'failed';
 
 export type ImportManualPreviewRow = {
   rowNumber: number;
@@ -266,17 +271,26 @@ export type SaveExperimentTemplateBlockPayload =
 
 export type ImportPreviewPayload = {
   filePaths: string[];
+  textEncoding?: ImportTextEncoding;
 };
 
 export type PreviewManualImportXYPayload = {
   filePath: string;
+  textEncoding?: ImportTextEncoding;
   delimiter: ImportManualDelimiter;
   dataStartRow: number;
+  dataEndRow?: number | null;
+  dataStartColumn?: number;
+  dataEndColumn?: number | null;
   xSourceMode: ImportManualXAxisSourceMode;
   xColumnIndex: number;
   yColumnIndex: number;
+  yColumnIndices?: number[];
   generatedXStart?: number;
   generatedXStep?: number;
+  ignoreEmptyRows?: boolean;
+  ignoreNonNumericRows?: boolean;
+  collapseWhitespace?: boolean;
   purposeType?: StructuredBlockPurpose;
   blockTitle: string;
   xLabel: string;
@@ -288,6 +302,10 @@ export type PreviewManualImportXYPayload = {
 export type PreviewManualImportXYResult = ActionResult & {
   candidate?: ImportPreviewXYTemplateBlockCandidate;
   manualReview?: ImportManualXYReviewSupport;
+  selectedEncoding?: ImportTextEncoding;
+  resolvedEncoding?: ImportResolvedEncoding;
+  recognitionStatus?: ImportRecognitionStatus;
+  recognitionMessage?: string;
 };
 
 export type ImportPreviewXYTemplateBlockCandidate = {
@@ -314,6 +332,10 @@ export type ImportPreviewFileResult = {
   warnings: string[];
   error?: string;
   manualReview?: ImportManualXYReviewSupport;
+  selectedEncoding: ImportTextEncoding;
+  resolvedEncoding: ImportResolvedEncoding;
+  recognitionStatus: ImportRecognitionStatus;
+  recognitionMessage: string;
   candidates: ImportPreviewCandidate[];
 };
 
@@ -343,6 +365,69 @@ export type SaveExperimentPayload = {
   }[];
   templateBlocks: SaveExperimentTemplateBlockPayload[];
   displayName: string;
+};
+
+export type EntryDraftDynamicField = {
+  id: string;
+  name: string;
+  value: string;
+};
+
+export type EntryDraftDataItem = {
+  id: string;
+  scalarRole?: ScalarItemRole;
+  itemName: string;
+  itemValue: string;
+  itemUnit: string;
+  sourceFileName: string;
+  sourceFilePath: string;
+  originalFileName: string;
+  originalFilePath: string;
+};
+
+export type EntryDraftTemplateBlock = {
+  id: string;
+  templateType: 'xy' | 'spectrum';
+  purposeType?: StructuredBlockPurpose;
+  blockTitle: string;
+  primaryLabel: string;
+  primaryUnit: string;
+  secondaryLabel: string;
+  secondaryUnit: string;
+  dataText: string;
+  note: string;
+  sourceFileName: string;
+  sourceFilePath: string;
+  originalFileName: string;
+  originalFilePath: string;
+};
+
+export type SaveActiveEntryDraftPayload = {
+  source: 'new' | 'copied-record';
+  originExperimentId?: number;
+  originDisplayName?: string;
+  resumeStep: 'step1' | 'step2';
+  step1: {
+    testProject: string;
+    sampleCode: string;
+    tester: string;
+    instrument: string;
+    testTime: string;
+    sampleOwner: string;
+    dynamicFields: EntryDraftDynamicField[];
+  };
+  step2: EntryDraftDataItem[];
+  templateBlocks: EntryDraftTemplateBlock[];
+};
+
+export type ActiveEntryDraft = SaveActiveEntryDraftPayload & {
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type RecentEntrySuggestions = {
+  testProjects: string[];
+  instruments: string[];
 };
 
 export type UpdateExperimentDataItemPayload = {
@@ -408,12 +493,14 @@ export type ListExperimentsPayload = {
   groupBy?: GroupByType;
   crossFilters?: CrossFilterChip[];
   sortOrder?: ExperimentListSortOrder;
+  starredOnly?: boolean;
 };
 
 export type ListExperimentFilterValueCandidatesPayload = {
   query?: string;
   crossFilters?: CrossFilterChip[];
   field: CrossFilterField;
+  starredOnly?: boolean;
 };
 
 export type ExperimentFilterOptions = {
@@ -504,6 +591,81 @@ export type ExperimentDetail = {
       }
   >;
 } | null;
+
+export type SavedDatabaseView = {
+  id: string;
+  name: string;
+  query: string;
+  groupBy: GroupByType;
+  sortOrder: ExperimentListSortOrder;
+  starredOnly: boolean;
+  crossFilters: CrossFilterChip[];
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type SaveDatabaseViewPayload = {
+  id?: string;
+  name: string;
+  query?: string;
+  groupBy?: GroupByType;
+  sortOrder?: ExperimentListSortOrder;
+  starredOnly?: boolean;
+  crossFilters?: CrossFilterChip[];
+};
+
+export type SaveDatabaseViewResult = ActionResult & {
+  view?: SavedDatabaseView;
+};
+
+export type RenameSavedDatabaseViewPayload = {
+  id: string;
+  name: string;
+};
+
+export type DeleteSavedDatabaseViewPayload = {
+  id: string;
+};
+
+export type DatabaseWorkspaceState = {
+  savedViews: SavedDatabaseView[];
+  frequentFilters: FrequentDatabaseFilter[];
+  starredExperimentIds: number[];
+};
+
+export type FrequentDatabaseFilter = {
+  id: string;
+  query: string;
+  groupBy: GroupByType;
+  sortOrder: ExperimentListSortOrder;
+  starredOnly: boolean;
+  crossFilters: CrossFilterChip[];
+  useCount: number;
+  createdAt: string;
+  lastUsedAt: string;
+};
+
+export type RecordDatabaseWorkspaceUsagePayload = {
+  query?: string;
+  groupBy?: GroupByType;
+  sortOrder?: ExperimentListSortOrder;
+  starredOnly?: boolean;
+  crossFilters?: CrossFilterChip[];
+};
+
+export type ToggleStarredExperimentPayload = {
+  experimentId: number;
+};
+
+export type ToggleStarredExperimentResult = ActionResult & {
+  starred?: boolean;
+};
+
+export type RelatedExperimentRecords = {
+  sameProject: ExperimentListItem[];
+  sameSampleCode: ExperimentListItem[];
+  sameTester: ExperimentListItem[];
+};
 
 export type UpdateExperimentPayload = {
   experimentId: number;
@@ -630,6 +792,10 @@ export interface ElectronAPI {
   completeOnboarding: (payload: CompleteOnboardingPayload) => Promise<ActionResult>;
   getPersistedAnalysisUIState: () => Promise<PersistedAnalysisUIState>;
   savePersistedAnalysisUIState: (payload: PersistedAnalysisUIState) => Promise<ActionResult>;
+  getActiveEntryDraft: () => Promise<ActiveEntryDraft | null>;
+  saveActiveEntryDraft: (payload: SaveActiveEntryDraftPayload) => Promise<ActionResult>;
+  discardActiveEntryDraft: () => Promise<ActionResult>;
+  getRecentEntrySuggestions: () => Promise<RecentEntrySuggestions>;
   listDictionaryItems: (
     payload?: ListDictionaryItemsPayload
   ) => Promise<DictionaryItemsByType>;
@@ -653,11 +819,22 @@ export interface ElectronAPI {
   ) => Promise<DuplicateExperimentCheckResult>;
   saveExperiment: (payload: SaveExperimentPayload) => Promise<SaveExperimentResult>;
   listExperiments: (payload?: ListExperimentsPayload) => Promise<ExperimentGroup[]>;
+  getDatabaseWorkspaceState: () => Promise<DatabaseWorkspaceState>;
+  recordDatabaseWorkspaceUsage: (
+    payload: RecordDatabaseWorkspaceUsagePayload
+  ) => Promise<ActionResult>;
+  saveDatabaseView: (payload: SaveDatabaseViewPayload) => Promise<SaveDatabaseViewResult>;
+  renameSavedDatabaseView: (payload: RenameSavedDatabaseViewPayload) => Promise<ActionResult>;
+  deleteSavedDatabaseView: (payload: DeleteSavedDatabaseViewPayload) => Promise<ActionResult>;
+  toggleStarredExperiment: (
+    payload: ToggleStarredExperimentPayload
+  ) => Promise<ToggleStarredExperimentResult>;
   listExperimentFilterValueCandidates: (
     payload: ListExperimentFilterValueCandidatesPayload
   ) => Promise<string[]>;
   listExperimentFilterOptions: () => Promise<ExperimentFilterOptions>;
   getExperimentDetail: (experimentId: number) => Promise<ExperimentDetail>;
+  listRelatedExperimentRecords: (experimentId: number) => Promise<RelatedExperimentRecords>;
   listExperimentEditLogs: (
     payload: ListExperimentEditLogsPayload
   ) => Promise<ExperimentEditHistoryEntry[]>;
