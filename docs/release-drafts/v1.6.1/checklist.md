@@ -51,10 +51,10 @@
 
 ## G. GitHub Actions
 
-- [ ] `Build Release Artifacts` started for `v1.6.1`
-- [ ] macOS job reviewed
-- [ ] Windows job reviewed
-- [ ] uploaded artifacts confirmed
+- [x] `Build Release Artifacts` started for `v1.6.1`
+- [x] macOS job reviewed
+- [x] Windows job reviewed
+- [x] uploaded artifacts confirmed
 
 ## H. macOS Distribution Review
 

@@ -4,7 +4,7 @@ Last updated: `2026-07-01`
 
 ## Current Recommendation
 
-`v1.6.1` is **committed, tagged, pushed, and locally build-validated**. It is now **pending CI artifact review, final trust-state confirmation, and GitHub Release publication**.
+`v1.6.1` is **committed, tagged, pushed, and locally build-validated**, but it is **not yet a full public release-go** because the GitHub Actions macOS path failed before artifact generation. The current remote state is **Windows artifact available, macOS distribution blocked, GitHub Release not yet published**.
 
 Current state:
 
@@ -20,7 +20,9 @@ Current state:
 - release-prep commit is created
 - annotated tag `v1.6.1` is created
 - branch and tag are pushed to `origin`
-- CI/release follow-up is still pending
+- Windows CI artifact is uploaded
+- macOS CI path is blocked
+- GitHub Release entry still does not exist
 
 ## What Is Already Complete
 
@@ -106,7 +108,10 @@ Focused manual checks are still needed for the main `v1.6.1` workflow theme:
 ### Release operations
 
 - review GitHub Actions artifact workflow
-- create/update GitHub Release
+- decide whether to:
+  - publish a Windows-only / partial release note
+  - or block public release until macOS signing secrets are configured
+- create/update GitHub Release only after that decision
 
 ## Known Current Blockers / Unresolved Items
 
@@ -120,8 +125,28 @@ Resolved build issue:
 Remaining pre-release items:
 
 - focused manual smoke review for the `v1.6.1` workflow themes
-- GitHub Actions artifact review
+- release decision on Windows-only vs full cross-platform release
 - GitHub Release publication/update
+
+### Remote CI blocker
+
+Observed final GitHub Actions state for tag `v1.6.1`:
+
+- workflow: `Build Release Artifacts`
+- run: `28520961130`
+- URL: `https://github.com/ywxfnn-oss/scida/actions/runs/28520961130`
+- Windows job: passed
+- uploaded artifact confirmed:
+  - `scida-Windows-v1.6.1`
+- macOS job: failed
+- failure stage:
+  - `Validate mac signing secrets`
+
+Current classification:
+
+- not a product-code blocker
+- not a local packaging blocker
+- macOS release-infrastructure / secret-configuration blocker
 
 ### Binary trust state not yet confirmed
 
@@ -142,7 +167,10 @@ Treat `v1.6.1` as ready for final release only when all of the following are tru
 4. Release-prep commit is created.
 5. Annotated tag `v1.6.1` is created and pushed.
 6. GitHub Actions artifacts are reviewed.
-7. Binary trust wording in the GitHub Release matches reality.
+7. The release strategy is explicitly chosen:
+   - Windows-only / partial release
+   - or hold release until macOS is unblocked
+8. Binary trust wording in the GitHub Release matches reality.
 
 ## Suggested Next Action
 
@@ -152,7 +180,10 @@ Use these files in order:
 2. `docs/release-drafts/v1.6.1/release-day-runbook.md`
 3. complete the focused manual smoke review
 4. review the GitHub Actions release workflow and artifacts
-5. publish/update the GitHub Release
+5. decide whether `v1.6.1` is:
+   - Windows-only releasable now
+   - or blocked pending macOS release secrets
+6. publish/update the GitHub Release accordingly
 
 Then update:
 
