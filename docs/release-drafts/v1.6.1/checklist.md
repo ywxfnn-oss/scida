@@ -39,15 +39,15 @@
 
 ## E. Release Commit
 
-- [ ] release-prep commit created
-- [ ] commit message follows the version-specific draft in `commit-message.txt`
-- [ ] commit scope checked for release metadata consistency
+- [x] release-prep commit created
+- [x] commit message follows the version-specific draft in `commit-message.txt`
+- [x] commit scope checked for release metadata consistency
 
 ## F. Tag and Push
 
-- [ ] annotated tag created: `v1.6.1`
-- [ ] branch pushed
-- [ ] tag pushed
+- [x] annotated tag created: `v1.6.1`
+- [x] branch pushed
+- [x] tag pushed
 
 ## G. GitHub Actions
 
@@ -74,7 +74,7 @@
 
 ## J. Final Archive Integrity
 
-- [ ] package version matches tag
+- [x] package version matches tag
 - [ ] changelog entry matches release notes
 - [ ] release notes match shipped scope
 - [ ] no undocumented headline workflow changes remain

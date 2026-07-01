@@ -4,7 +4,7 @@ Last updated: `2026-07-01`
 
 ## Current Recommendation
 
-`v1.6.1` is **documentation-prepared, metadata-prepared, and locally build-validated**. It is now a **release-go candidate pending manual smoke review and final release operations**.
+`v1.6.1` is **committed, tagged, pushed, and locally build-validated**. It is now **pending CI artifact review, final trust-state confirmation, and GitHub Release publication**.
 
 Current state:
 
@@ -17,7 +17,10 @@ Current state:
 - `package` was executed successfully
 - `make` now executes successfully
 - local distributable output is available
-- final release actions are still pending
+- release-prep commit is created
+- annotated tag `v1.6.1` is created
+- branch and tag are pushed to `origin`
+- CI/release follow-up is still pending
 
 ## What Is Already Complete
 
@@ -102,9 +105,6 @@ Focused manual checks are still needed for the main `v1.6.1` workflow theme:
 
 ### Release operations
 
-- create release-prep commit
-- create annotated tag `v1.6.1`
-- push branch and tag
 - review GitHub Actions artifact workflow
 - create/update GitHub Release
 
@@ -120,7 +120,8 @@ Resolved build issue:
 Remaining pre-release items:
 
 - focused manual smoke review for the `v1.6.1` workflow themes
-- release-prep commit, tag, push, and GitHub Release operations
+- GitHub Actions artifact review
+- GitHub Release publication/update
 
 ### Binary trust state not yet confirmed
 
@@ -150,7 +151,8 @@ Use these files in order:
 1. `docs/release-drafts/v1.6.1/release-day-commands.md`
 2. `docs/release-drafts/v1.6.1/release-day-runbook.md`
 3. complete the focused manual smoke review
-4. execute commit/tag/push/release steps
+4. review the GitHub Actions release workflow and artifacts
+5. publish/update the GitHub Release
 
 Then update:
 
