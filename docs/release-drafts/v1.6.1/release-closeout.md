@@ -83,3 +83,13 @@ Before closing the release work, make sure the draft pack answers:
 - what artifact was actually published
 - what trust state was actually claimed
 - what blocker remained, if any
+
+## Actual v1.6.1 outcome
+
+Final recorded outcome:
+
+- released
+- Windows CI artifacts published
+- macOS arm64 zip published via manual upload
+- macOS signed/notarized CI path remained blocked by missing signing/notarization secrets
+- GitHub Release published with unsigned/conservative-use macOS wording

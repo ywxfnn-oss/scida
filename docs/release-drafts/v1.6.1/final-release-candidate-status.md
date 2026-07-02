@@ -1,10 +1,10 @@
 # Scida v1.6.1 Final Release Candidate Status
 
-Last updated: `2026-07-01`
+Last updated: `2026-07-02`
 
 ## Current Recommendation
 
-`v1.6.1` is **committed, tagged, pushed, and locally build-validated**, but it is **not yet a full public release-go** because the GitHub Actions macOS path failed before artifact generation. The current remote state is **Windows artifact available, macOS distribution blocked, GitHub Release not yet published**.
+`v1.6.1` is **released**. The published release uses the successful Windows CI artifacts plus a **manually uploaded unsigned macOS arm64 zip**. The signed/notarized macOS CI route remains blocked by missing signing/notarization secrets, but that no longer blocks this specific release from being publicly available.
 
 Current state:
 
@@ -21,8 +21,9 @@ Current state:
 - annotated tag `v1.6.1` is created
 - branch and tag are pushed to `origin`
 - Windows CI artifact is uploaded
-- macOS CI path is blocked
-- GitHub Release entry still does not exist
+- macOS CI signing/notarization path is blocked
+- GitHub Release is published
+- published release URL: `https://github.com/ywxfnn-oss/scida/releases/tag/v1.6.1`
 
 ## What Is Already Complete
 
@@ -88,17 +89,17 @@ These are existing warnings, not new release-blocking errors introduced by the r
 - outcome: Electron Forge make completed successfully
 - local artifacts observed at: `out/make`
 
-## Still Required Before Release
+## Post-Release Follow-Up
 
 ### Local packaging/distribution follow-up
 
 - package validation is closed for this execution pass
 - make/distributable validation is closed for this execution pass
-- optional packaged-app startup spot-check is still recommended before public release
+- optional packaged-app startup spot-check is still recommended for post-release confidence
 
 ### Manual release smoke review
 
-Focused manual checks are still needed for the main `v1.6.1` workflow theme:
+Focused manual checks are still recommended for the main `v1.6.1` workflow theme:
 
 - database workspace hierarchy and interaction grouping
 - 24-hour test-time input behavior
@@ -107,11 +108,27 @@ Focused manual checks are still needed for the main `v1.6.1` workflow theme:
 
 ### Release operations
 
-- review GitHub Actions artifact workflow
-- decide whether to:
-  - publish a Windows-only / partial release note
-  - or block public release until macOS signing secrets are configured
-- create/update GitHub Release only after that decision
+- post the final release link where needed
+- optionally improve the release page if download guidance needs clarification
+- decide whether the next release should restore a signed/notarized macOS path
+
+## Final Outcome
+
+`v1.6.1` shipped with these public assets:
+
+- `RELEASES`
+- `Scida-1.6.1.Setup.exe`
+- `scidata_manager-1.6.1-full.nupkg`
+- `Scida-darwin-arm64-1.6.1.zip`
+
+Release page:
+
+- `https://github.com/ywxfnn-oss/scida/releases/tag/v1.6.1`
+
+macOS trust state:
+
+- unsigned / not notarized
+- conservative-use note included in the published release text
 
 ## Known Current Blockers / Unresolved Items
 
@@ -122,11 +139,10 @@ Resolved build issue:
 - previous `npm run make` failures with `The server aborted pending request`
 - current status: resolved locally by supplying cached Electron download checksum data during Forge packaging
 
-Remaining pre-release items:
+Remaining follow-up items:
 
 - focused manual smoke review for the `v1.6.1` workflow themes
-- release decision on Windows-only vs full cross-platform release
-- GitHub Release publication/update
+- future release improvement: restore signed/notarized macOS CI path
 
 ### Remote CI blocker
 
@@ -146,48 +162,19 @@ Current classification:
 
 - not a product-code blocker
 - not a local packaging blocker
-- macOS release-infrastructure / secret-configuration blocker
+- macOS signed/notarized distribution infrastructure blocker for CI
 
-### Binary trust state not yet confirmed
+### Binary trust state
 
-The final public release text still depends on the actual artifact state at release time:
+Confirmed published trust state:
 
-- signed/notarized
-- or unsigned / conservative-use note
-
-Do not finalize the GitHub Release body until that status is known.
-
-## Release-Go Criteria
-
-Treat `v1.6.1` as ready for final release only when all of the following are true:
-
-1. `npm run package` remains recorded as passed.
-2. `npm run make` remains recorded as passed.
-3. Manual smoke checks for the `v1.6.1` headline workflows are completed.
-4. Release-prep commit is created.
-5. Annotated tag `v1.6.1` is created and pushed.
-6. GitHub Actions artifacts are reviewed.
-7. The release strategy is explicitly chosen:
-   - Windows-only / partial release
-   - or hold release until macOS is unblocked
-8. Binary trust wording in the GitHub Release matches reality.
+- Windows: published from CI artifacts
+- macOS: unsigned / not notarized local zip with conservative-use note
 
 ## Suggested Next Action
 
-Use these files in order:
+Use `v1.6.1` as the baseline public release, and treat the next release-process improvement item as:
 
-1. `docs/release-drafts/v1.6.1/release-day-commands.md`
-2. `docs/release-drafts/v1.6.1/release-day-runbook.md`
-3. complete the focused manual smoke review
-4. review the GitHub Actions release workflow and artifacts
-5. decide whether `v1.6.1` is:
-   - Windows-only releasable now
-   - or blocked pending macOS release secrets
-6. publish/update the GitHub Release accordingly
-
-Then update:
-
-- `docs/release-drafts/v1.6.1/checklist.md`
-- this file
-
-with the real packaging and release outcomes.
+1. configure macOS signing/notarization secrets on GitHub
+2. restore signed/notarized macOS CI artifacts
+3. complete the deferred manual smoke review checklist for archival confidence

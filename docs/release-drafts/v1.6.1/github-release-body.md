@@ -28,17 +28,16 @@ Scida `v1.6.1` is a focused polish release that tightens the workflow surfaces a
 
 ## Binary Trust Note
 
-Public binaries should still be described accurately at release time.
+This release currently includes:
 
-Use one of the following statements in the final release, depending on the actual CI outcome:
+- Windows build artifact produced by GitHub Actions for `v1.6.1`
+- macOS arm64 zip built locally for `v1.6.1`
 
-### If signed and notarized
+Important:
 
-This release includes validated signed and notarized macOS artifacts.
-
-### If not fully signed/notarized
-
-Current binaries should still be treated conservatively unless signing/notarization is explicitly confirmed for this release.
+- the macOS build in this release is not currently confirmed as signed/notarized
+- users should treat the macOS binary conservatively
+- first launch on macOS may require manual approval in Gatekeeper / Privacy & Security settings
 
 ## Full Notes
 

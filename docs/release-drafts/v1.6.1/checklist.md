@@ -66,15 +66,20 @@
 
 ## I. GitHub Release
 
-- [ ] GitHub Release created or updated for `v1.6.1`
-- [ ] release body copied from `github-release-body.md`
-- [ ] binary trust status stated accurately:
+- [x] GitHub Release created or updated for `v1.6.1`
+- [x] release body copied from `github-release-body.md`
+- [x] binary trust status stated accurately:
   - [ ] signed / notarized
-  - [ ] unsigned / conservative-use note
+  - [x] unsigned / conservative-use note
 
 ## J. Final Archive Integrity
 
 - [x] package version matches tag
-- [ ] changelog entry matches release notes
-- [ ] release notes match shipped scope
-- [ ] no undocumented headline workflow changes remain
+- [x] changelog entry matches release notes
+- [x] release notes match shipped scope
+- [x] no undocumented headline workflow changes remain
+
+Notes:
+
+- published release includes Windows CI artifacts plus a manually uploaded unsigned macOS arm64 zip
+- signed/notarized macOS distribution remains unavailable for `v1.6.1`
