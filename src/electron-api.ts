@@ -1,4 +1,43 @@
 import type { StructuredBlockPurpose } from './template-blocks';
+import type {
+  ResetTemplateOverridePayload,
+  ResolvedTemplateLibrary,
+  SetTemplateEnabledPayload,
+  TemplateLibraryState,
+  TemplateOverride,
+  UpsertImportMemoryPayload,
+  UpsertUserTemplatePayload
+} from './shared/template-library-types';
+export type {
+  AxisDefaults,
+  BuiltinTemplateLibrary,
+  CurveTemplateRecommendation,
+  FindCurveTemplatesOptions,
+  ImportMemory,
+  ImportParsingSettingsSnapshot,
+  ImportParsingTemplate,
+  RecentCurveNames,
+  ResetTemplateOverridePayload,
+  ResolvedTemplateLibrary,
+  ScientificFamilyRecommendation,
+  ScientificTestTemplate,
+  SetTemplateEnabledPayload,
+  StructuredCurveTemplate,
+  TemplateAlias,
+  TemplateApplicationPreview,
+  TemplateEntityType,
+  TemplateLibrarySourceType,
+  TemplateLibraryState,
+  TemplateLibraryUserTemplates,
+  TemplateMemoryMatchCandidate,
+  TemplateMemoryMatchQuery,
+  TemplateOverride,
+  TemplateRecommendationReason,
+  TemplateRecommendedCondition,
+  TemplateRecommendedMetric,
+  UpsertImportMemoryPayload,
+  UpsertUserTemplatePayload
+} from './shared/template-library-types';
 
 export type GroupByType =
   | 'sampleCode'
@@ -792,6 +831,17 @@ export interface ElectronAPI {
   completeOnboarding: (payload: CompleteOnboardingPayload) => Promise<ActionResult>;
   getPersistedAnalysisUIState: () => Promise<PersistedAnalysisUIState>;
   savePersistedAnalysisUIState: (payload: PersistedAnalysisUIState) => Promise<ActionResult>;
+  getTemplateLibraryState: () => Promise<TemplateLibraryState>;
+  saveTemplateLibraryState: (payload: TemplateLibraryState) => Promise<ActionResult>;
+  getResolvedTemplateLibrary: () => Promise<ResolvedTemplateLibrary>;
+  upsertTemplateLibraryOverride: (payload: TemplateOverride) => Promise<ActionResult>;
+  resetTemplateLibraryOverride: (payload: ResetTemplateOverridePayload) => Promise<ActionResult>;
+  upsertUserTemplate: (payload: UpsertUserTemplatePayload) => Promise<ActionResult>;
+  recordTemplateImportMemory: (
+    payload: UpsertImportMemoryPayload
+  ) => Promise<ResolvedTemplateLibrary>;
+  setTemplateEnabled: (payload: SetTemplateEnabledPayload) => Promise<ActionResult>;
+  clearTemplateLibraryUserState: () => Promise<ActionResult>;
   getActiveEntryDraft: () => Promise<ActiveEntryDraft | null>;
   saveActiveEntryDraft: (payload: SaveActiveEntryDraftPayload) => Promise<ActionResult>;
   discardActiveEntryDraft: () => Promise<ActionResult>;

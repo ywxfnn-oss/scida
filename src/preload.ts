@@ -22,6 +22,31 @@ const electronAPI: ElectronAPI = {
     savePersistedAnalysisUIState: (payload) =>
         ipcRenderer.invoke('ui:savePersistedAnalysisUIState', payload),
 
+    getTemplateLibraryState: () => ipcRenderer.invoke('templateLibrary:getState'),
+
+    saveTemplateLibraryState: (payload) =>
+        ipcRenderer.invoke('templateLibrary:saveState', payload),
+
+    getResolvedTemplateLibrary: () => ipcRenderer.invoke('templateLibrary:getResolved'),
+
+    upsertTemplateLibraryOverride: (payload) =>
+        ipcRenderer.invoke('templateLibrary:upsertOverride', payload),
+
+    resetTemplateLibraryOverride: (payload) =>
+        ipcRenderer.invoke('templateLibrary:resetOverride', payload),
+
+    upsertUserTemplate: (payload) =>
+        ipcRenderer.invoke('templateLibrary:upsertUserTemplate', payload),
+
+    recordTemplateImportMemory: (payload) =>
+        ipcRenderer.invoke('templateLibrary:recordImportMemory', payload),
+
+    setTemplateEnabled: (payload) =>
+        ipcRenderer.invoke('templateLibrary:setEnabled', payload),
+
+    clearTemplateLibraryUserState: () =>
+        ipcRenderer.invoke('templateLibrary:clearUserState'),
+
     getActiveEntryDraft: () => ipcRenderer.invoke('entry:getActiveDraft'),
 
     saveActiveEntryDraft: (payload) =>

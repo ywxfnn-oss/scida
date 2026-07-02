@@ -18,15 +18,21 @@ import type {
   ListDictionaryItemsPayload,
   PersistedAnalysisUIState,
   RecordDatabaseWorkspaceUsagePayload,
+  ResolvedTemplateLibrary,
   SaveActiveEntryDraftPayload,
   SaveAppSettingsPayload,
   SaveDatabaseViewPayload,
   SaveGeneratedFilePayload,
   SaveExperimentPayload,
   SaveExperimentResult,
+  SetTemplateEnabledPayload,
+  TemplateLibraryState,
+  TemplateOverride,
+  UpsertImportMemoryPayload,
   DeleteSavedDatabaseViewPayload,
   RenameSavedDatabaseViewPayload,
   ToggleStarredExperimentPayload,
+  UpsertUserTemplatePayload,
   UpdateExperimentPayload
 } from './electron-api';
 import {
@@ -79,6 +85,17 @@ import {
   getPersistedAnalysisUIState,
   savePersistedAnalysisUIState
 } from './main/ui-state-settings';
+import {
+  clearTemplateLibraryUserState,
+  getResolvedTemplateLibrary,
+  getTemplateLibraryState,
+  recordTemplateImportMemory,
+  resetTemplateLibraryOverride,
+  saveTemplateLibraryState,
+  setTemplateEnabled,
+  upsertTemplateLibraryOverride,
+  upsertUserTemplate
+} from './main/template-library-settings';
 import {
   discardActiveEntryDraft,
   getActiveEntryDraft,
@@ -699,6 +716,147 @@ app.whenReady().then(async () => {
       }
     }
   );
+
+  ipcMain.handle('templateLibrary:getState', async (): Promise<TemplateLibraryState> => {
+    try {
+      return await getTemplateLibraryState(prisma);
+    } catch (error) {
+      console.error('getTemplateLibraryState failed:', error);
+      return {
+        version: 1,
+        userTemplates: {
+          scientificTemplates: [],
+          curveTemplates: [],
+          importParsingTemplates: []
+        },
+        userOverrides: [],
+        disabledTemplateIds: [],
+        importMemories: [],
+        recentCurveNames: {
+          global: [],
+          byPurpose: {}
+        },
+        updatedAt: new Date().toISOString()
+      };
+    }
+  });
+
+  ipcMain.handle(
+    'templateLibrary:saveState',
+    async (_event, payload: TemplateLibraryState): Promise<ActionResult> => {
+      try {
+        return await saveTemplateLibraryState(prisma, payload);
+      } catch (error) {
+        console.error('saveTemplateLibraryState failed:', error);
+        return { success: false, error: '保存模板库状态失败，请稍后重试' };
+      }
+    }
+  );
+
+  ipcMain.handle('templateLibrary:getResolved', async (): Promise<ResolvedTemplateLibrary> => {
+    try {
+      return await getResolvedTemplateLibrary(prisma);
+    } catch (error) {
+      console.error('getResolvedTemplateLibrary failed:', error);
+      return {
+        version: 1,
+        state: {
+          version: 1,
+          userTemplates: {
+            scientificTemplates: [],
+            curveTemplates: [],
+            importParsingTemplates: []
+          },
+          userOverrides: [],
+          disabledTemplateIds: [],
+          importMemories: [],
+          recentCurveNames: {
+            global: [],
+            byPurpose: {}
+          },
+          updatedAt: new Date().toISOString()
+        },
+        scientificTemplates: [],
+        curveTemplates: [],
+        importParsingTemplates: [],
+        activeScientificTemplates: [],
+        activeCurveTemplates: [],
+        activeImportParsingTemplates: []
+      };
+    }
+  });
+
+  ipcMain.handle(
+    'templateLibrary:upsertOverride',
+    async (_event, payload: TemplateOverride): Promise<ActionResult> => {
+      try {
+        return await upsertTemplateLibraryOverride(prisma, payload);
+      } catch (error) {
+        console.error('upsertTemplateLibraryOverride failed:', error);
+        return { success: false, error: '更新模板覆盖配置失败，请稍后重试' };
+      }
+    }
+  );
+
+  ipcMain.handle(
+    'templateLibrary:resetOverride',
+    async (
+      _event,
+      payload: { targetId: string; targetType: TemplateOverride['targetType'] }
+    ): Promise<ActionResult> => {
+      try {
+        return await resetTemplateLibraryOverride(prisma, payload);
+      } catch (error) {
+        console.error('resetTemplateLibraryOverride failed:', error);
+        return { success: false, error: '恢复内置模板默认设置失败，请稍后重试' };
+      }
+    }
+  );
+
+  ipcMain.handle(
+    'templateLibrary:upsertUserTemplate',
+    async (_event, payload: UpsertUserTemplatePayload): Promise<ActionResult> => {
+      try {
+        return await upsertUserTemplate(prisma, payload);
+      } catch (error) {
+        console.error('upsertUserTemplate failed:', error);
+        return { success: false, error: '保存用户模板失败，请稍后重试' };
+      }
+    }
+  );
+
+  ipcMain.handle(
+    'templateLibrary:recordImportMemory',
+    async (_event, payload: UpsertImportMemoryPayload): Promise<ResolvedTemplateLibrary> => {
+      try {
+        return await recordTemplateImportMemory(prisma, payload);
+      } catch (error) {
+        console.error('recordTemplateImportMemory failed:', error);
+        return await getResolvedTemplateLibrary(prisma);
+      }
+    }
+  );
+
+  ipcMain.handle(
+    'templateLibrary:setEnabled',
+    async (_event, payload: SetTemplateEnabledPayload): Promise<ActionResult> => {
+      try {
+        return await setTemplateEnabled(prisma, payload);
+      } catch (error) {
+        console.error('setTemplateEnabled failed:', error);
+        return { success: false, error: '更新模板启用状态失败，请稍后重试' };
+      }
+    }
+  );
+
+  ipcMain.handle('templateLibrary:clearUserState', async (): Promise<ActionResult> => {
+    try {
+      return await clearTemplateLibraryUserState(prisma);
+    } catch (error) {
+      console.error('clearTemplateLibraryUserState failed:', error);
+      return { success: false, error: '清除模板库用户状态失败，请稍后重试' };
+    }
+  });
 
   ipcMain.handle('entry:getActiveDraft', async () => {
     try {

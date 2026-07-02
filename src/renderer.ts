@@ -24,6 +24,7 @@ import type {
   ImportRecognitionStatus,
   ImportManualDelimiter,
   ImportManualXAxisSourceMode,
+  ImportMemory,
   ImportResolvedEncoding,
   ImportTextEncoding,
   ImportPreviewFileResult,
@@ -36,11 +37,18 @@ import type {
   PreviewManualImportXYResult,
   RecentEntrySuggestions,
   RecentOperationLogEntry,
+  ResolvedTemplateLibrary,
   RelatedExperimentRecords,
   SaveActiveEntryDraftPayload,
   RecordDatabaseWorkspaceUsagePayload,
   SaveExperimentPayload,
   SaveExperimentTemplateBlockPayload,
+  StructuredCurveTemplate,
+  UpsertImportMemoryPayload,
+  TemplateApplicationPreview,
+  TemplateRecommendedCondition,
+  TemplateRecommendedMetric,
+  TemplateOverride,
   UpdateExperimentPayload
 } from './electron-api';
 import {
@@ -67,6 +75,13 @@ import {
   supportsCrossFilterCandidatePicker,
   type CrossFilterRecordLike
 } from './cross-filters';
+import {
+  buildTemplateMemoryCandidates,
+  findCurveTemplatesForTestProject,
+  getTemplateApplicationPreview,
+  isGenericStructuredBlockName,
+  rankTemplateMemoryMatches,
+} from './shared/template-library-helpers';
 import {
   getStructuredBlockPurposeLabel,
   getValueNatureLabelText,
@@ -177,6 +192,8 @@ type TemplateBlockFormData = {
   importPreviewSelectedName?: string;
   importPreviewSelectedPath?: string;
   importManualReview?: ImportReviewManualState;
+  importMemoryAppliedId?: string;
+  appliedCurveTemplateId?: string;
   createdAt?: string;
 };
 
@@ -229,8 +246,65 @@ type DuplicateWarningState =
       payload: UpdateExperimentPayload;
     };
 
-type SettingsSubView = 'general' | 'dictionary' | 'logs' | 'about';
+type SettingsSubView = 'general' | 'dictionary' | 'template-library' | 'logs' | 'about';
 type OnboardingStep = 'welcome' | 'legal' | 'storage' | 'admin' | 'progress' | 'complete';
+
+type TemplateLibraryEditableRow = {
+  id: string;
+  label: string;
+  unit: string;
+  defaultValue: string;
+  note: string;
+  priority: string;
+};
+
+type TemplateLibraryEditorDraft = {
+  templateId: string;
+  familyId: string;
+  displayName: string;
+  aliasesText: string;
+  enabled: boolean;
+  purposeType: StructuredBlockPurpose;
+  blockTitleDefault: string;
+  primaryLabel: string;
+  primaryUnit: string;
+  secondaryLabel: string;
+  secondaryUnit: string;
+  recommendedConditions: TemplateLibraryEditableRow[];
+  recommendedMetrics: TemplateLibraryEditableRow[];
+  filenameHintsText: string;
+  sourceType: 'builtin' | 'user' | 'userOverride';
+  isBuiltin: boolean;
+  hasLocalOverride: boolean;
+  importParsingTemplateId?: string;
+};
+
+type TemplateLibraryTabKind =
+  | 'all'
+  | 'curves'
+  | 'conditions'
+  | 'metrics'
+  | 'calculations'
+  | 'bundles';
+
+type TemplateLibrarySearchResult =
+  | {
+      resultType: 'family';
+      familyId: string;
+      title: string;
+      subtitle: string;
+      count: number;
+    }
+  | {
+      resultType: 'curve';
+      familyId: string;
+      templateId: string;
+      title: string;
+      subtitle: string;
+      purposeType: StructuredBlockPurpose;
+      sourceType: TemplateLibraryEditorDraft['sourceType'];
+      enabled: boolean;
+    };
 
 type AnalysisChartType = 'scalar' | 'structured';
 type AnalysisScalarAxisMode = 'numeric' | 'categorical';
@@ -978,6 +1052,24 @@ let step1FormData: Step1FormData = {
 
 let step2DataItems: DataItem[] = [];
 let step2TemplateBlocks: TemplateBlockFormData[] = [];
+let templateLibraryResolved: ResolvedTemplateLibrary | null = null;
+let templateLibraryLoaded = false;
+let templateLibraryLoadPromise: Promise<void> | null = null;
+let templateLibraryError = '';
+let templateLibrarySaving = false;
+let templateLibrarySaveMessage = '';
+let templateLibrarySearchQuery = '';
+let templateLibrarySelectedFamilyId = '';
+let templateLibrarySelectedKind: TemplateLibraryTabKind = 'curves';
+let templateLibrarySelectedCurveTemplateId = '';
+let templateLibraryEditorDraft: TemplateLibraryEditorDraft | null = null;
+let templateLibraryDirty = false;
+let templateLibraryExpandedRowToken = '';
+let templateLibrarySearchShouldRefocus = false;
+let templateLibrarySearchSelectionStart = 0;
+let templateLibrarySearchSelectionEnd = 0;
+const GENERIC_PRIMARY_AXIS_LABELS = new Set(['x', '主轴', '未指定']);
+const GENERIC_SECONDARY_AXIS_LABELS = new Set(['y', '信号', '未指定']);
 
 const root = document.getElementById('app');
 
@@ -987,6 +1079,682 @@ function getCurrentLanguage(): AppLanguage {
 
 function t(key: Parameters<typeof translate>[1], variables?: Record<string, string | number>) {
   return translate(getCurrentLanguage(), key, variables);
+}
+
+function normalizeTemplateKeywordList(value: string) {
+  return Array.from(
+    new Set(
+      value
+        .split(/[\n,]+/)
+        .map((item) => item.trim())
+        .filter(Boolean)
+    )
+  );
+}
+
+function buildTemplateLibraryEditableRow(
+  item?: Partial<TemplateRecommendedCondition | TemplateRecommendedMetric>
+): TemplateLibraryEditableRow {
+  return {
+    id: item?.id || generateId(),
+    label: item?.label || '',
+    unit: item?.unit || '',
+    defaultValue: item?.defaultValue || '',
+    note: item?.note || '',
+    priority: item?.priority === undefined ? '' : String(item.priority)
+  };
+}
+
+function buildTemplateLibraryRows(
+  items: Array<TemplateRecommendedCondition | TemplateRecommendedMetric>
+) {
+  return items.map((item) => buildTemplateLibraryEditableRow(item));
+}
+
+function convertTemplateLibraryRowsToRecommendationItems(rows: TemplateLibraryEditableRow[]) {
+  return rows
+    .map((row, index) => {
+      const label = row.label.trim();
+      if (!label) {
+        return null;
+      }
+
+      const priorityNumber = Number(row.priority);
+
+      return {
+        id: row.id.trim() || `item-${index + 1}`,
+        label,
+        unit: row.unit.trim() || undefined,
+        defaultValue: row.defaultValue.trim() || undefined,
+        note: row.note.trim() || undefined,
+        priority: Number.isFinite(priorityNumber) ? priorityNumber : undefined
+      };
+    })
+    .filter((item) => Boolean(item)) as TemplateRecommendedCondition[];
+}
+
+function getTemplateLibraryDisabledIdsSet() {
+  return new Set(templateLibraryResolved?.state.disabledTemplateIds || []);
+}
+
+function hasTemplateLibraryOverride(templateId: string) {
+  return Boolean(
+    templateLibraryResolved?.state.userOverrides.some(
+      (override) => override.targetType === 'curve' && override.targetId === templateId
+    )
+  );
+}
+
+function getTemplateLibraryEffectiveSourceType(template: StructuredCurveTemplate) {
+  if (template.sourceType === 'user') {
+    return 'user' as const;
+  }
+
+  return hasTemplateLibraryOverride(template.id) ? ('userOverride' as const) : ('builtin' as const);
+}
+
+function isTemplateLibraryTemplateEnabled(template: StructuredCurveTemplate) {
+  return template.enabled && !getTemplateLibraryDisabledIdsSet().has(template.id);
+}
+
+function buildTemplateLibraryEditorDraft(template: StructuredCurveTemplate): TemplateLibraryEditorDraft {
+  const sourceType = getTemplateLibraryEffectiveSourceType(template);
+
+  return {
+    templateId: template.id,
+    familyId: template.familyId,
+    displayName: template.displayName,
+    aliasesText: template.aliases.map((alias) => alias.value).join('\n'),
+    enabled: isTemplateLibraryTemplateEnabled(template),
+    purposeType: template.purposeType,
+    blockTitleDefault: template.blockTitleDefault,
+    primaryLabel: template.axisDefaults.primaryLabel,
+    primaryUnit: template.axisDefaults.primaryUnit,
+    secondaryLabel: template.axisDefaults.secondaryLabel,
+    secondaryUnit: template.axisDefaults.secondaryUnit,
+    recommendedConditions: buildTemplateLibraryRows(template.recommendedConditions),
+    recommendedMetrics: buildTemplateLibraryRows(template.recommendedMetrics),
+    filenameHintsText: (template.filenameHints || []).join('\n'),
+    sourceType,
+    isBuiltin: template.sourceType === 'builtin',
+    hasLocalOverride: sourceType === 'userOverride',
+    importParsingTemplateId: template.importParsingTemplateId
+  };
+}
+
+function createUserCurveTemplateId() {
+  return `user:curve:${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+    .toLowerCase()
+    .replace(/[^a-z0-9:-]+/g, '-');
+}
+
+function buildEmptyTemplateLibraryDraft(familyId: string): TemplateLibraryEditorDraft {
+  return {
+    templateId: createUserCurveTemplateId(),
+    familyId,
+    displayName: '',
+    aliasesText: '',
+    enabled: true,
+    purposeType: '',
+    blockTitleDefault: '',
+    primaryLabel: '',
+    primaryUnit: '',
+    secondaryLabel: '',
+    secondaryUnit: '',
+    recommendedConditions: [],
+    recommendedMetrics: [],
+    filenameHintsText: '',
+    sourceType: 'user',
+    isBuiltin: false,
+    hasLocalOverride: false
+  };
+}
+
+function updateTemplateLibrarySaveStateIndicator() {
+  const element = document.getElementById('template-library-save-state');
+  if (!element) {
+    return;
+  }
+
+  element.textContent = templateLibrarySaveMessage;
+  element.classList.toggle('template-library-save-state-unsaved', templateLibraryDirty);
+  element.classList.toggle(
+    'template-library-save-state-saved',
+    !templateLibraryDirty && Boolean(templateLibrarySaveMessage)
+  );
+}
+
+function markTemplateLibraryDirty() {
+  templateLibraryDirty = true;
+  templateLibrarySaveMessage = t('templateLibrary.unsaved');
+  updateTemplateLibrarySaveStateIndicator();
+}
+
+function clearTemplateLibraryDirtyState(message = '') {
+  templateLibraryDirty = false;
+  templateLibrarySaveMessage = message;
+  updateTemplateLibrarySaveStateIndicator();
+}
+
+function confirmDiscardTemplateLibraryChanges() {
+  if (!templateLibraryDirty) {
+    return true;
+  }
+
+  return window.confirm(t('templateLibrary.confirmDiscardChanges'));
+}
+
+function getTemplateLibraryNormalizedQuery() {
+  return templateLibrarySearchQuery.trim().toLowerCase();
+}
+
+function getTemplateLibraryFamilyById(familyId: string) {
+  return templateLibraryResolved?.scientificTemplates.find((family) => family.id === familyId) || null;
+}
+
+function getTemplateLibraryFamilyCurveCount(familyId: string) {
+  return templateLibraryResolved?.curveTemplates.filter((template) => template.familyId === familyId).length || 0;
+}
+
+function getTemplateLibraryAllCurvesForFamily(familyId: string) {
+  if (!templateLibraryResolved) {
+    return [];
+  }
+
+  return templateLibraryResolved.curveTemplates
+    .filter((template) => template.familyId === familyId)
+    .sort((left, right) => left.displayName.localeCompare(right.displayName, 'zh-CN'));
+}
+
+function getTemplateLibraryCurvesForFamily(familyId: string) {
+  if (!templateLibraryResolved) {
+    return [];
+  }
+
+  const query = getTemplateLibraryNormalizedQuery();
+  const curves = getTemplateLibraryAllCurvesForFamily(familyId)
+    .filter((template) => {
+      if (!query) {
+        return true;
+      }
+
+      const family = getTemplateLibraryFamilyById(template.familyId);
+      const haystacks = [
+        family?.displayName || '',
+        family?.id || '',
+        ...(family?.aliases.map((alias) => alias.value) || []),
+        template.displayName,
+        template.blockTitleDefault,
+        template.id,
+        template.purposeType,
+        ...template.aliases.map((alias) => alias.value)
+      ]
+        .join('\n')
+        .toLowerCase();
+
+      return haystacks.includes(query);
+    });
+
+  return curves;
+}
+
+function getTemplateLibrarySearchResults(): TemplateLibrarySearchResult[] {
+  if (!templateLibraryResolved) {
+    return [];
+  }
+
+  const query = getTemplateLibraryNormalizedQuery();
+  if (!query) {
+    return [];
+  }
+
+  const familyResults: TemplateLibrarySearchResult[] = templateLibraryResolved.scientificTemplates
+    .filter((family) => {
+      const haystack = [family.displayName, family.id, ...family.aliases.map((alias) => alias.value)]
+        .join('\n')
+        .toLowerCase();
+      return haystack.includes(query);
+    })
+    .map((family) => ({
+      resultType: 'family' as const,
+      familyId: family.id,
+      title: family.displayName,
+      subtitle: t('templateLibrary.resultType.family'),
+      count: getTemplateLibraryFamilyCurveCount(family.id)
+    }))
+    .sort((left, right) => left.title.localeCompare(right.title, 'zh-CN'));
+
+  const curveResults: TemplateLibrarySearchResult[] = templateLibraryResolved.curveTemplates
+    .filter((template) => {
+      const family = getTemplateLibraryFamilyById(template.familyId);
+      const haystack = [
+        family?.displayName || '',
+        family?.id || '',
+        ...(family?.aliases.map((alias) => alias.value) || []),
+        template.displayName,
+        template.blockTitleDefault,
+        template.id,
+        template.purposeType,
+        ...template.aliases.map((alias) => alias.value)
+      ]
+        .join('\n')
+        .toLowerCase();
+      return haystack.includes(query);
+    })
+    .map((template) => {
+      const family = getTemplateLibraryFamilyById(template.familyId);
+      return {
+        resultType: 'curve' as const,
+        familyId: template.familyId,
+        templateId: template.id,
+        title: template.displayName,
+        subtitle: family?.displayName || '',
+        purposeType: template.purposeType,
+        sourceType: getTemplateLibraryEffectiveSourceType(template),
+        enabled: isTemplateLibraryTemplateEnabled(template)
+      };
+    })
+    .sort((left, right) => {
+      const familyCompare = left.subtitle.localeCompare(right.subtitle, 'zh-CN');
+      if (familyCompare !== 0) {
+        return familyCompare;
+      }
+      return left.title.localeCompare(right.title, 'zh-CN');
+    });
+
+  return [...familyResults, ...curveResults];
+}
+
+function syncTemplateLibrarySelection() {
+  if (!templateLibraryResolved) {
+    templateLibrarySelectedFamilyId = '';
+    templateLibrarySelectedCurveTemplateId = '';
+    templateLibraryEditorDraft = null;
+    templateLibraryDirty = false;
+    templateLibrarySaveMessage = '';
+    templateLibraryExpandedRowToken = '';
+    return;
+  }
+
+  const families = templateLibraryResolved.scientificTemplates;
+  if (!families.length) {
+    templateLibrarySelectedFamilyId = '';
+    templateLibrarySelectedCurveTemplateId = '';
+    templateLibraryEditorDraft = null;
+    templateLibraryDirty = false;
+    templateLibrarySaveMessage = '';
+    templateLibraryExpandedRowToken = '';
+    return;
+  }
+
+  const familyExists = families.some((family) => family.id === templateLibrarySelectedFamilyId);
+  if (!familyExists) {
+    templateLibrarySelectedFamilyId = families[0].id;
+  }
+
+  const familyCurves = getTemplateLibraryAllCurvesForFamily(templateLibrarySelectedFamilyId);
+  const curveExists = familyCurves.some((curve) => curve.id === templateLibrarySelectedCurveTemplateId);
+  if (!curveExists) {
+    templateLibrarySelectedCurveTemplateId = familyCurves[0]?.id || '';
+  }
+
+  const selectedCurve = templateLibraryResolved.curveTemplates.find(
+    (template) => template.id === templateLibrarySelectedCurveTemplateId
+  );
+  templateLibraryEditorDraft = selectedCurve
+    ? buildTemplateLibraryEditorDraft(selectedCurve)
+    : buildEmptyTemplateLibraryDraft(templateLibrarySelectedFamilyId);
+  templateLibraryExpandedRowToken = '';
+  clearTemplateLibraryDirtyState('');
+}
+
+async function reloadTemplateLibraryResolved(options?: {
+  preserveSelection?: boolean;
+  nextFamilyId?: string;
+  nextTemplateId?: string;
+}) {
+  templateLibraryResolved = await window.electronAPI.getResolvedTemplateLibrary();
+  templateLibraryLoaded = true;
+  templateLibraryError = '';
+
+  if (options?.nextFamilyId) {
+    templateLibrarySelectedFamilyId = options.nextFamilyId;
+  }
+
+  if (options?.nextTemplateId) {
+    templateLibrarySelectedCurveTemplateId = options.nextTemplateId;
+  }
+
+  syncTemplateLibrarySelection();
+}
+
+async function ensureTemplateLibraryLoaded() {
+  if (templateLibraryLoaded) {
+    return;
+  }
+
+  if (!templateLibraryLoadPromise) {
+    templateLibraryLoadPromise = (async () => {
+      try {
+        await reloadTemplateLibraryResolved();
+      } catch (error) {
+        templateLibraryError = getErrorMessage(error) || t('templateLibrary.loadFailed');
+      } finally {
+        templateLibraryLoadPromise = null;
+      }
+    })();
+  }
+
+  await templateLibraryLoadPromise;
+}
+
+async function selectTemplateLibraryFamily(nextFamilyId: string) {
+  if (!templateLibraryResolved) {
+    return;
+  }
+
+  if (templateLibrarySelectedFamilyId === nextFamilyId) {
+    if (getTemplateLibraryNormalizedQuery()) {
+      templateLibrarySearchQuery = '';
+      requestRender(true);
+    }
+    return;
+  }
+
+  if (!confirmDiscardTemplateLibraryChanges()) {
+    return;
+  }
+
+  templateLibrarySelectedFamilyId = nextFamilyId;
+  if (getTemplateLibraryNormalizedQuery()) {
+    templateLibrarySearchQuery = '';
+  }
+  const nextCurve = getTemplateLibraryAllCurvesForFamily(nextFamilyId)[0];
+  templateLibrarySelectedCurveTemplateId = nextCurve?.id || '';
+  templateLibraryEditorDraft = nextCurve
+    ? buildTemplateLibraryEditorDraft(nextCurve)
+    : buildEmptyTemplateLibraryDraft(nextFamilyId);
+  templateLibraryExpandedRowToken = '';
+  clearTemplateLibraryDirtyState('');
+  requestRender(true);
+}
+
+async function selectTemplateLibraryCurveTemplate(nextTemplateId: string) {
+  if (!templateLibraryResolved) {
+    return;
+  }
+
+  if (templateLibrarySelectedCurveTemplateId === nextTemplateId) {
+    if (getTemplateLibraryNormalizedQuery()) {
+      templateLibrarySearchQuery = '';
+      requestRender(true);
+    }
+    return;
+  }
+
+  if (!confirmDiscardTemplateLibraryChanges()) {
+    return;
+  }
+
+  const nextTemplate = templateLibraryResolved.curveTemplates.find((item) => item.id === nextTemplateId);
+  if (!nextTemplate) {
+    return;
+  }
+
+  templateLibrarySelectedFamilyId = nextTemplate.familyId;
+  if (getTemplateLibraryNormalizedQuery()) {
+    templateLibrarySearchQuery = '';
+  }
+  templateLibrarySelectedCurveTemplateId = nextTemplate.id;
+  templateLibraryEditorDraft = buildTemplateLibraryEditorDraft(nextTemplate);
+  templateLibraryExpandedRowToken = '';
+  clearTemplateLibraryDirtyState('');
+  requestRender(true);
+}
+
+function startTemplateLibraryNewTemplate() {
+  if (!templateLibrarySelectedFamilyId) {
+    return;
+  }
+
+  if (!confirmDiscardTemplateLibraryChanges()) {
+    return;
+  }
+
+  templateLibrarySelectedCurveTemplateId = '';
+  templateLibraryEditorDraft = buildEmptyTemplateLibraryDraft(templateLibrarySelectedFamilyId);
+  templateLibraryExpandedRowToken = '';
+  clearTemplateLibraryDirtyState(t('templateLibrary.newTemplateReady'));
+  requestRender(true);
+}
+
+function startTemplateLibraryDuplicateTemplate() {
+  if (!templateLibraryEditorDraft) {
+    return;
+  }
+
+  if (!confirmDiscardTemplateLibraryChanges()) {
+    return;
+  }
+
+  templateLibrarySelectedCurveTemplateId = '';
+  templateLibraryEditorDraft = {
+    ...templateLibraryEditorDraft,
+    templateId: createUserCurveTemplateId(),
+    familyId: templateLibraryEditorDraft.familyId,
+    displayName: templateLibraryEditorDraft.displayName
+      ? `${templateLibraryEditorDraft.displayName} ${t('templateLibrary.copySuffix')}`
+      : '',
+    aliasesText: templateLibraryEditorDraft.aliasesText,
+    enabled: templateLibraryEditorDraft.enabled,
+    purposeType: templateLibraryEditorDraft.purposeType,
+    blockTitleDefault: templateLibraryEditorDraft.blockTitleDefault,
+    primaryLabel: templateLibraryEditorDraft.primaryLabel,
+    primaryUnit: templateLibraryEditorDraft.primaryUnit,
+    secondaryLabel: templateLibraryEditorDraft.secondaryLabel,
+    secondaryUnit: templateLibraryEditorDraft.secondaryUnit,
+    recommendedConditions: templateLibraryEditorDraft.recommendedConditions.map((item) => ({ ...item })),
+    recommendedMetrics: templateLibraryEditorDraft.recommendedMetrics.map((item) => ({ ...item })),
+    filenameHintsText: templateLibraryEditorDraft.filenameHintsText,
+    importParsingTemplateId: templateLibraryEditorDraft.importParsingTemplateId,
+    sourceType: 'user',
+    isBuiltin: false,
+    hasLocalOverride: false
+  };
+  templateLibraryExpandedRowToken = '';
+  clearTemplateLibraryDirtyState(t('templateLibrary.duplicateReady'));
+  requestRender(true);
+}
+
+function discardTemplateLibraryDraft() {
+  if (templateLibrarySelectedCurveTemplateId) {
+    return;
+  }
+
+  if (!window.confirm(t('templateLibrary.discardDraftConfirm'))) {
+    return;
+  }
+
+  const nextCurve = getTemplateLibraryAllCurvesForFamily(templateLibrarySelectedFamilyId)[0];
+  templateLibrarySelectedCurveTemplateId = nextCurve?.id || '';
+  templateLibraryEditorDraft = nextCurve
+    ? buildTemplateLibraryEditorDraft(nextCurve)
+    : buildEmptyTemplateLibraryDraft(templateLibrarySelectedFamilyId);
+  templateLibraryExpandedRowToken = '';
+  clearTemplateLibraryDirtyState('');
+  requestRender(true);
+}
+
+async function saveTemplateLibraryEditorDraft() {
+  if (!templateLibraryEditorDraft || templateLibrarySaving) {
+    return;
+  }
+
+  const draft = templateLibraryEditorDraft;
+  const trimmedDisplayName = draft.displayName.trim();
+  const trimmedBlockTitle = draft.blockTitleDefault.trim();
+
+  if (!trimmedDisplayName) {
+    alert(t('templateLibrary.validation.displayNameRequired'));
+    return;
+  }
+
+  if (!trimmedBlockTitle) {
+    alert(t('templateLibrary.validation.blockTitleRequired'));
+    return;
+  }
+
+  templateLibrarySaving = true;
+  templateLibrarySaveMessage = t('templateLibrary.saving');
+  updateTemplateLibrarySaveStateIndicator();
+
+  try {
+    const aliases = normalizeTemplateKeywordList(draft.aliasesText).map((value) => ({
+      value,
+      kind: 'search' as const
+    }));
+    const filenameHints = normalizeTemplateKeywordList(draft.filenameHintsText);
+    const recommendedConditions = convertTemplateLibraryRowsToRecommendationItems(
+      draft.recommendedConditions
+    );
+    const recommendedMetrics = convertTemplateLibraryRowsToRecommendationItems(
+      draft.recommendedMetrics
+    );
+
+    if (draft.isBuiltin) {
+      const overridePayload: TemplateOverride = {
+        targetId: draft.templateId,
+        targetType: 'curve',
+        patch: {
+          displayName: trimmedDisplayName,
+          aliases,
+          enabled: draft.enabled,
+          purposeType: draft.purposeType,
+          blockTitleDefault: trimmedBlockTitle,
+          axisDefaults: {
+            primaryLabel: draft.primaryLabel.trim(),
+            primaryUnit: draft.primaryUnit.trim(),
+            secondaryLabel: draft.secondaryLabel.trim(),
+            secondaryUnit: draft.secondaryUnit.trim()
+          },
+          recommendedConditions,
+          recommendedMetrics,
+          filenameHints
+        },
+        updatedAt: new Date().toISOString()
+      };
+
+      const [overrideResult, enabledResult] = await Promise.all([
+        window.electronAPI.upsertTemplateLibraryOverride(overridePayload),
+        window.electronAPI.setTemplateEnabled({
+          templateId: draft.templateId,
+          enabled: draft.enabled
+        })
+      ]);
+
+      if (!overrideResult.success || !enabledResult.success) {
+        throw new Error(
+          overrideResult.error ||
+            enabledResult.error ||
+            t('templateLibrary.saveFailed')
+        );
+      }
+    } else {
+      const saveResult = await window.electronAPI.upsertUserTemplate({
+        templateType: 'curve',
+        template: {
+          id: draft.templateId,
+          version: 1,
+          familyId: draft.familyId,
+          displayName: trimmedDisplayName,
+          aliases,
+          enabled: draft.enabled,
+          purposeType: draft.purposeType,
+          blockTitleDefault: trimmedBlockTitle,
+          axisDefaults: {
+            primaryLabel: draft.primaryLabel.trim(),
+            primaryUnit: draft.primaryUnit.trim(),
+            secondaryLabel: draft.secondaryLabel.trim(),
+            secondaryUnit: draft.secondaryUnit.trim()
+          },
+          recommendedConditions,
+          recommendedMetrics,
+          importParsingTemplateId: draft.importParsingTemplateId,
+          filenameHints,
+          sourceType: 'user'
+        }
+      });
+
+      if (!saveResult.success) {
+        throw new Error(saveResult.error || t('templateLibrary.saveFailed'));
+      }
+
+      const enabledResult = await window.electronAPI.setTemplateEnabled({
+        templateId: draft.templateId,
+        enabled: draft.enabled
+      });
+
+      if (!enabledResult.success) {
+        throw new Error(enabledResult.error || t('templateLibrary.saveFailed'));
+      }
+    }
+
+    await reloadTemplateLibraryResolved({
+      nextFamilyId: draft.familyId,
+      nextTemplateId: draft.templateId
+    });
+    clearTemplateLibraryDirtyState(t('templateLibrary.saveSuccess'));
+    requestRender(true);
+  } catch (error) {
+    templateLibrarySaveMessage = getErrorMessage(error) || t('templateLibrary.saveFailed');
+    updateTemplateLibrarySaveStateIndicator();
+    alert(templateLibrarySaveMessage);
+  } finally {
+    templateLibrarySaving = false;
+  }
+}
+
+async function resetTemplateLibraryEditorOverride() {
+  if (!templateLibraryEditorDraft || templateLibrarySaving) {
+    return;
+  }
+
+  if (!templateLibraryEditorDraft.isBuiltin || !templateLibraryEditorDraft.hasLocalOverride) {
+    return;
+  }
+
+  const shouldContinue = window.confirm(t('templateLibrary.resetOverrideConfirm'));
+  if (!shouldContinue) {
+    return;
+  }
+
+  templateLibrarySaving = true;
+  templateLibrarySaveMessage = t('templateLibrary.saving');
+  updateTemplateLibrarySaveStateIndicator();
+
+  try {
+    const result = await window.electronAPI.resetTemplateLibraryOverride({
+      targetId: templateLibraryEditorDraft.templateId,
+      targetType: 'curve'
+    });
+
+    if (!result.success) {
+      throw new Error(result.error || t('templateLibrary.resetOverrideFailed'));
+    }
+
+    await reloadTemplateLibraryResolved({
+      nextFamilyId: templateLibraryEditorDraft.familyId,
+      nextTemplateId: templateLibraryEditorDraft.templateId
+    });
+    clearTemplateLibraryDirtyState(t('templateLibrary.resetOverrideSuccess'));
+    requestRender(true);
+  } catch (error) {
+    templateLibrarySaveMessage = getErrorMessage(error) || t('templateLibrary.resetOverrideFailed');
+    updateTemplateLibrarySaveStateIndicator();
+    alert(templateLibrarySaveMessage);
+  } finally {
+    templateLibrarySaving = false;
+  }
 }
 
 function getCrossFilterFieldLabel(field: CrossFilterField) {
@@ -1891,8 +2659,19 @@ function saveDictionaryInputsToState() {
 }
 
 async function openSettingsView(subView: SettingsSubView = 'general') {
+  if (currentView === 'settings' && settingsSubView === 'template-library' && subView !== 'template-library') {
+    if (!confirmDiscardTemplateLibraryChanges()) {
+      return;
+    }
+  }
+
   currentView = 'settings';
   settingsSubView = subView;
+
+  if (subView === 'template-library') {
+    await ensureTemplateLibraryLoaded();
+  }
+
   await render();
 }
 
@@ -1901,8 +2680,20 @@ async function switchSettingsSubView(nextSubView: SettingsSubView) {
     return;
   }
 
+  if (settingsSubView === 'template-library' && nextSubView !== 'template-library') {
+    if (!confirmDiscardTemplateLibraryChanges()) {
+      return;
+    }
+  }
+
   saveDictionaryInputsToState();
   settingsSubView = nextSubView;
+
+  if (nextSubView === 'template-library') {
+    await ensureTemplateLibraryLoaded();
+    requestRender(true);
+    return;
+  }
 
   if (nextSubView !== 'dictionary' || dictionaryLoaded) {
     requestRender(true);
@@ -8355,6 +9146,479 @@ function renderStructuredRecommendationButtons(
   `;
 }
 
+function normalizeStructuredTemplateField(value: string) {
+  return value.trim().toLowerCase();
+}
+
+function isGenericStructuredAxisLabel(
+  value: string,
+  axis: 'primary' | 'secondary'
+) {
+  const normalized = normalizeStructuredTemplateField(value);
+  if (!normalized) {
+    return true;
+  }
+
+  return axis === 'primary'
+    ? GENERIC_PRIMARY_AXIS_LABELS.has(normalized)
+    : GENERIC_SECONDARY_AXIS_LABELS.has(normalized);
+}
+
+function ensureTemplateLibraryLoadedForStructuredBlocks() {
+  if (templateLibraryLoaded || templateLibraryLoadPromise) {
+    return;
+  }
+
+  void ensureTemplateLibraryLoaded()
+    .then(() => {
+      requestRender(true);
+    })
+    .catch(() => {
+      requestRender(true);
+    });
+}
+
+function getStructuredCurveTemplateOptions(
+  context: TemplateBlockEditContext,
+  purposeType: StructuredBlockPurpose
+) {
+  if (!purposeType) {
+    return [] as TemplateApplicationPreview[];
+  }
+
+  ensureTemplateLibraryLoadedForStructuredBlocks();
+
+  if (!templateLibraryResolved) {
+    return [] as TemplateApplicationPreview[];
+  }
+
+  const recommendations = findCurveTemplatesForTestProject(
+    getStep2TemplateContext(context),
+    templateLibraryResolved,
+    { limit: 50 }
+  );
+  const seenTemplateIds = new Set<string>();
+  const orderedTemplates: StructuredCurveTemplate[] = [];
+
+  recommendations.forEach((item) => {
+    if (item.curveTemplate.purposeType !== purposeType || seenTemplateIds.has(item.curveTemplate.id)) {
+      return;
+    }
+
+    seenTemplateIds.add(item.curveTemplate.id);
+    orderedTemplates.push(item.curveTemplate);
+  });
+
+  templateLibraryResolved.activeCurveTemplates
+    .filter((item) => item.purposeType === purposeType && !seenTemplateIds.has(item.id))
+    .sort((left, right) => left.displayName.localeCompare(right.displayName, 'zh-CN'))
+    .forEach((item) => {
+      seenTemplateIds.add(item.id);
+      orderedTemplates.push(item);
+    });
+
+  return orderedTemplates.map((item) => getTemplateApplicationPreview(item, templateLibraryResolved));
+}
+
+function getAppliedStructuredCurveTemplateOption(
+  context: TemplateBlockEditContext,
+  block: TemplateBlockFormData
+) {
+  const options = getStructuredCurveTemplateOptions(context, block.purposeType || '');
+  if (!options.length) {
+    return null;
+  }
+
+  if (block.appliedCurveTemplateId) {
+    return options.find((item) => item.curveTemplateId === block.appliedCurveTemplateId) || null;
+  }
+
+  return null;
+}
+
+function getImportMemoryFileExtension(block: TemplateBlockFormData) {
+  const fileName =
+    block.importPreviewSelectedName ||
+    block.originalFileName ||
+    block.replacementOriginalName ||
+    block.sourceFileName ||
+    '';
+  const lastDotIndex = fileName.lastIndexOf('.');
+  if (lastDotIndex <= 0 || lastDotIndex === fileName.length - 1) {
+    return '';
+  }
+
+  return fileName.slice(lastDotIndex + 1).trim().toLowerCase();
+}
+
+function buildTemplateBlockImportParsingSettings(
+  review: ImportReviewManualState
+) {
+  return {
+    textEncoding: review.textEncoding,
+    delimiter: review.delimiter,
+    dataStartRow: review.dataStartRow,
+    dataEndRow: review.dataEndRow || undefined,
+    hasExplicitEndRow: Boolean(review.dataEndRow),
+    dataStartColumn: review.dataStartColumn,
+    dataEndColumn: review.dataEndColumn || undefined,
+    xSourceMode: review.xSourceMode,
+    xColumnIndex: review.xColumnIndex,
+    yColumnIndex: review.yColumnIndex,
+    generatedXStart: review.xSourceMode === 'generated' ? review.generatedXStart : undefined,
+    generatedXStep: review.xSourceMode === 'generated' ? review.generatedXStep : undefined,
+    ignoreEmptyRows: review.ignoreEmptyRows,
+    ignoreNonNumericRows: review.ignoreNonNumericRows,
+    collapseWhitespace: review.collapseWhitespace
+  };
+}
+
+function getTemplateBlockImportAxisDefaults(block: TemplateBlockFormData) {
+  const axisDefaults = {
+    primaryLabel: block.primaryLabel.trim(),
+    primaryUnit: block.primaryUnit.trim(),
+    secondaryLabel: block.secondaryLabel.trim(),
+    secondaryUnit: block.secondaryUnit.trim()
+  };
+
+  return Object.values(axisDefaults).some(Boolean) ? axisDefaults : undefined;
+}
+
+function getResolvedCurveTemplateById(templateId?: string) {
+  if (!templateId || !templateLibraryResolved) {
+    return null;
+  }
+
+  return templateLibraryResolved.curveTemplates.find((item) => item.id === templateId) || null;
+}
+
+function getTemplateBlockImportMemoryMatch(
+  context: TemplateBlockEditContext,
+  block: TemplateBlockFormData
+) {
+  ensureTemplateLibraryLoadedForStructuredBlocks();
+
+  if (!templateLibraryResolved || !block.importManualReview || !block.purposeType) {
+    return null;
+  }
+
+  const rankedMatches = rankTemplateMemoryMatches(
+    buildTemplateMemoryCandidates(templateLibraryResolved.state.importMemories, {
+      testProject: getStep2TemplateContext(context),
+      blockName: block.blockTitle,
+      purposeType: block.purposeType,
+      fileExtension: getImportMemoryFileExtension(block)
+    })
+  );
+
+  return rankedMatches[0] || null;
+}
+
+function buildTemplateBlockImportMemoryPayload(
+  context: TemplateBlockEditContext,
+  block: TemplateBlockFormData
+): UpsertImportMemoryPayload | null {
+  if (
+    !block.importManualReview ||
+    !block.purposeType ||
+    !block.dataText.trim() ||
+    countTemplateBlockPointLines(block.dataText) < 2
+  ) {
+    return null;
+  }
+
+  const appliedTemplate = getResolvedCurveTemplateById(block.appliedCurveTemplateId);
+
+  return {
+    testProject: getStep2TemplateContext(context) || undefined,
+    familyId: appliedTemplate?.familyId,
+    curveTemplateId: appliedTemplate?.id,
+    blockName: block.blockTitle,
+    purposeType: block.purposeType,
+    fileExtension: getImportMemoryFileExtension(block) || undefined,
+    importParsingSettings: buildTemplateBlockImportParsingSettings(block.importManualReview),
+    axisDefaults: getTemplateBlockImportAxisDefaults(block)
+  };
+}
+
+async function recordTemplateBlockImportMemory(
+  context: TemplateBlockEditContext,
+  blockId: string
+) {
+  const block = getTemplateBlocksForContext(context).find((item) => item.id === blockId);
+  const payload = block ? buildTemplateBlockImportMemoryPayload(context, block) : null;
+  if (!payload) {
+    return;
+  }
+
+  templateLibraryResolved = await window.electronAPI.recordTemplateImportMemory(payload);
+  const currentBlock = getTemplateBlocksForContext(context).find((item) => item.id === blockId);
+  const matchedMemory = currentBlock ? getTemplateBlockImportMemoryMatch(context, currentBlock) : null;
+  if (matchedMemory) {
+    setTemplateBlocksForContext(
+      context,
+      getTemplateBlocksForContext(context).map((item) =>
+        item.id === blockId ? { ...item, importMemoryAppliedId: matchedMemory.memory.id } : item
+      )
+    );
+  }
+  requestRender(true);
+}
+
+function applyImportMemoryAxisDefaultsSafely(
+  block: TemplateBlockFormData,
+  memory: ImportMemory
+) {
+  if (!memory.axisDefaults) {
+    return block;
+  }
+
+  const nextBlock = { ...block };
+
+  if (!nextBlock.primaryLabel.trim() || isGenericStructuredAxisLabel(nextBlock.primaryLabel, 'primary')) {
+    nextBlock.primaryLabel = memory.axisDefaults.primaryLabel || nextBlock.primaryLabel;
+  }
+  if (!nextBlock.primaryUnit.trim()) {
+    nextBlock.primaryUnit = memory.axisDefaults.primaryUnit || nextBlock.primaryUnit;
+  }
+  if (!nextBlock.secondaryLabel.trim() || isGenericStructuredAxisLabel(nextBlock.secondaryLabel, 'secondary')) {
+    nextBlock.secondaryLabel = memory.axisDefaults.secondaryLabel || nextBlock.secondaryLabel;
+  }
+  if (!nextBlock.secondaryUnit.trim()) {
+    nextBlock.secondaryUnit = memory.axisDefaults.secondaryUnit || nextBlock.secondaryUnit;
+  }
+
+  return nextBlock;
+}
+
+async function applyLastImportSettingsToTemplateBlock(
+  context: TemplateBlockEditContext,
+  blockId: string
+) {
+  const targetBlock = getTemplateBlocksForContext(context).find((block) => block.id === blockId);
+  if (!targetBlock?.importManualReview) {
+    return;
+  }
+
+  const matchedMemory = getTemplateBlockImportMemoryMatch(context, targetBlock);
+  if (!matchedMemory) {
+    return;
+  }
+
+  setTemplateBlocksForContext(
+    context,
+    getTemplateBlocksForContext(context).map((block) => {
+      if (block.id !== blockId || !block.importManualReview) {
+        return block;
+      }
+
+      const remembered = matchedMemory.memory.importParsingSettings;
+      const nextReview = normalizeImportManualReviewState({
+        ...block.importManualReview,
+        textEncoding: remembered.textEncoding as ImportTextEncoding,
+        delimiter: remembered.delimiter as ImportManualDelimiter,
+        dataStartRow: remembered.dataStartRow,
+        dataEndRow: remembered.hasExplicitEndRow ? remembered.dataEndRow || null : null,
+        dataStartColumn: remembered.dataStartColumn || 1,
+        dataEndColumn: remembered.dataEndColumn || null,
+        xSourceMode: remembered.xSourceMode,
+        xColumnIndex: remembered.xColumnIndex,
+        yColumnIndex: remembered.yColumnIndex,
+        generatedXStart: remembered.generatedXStart ?? 0,
+        generatedXStep: remembered.generatedXStep ?? 1,
+        ignoreEmptyRows: remembered.ignoreEmptyRows,
+        ignoreNonNumericRows: remembered.ignoreNonNumericRows,
+        collapseWhitespace: remembered.collapseWhitespace,
+        previewLoading: false,
+        previewError: ''
+      });
+
+      return {
+        ...applyImportMemoryAxisDefaultsSafely(block, matchedMemory.memory),
+        importManualReview: nextReview,
+        importMemoryAppliedId: matchedMemory.memory.id
+      };
+    })
+  );
+
+  requestRender(true);
+  await regenerateTemplateBlockImportFromManualReview(context, blockId, { skipInputSync: true });
+}
+
+function collectStructuredTemplateOverwriteFields(
+  block: TemplateBlockFormData,
+  preview: TemplateApplicationPreview
+) {
+  const conflictingFields: string[] = [];
+
+  if (
+    block.blockTitle.trim() &&
+    !isGenericStructuredBlockName(block.blockTitle) &&
+    block.blockTitle.trim() !== preview.blockTitleDefault.trim()
+  ) {
+    conflictingFields.push(t('step2.structured.blockTitleLabel'));
+  }
+
+  if (
+    block.primaryLabel.trim() &&
+    !isGenericStructuredAxisLabel(block.primaryLabel, 'primary') &&
+    block.primaryLabel.trim() !== preview.axisDefaults.primaryLabel.trim()
+  ) {
+    conflictingFields.push(t('step2.structured.primaryLabelText'));
+  }
+
+  if (block.primaryUnit.trim() && block.primaryUnit.trim() !== preview.axisDefaults.primaryUnit.trim()) {
+    conflictingFields.push(t('step2.structured.primaryUnitText'));
+  }
+
+  if (
+    block.secondaryLabel.trim() &&
+    !isGenericStructuredAxisLabel(block.secondaryLabel, 'secondary') &&
+    block.secondaryLabel.trim() !== preview.axisDefaults.secondaryLabel.trim()
+  ) {
+    conflictingFields.push(t('step2.structured.secondaryLabelText'));
+  }
+
+  if (
+    block.secondaryUnit.trim() &&
+    block.secondaryUnit.trim() !== preview.axisDefaults.secondaryUnit.trim()
+  ) {
+    conflictingFields.push(t('step2.structured.secondaryUnitText'));
+  }
+
+  return conflictingFields;
+}
+
+function applyStructuredCurveTemplateToBlock(
+  context: TemplateBlockEditContext,
+  blockId: string,
+  curveTemplateId: string
+) {
+  const blocks = getTemplateBlocksForContext(context);
+  const targetBlock = blocks.find((block) => block.id === blockId);
+  if (!targetBlock || !targetBlock.purposeType) {
+    return;
+  }
+
+  const preview = getStructuredCurveTemplateOptions(context, targetBlock.purposeType).find(
+    (item) => item.curveTemplateId === curveTemplateId
+  );
+  if (!preview) {
+    return;
+  }
+
+  const conflictingFields = collectStructuredTemplateOverwriteFields(targetBlock, preview);
+  if (conflictingFields.length) {
+    const confirmed = window.confirm(
+      t('step2.structured.templateOverwriteConfirm', {
+        template: preview.displayName,
+        fields: conflictingFields.join('、')
+      })
+    );
+    if (!confirmed) {
+      return;
+    }
+  }
+
+  setTemplateBlocksForContext(
+    context,
+    blocks.map((block) => {
+      if (block.id !== blockId) {
+        return block;
+      }
+
+      return {
+        ...block,
+        importMemoryAppliedId: '',
+        appliedCurveTemplateId: preview.curveTemplateId,
+        purposeType: preview.purposeType || block.purposeType || '',
+        blockTitle:
+          !block.blockTitle.trim() || isGenericStructuredBlockName(block.blockTitle) || conflictingFields.includes(t('step2.structured.blockTitleLabel'))
+            ? preview.blockTitleDefault
+            : block.blockTitle,
+        primaryLabel:
+          !block.primaryLabel.trim() ||
+          isGenericStructuredAxisLabel(block.primaryLabel, 'primary') ||
+          conflictingFields.includes(t('step2.structured.primaryLabelText'))
+            ? preview.axisDefaults.primaryLabel
+            : block.primaryLabel,
+        primaryUnit:
+          !block.primaryUnit.trim() || conflictingFields.includes(t('step2.structured.primaryUnitText'))
+            ? preview.axisDefaults.primaryUnit
+            : block.primaryUnit,
+        secondaryLabel:
+          !block.secondaryLabel.trim() ||
+          isGenericStructuredAxisLabel(block.secondaryLabel, 'secondary') ||
+          conflictingFields.includes(t('step2.structured.secondaryLabelText'))
+            ? preview.axisDefaults.secondaryLabel
+            : block.secondaryLabel,
+        secondaryUnit:
+          !block.secondaryUnit.trim() || conflictingFields.includes(t('step2.structured.secondaryUnitText'))
+            ? preview.axisDefaults.secondaryUnit
+            : block.secondaryUnit
+      };
+    })
+  );
+}
+
+function renderStructuredCurveTemplateSelector(
+  context: TemplateBlockEditContext,
+  block: TemplateBlockFormData
+) {
+  const options = getStructuredCurveTemplateOptions(context, block.purposeType || '');
+  const appliedTemplate = getAppliedStructuredCurveTemplateOption(context, block);
+
+  if (!block.purposeType) {
+    return `
+      <div class="form-group template-block-template-selector-group">
+        <label class="form-label">${escapeHtml(t('step2.structured.curveTemplateLabel'))}</label>
+        <div class="detail-section-subtitle">${escapeHtml(t('step2.structured.curveTemplateChoosePurpose'))}</div>
+      </div>
+    `;
+  }
+
+  if (!options.length) {
+    return `
+      <div class="form-group template-block-template-selector-group">
+        <label class="form-label">${escapeHtml(t('step2.structured.curveTemplateLabel'))}</label>
+        <div class="detail-section-subtitle">${escapeHtml(t('step2.structured.curveTemplateEmpty'))}</div>
+      </div>
+    `;
+  }
+
+  return `
+    <div class="form-group template-block-template-selector-group">
+      <label class="form-label">${escapeHtml(t('step2.structured.curveTemplateLabel'))}</label>
+      <div class="template-block-template-selector-row">
+        <select
+          id="template-block-curve-template-${block.id}"
+          class="form-input"
+          data-template-block-curve-template-id="${block.id}"
+        >
+          <option value="">${escapeHtml(t('step2.structured.curveTemplateSelect'))}</option>
+          ${options
+            .map(
+              (item) => `
+                <option
+                  value="${escapeHtml(item.curveTemplateId)}"
+                  ${block.appliedCurveTemplateId === item.curveTemplateId ? 'selected' : ''}
+                >
+                  ${escapeHtml(item.displayName)}
+                </option>
+              `
+            )
+            .join('')}
+        </select>
+        <span class="template-library-chip template-block-template-chip">${escapeHtml(
+          appliedTemplate
+            ? t('step2.structured.curveTemplateApplied', { template: appliedTemplate.displayName })
+            : t('step2.structured.curveTemplateCustom')
+        )}</span>
+      </div>
+    </div>
+  `;
+}
+
 function getDefaultStructuredRecommendation(context: TemplateBlockEditContext) {
   return getActiveStep2TemplateFamily(context)?.recommendedStructuredBlocks[0];
 }
@@ -8386,7 +9650,8 @@ function resetTemplateBlockImportState(context: TemplateBlockEditContext) {
       importPreviewCandidate: undefined as ImportPreviewFileResult['candidates'][number] | undefined,
       importPreviewSelectedName: '',
       importPreviewSelectedPath: '',
-      importManualReview: undefined as ImportReviewManualState | undefined
+      importManualReview: undefined as ImportReviewManualState | undefined,
+      importMemoryAppliedId: ''
     }))
   );
 }
@@ -8605,7 +9870,8 @@ function syncTemplateBlockImportInputsToState(context: TemplateBlockEditContext)
 
       return {
         ...block,
-        importManualReview: normalizeImportManualReviewState(nextReview)
+        importManualReview: normalizeImportManualReviewState(nextReview),
+        importMemoryAppliedId: ''
       };
     })
   );
@@ -8637,14 +9903,7 @@ function applyTemplateBlockImportCandidate(params: {
 
       return {
         ...block,
-        purposeType: candidate.templateBlock.purposeType || block.purposeType || '',
-        blockTitle: candidate.templateBlock.blockTitle,
-        primaryLabel: candidate.templateBlock.xLabel,
-        primaryUnit: candidate.templateBlock.xUnit,
-        secondaryLabel: candidate.templateBlock.yLabel,
-        secondaryUnit: candidate.templateBlock.yUnit,
         dataText: formatXYPointInput(candidate.templateBlock.points),
-        note: candidate.templateBlock.note,
         originalFileName: block.importPreviewSelectedName || block.originalFileName,
         originalFilePath: block.importPreviewSelectedPath || block.originalFilePath,
         replacementSourcePath: block.sourceFilePath
@@ -8738,6 +9997,7 @@ async function handleTemplateBlockImportSelection(
           importPreviewSelectedName: selected.originalName,
           importPreviewSelectedPath: selected.originalPath,
           importManualReview: buildManualReviewState(block, previewFile),
+          importMemoryAppliedId: ''
         };
       })
     );
@@ -8760,15 +10020,18 @@ async function handleTemplateBlockImportSelection(
 
 async function regenerateTemplateBlockImportFromManualReview(
   context: TemplateBlockEditContext,
-  blockId: string
+  blockId: string,
+  options: { skipInputSync?: boolean } = {}
 ) {
-  if (context === 'detail-edit') {
-    collectDetailEditState();
-  } else {
-    saveStep2InputsToState();
-  }
+  if (!options.skipInputSync) {
+    if (context === 'detail-edit') {
+      collectDetailEditState();
+    } else {
+      saveStep2InputsToState();
+    }
 
-  syncTemplateBlockImportInputsToState(context);
+    syncTemplateBlockImportInputsToState(context);
+  }
   const targetBlock = getTemplateBlocksForContext(context).find((block) => block.id === blockId);
   if (!targetBlock?.importManualReview) {
     return;
@@ -8964,7 +10227,8 @@ async function refreshTemplateBlockImportPreviewFromCurrentFile(
           importPreviewCandidate: previewFile.candidates[0],
           importPreviewSelectedName: importFileName,
           importPreviewSelectedPath: importFilePath,
-          importManualReview: nextManualReview
+          importManualReview: nextManualReview,
+          importMemoryAppliedId: ''
         };
       })
     );
@@ -9077,6 +10341,80 @@ function bindTemplateBlockEditorEvents(params: {
     });
   });
 
+  document.querySelectorAll('[id^="template-block-purpose-"]').forEach((select) => {
+    select.addEventListener('change', () => {
+      if (params.context === 'detail-edit') {
+        collectDetailEditState();
+      } else {
+        saveStep2InputsToState();
+      }
+
+      const target = select as HTMLSelectElement;
+      const blockId = target.id.replace('template-block-purpose-', '');
+      const nextPurposeType = target.value as StructuredBlockPurpose;
+
+      setTemplateBlocksForContext(
+        params.context,
+        getTemplateBlocksForContext(params.context).map((block) => {
+          if (block.id !== blockId) {
+            return block;
+          }
+
+          return {
+            ...block,
+            purposeType: nextPurposeType,
+            importMemoryAppliedId: '',
+            appliedCurveTemplateId:
+              block.appliedCurveTemplateId &&
+              getStructuredCurveTemplateOptions(params.context, nextPurposeType).some(
+                (item) => item.curveTemplateId === block.appliedCurveTemplateId
+              )
+                ? block.appliedCurveTemplateId
+                : ''
+          };
+        })
+      );
+
+      requestRender(true);
+    });
+  });
+
+  document.querySelectorAll('[data-template-block-curve-template-id]').forEach((select) => {
+    select.addEventListener('change', () => {
+      const target = select as HTMLSelectElement;
+      const blockId = target.dataset.templateBlockCurveTemplateId;
+      if (!blockId) {
+        return;
+      }
+
+      if (params.context === 'detail-edit') {
+        collectDetailEditState();
+      } else {
+        saveStep2InputsToState();
+      }
+
+      if (!target.value) {
+        setTemplateBlocksForContext(
+          params.context,
+          getTemplateBlocksForContext(params.context).map((block) =>
+            block.id === blockId
+              ? {
+                  ...block,
+                  importMemoryAppliedId: '',
+                  appliedCurveTemplateId: ''
+                }
+              : block
+          )
+        );
+        requestRender(true);
+        return;
+      }
+
+      applyStructuredCurveTemplateToBlock(params.context, blockId, target.value);
+      requestRender(true);
+    });
+  });
+
   document.querySelectorAll('[data-template-block-apply-import-id]').forEach((button) => {
     button.addEventListener('click', () => {
       const target = button as HTMLElement;
@@ -9112,6 +10450,28 @@ function bindTemplateBlockEditorEvents(params: {
         blockId
       });
       requestRender(true);
+      void recordTemplateBlockImportMemory(params.context, blockId).catch((error) => {
+        console.error('recordTemplateBlockImportMemory failed:', error);
+      });
+    });
+  });
+
+  document.querySelectorAll('[data-template-block-use-import-memory-id]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const target = button as HTMLElement;
+      const blockId = target.dataset.templateBlockUseImportMemoryId;
+      if (!blockId) {
+        return;
+      }
+
+      if (params.context === 'detail-edit') {
+        collectDetailEditState();
+      } else {
+        saveStep2InputsToState();
+      }
+
+      syncTemplateBlockImportInputsToState(params.context);
+      await applyLastImportSettingsToTemplateBlock(params.context, blockId);
     });
   });
 
@@ -10022,13 +11382,40 @@ function renderTemplateBlockImportSummary(block: TemplateBlockFormData) {
   `;
 }
 
-function renderTemplateBlockImportPanel(block: TemplateBlockFormData) {
+function renderTemplateBlockImportPanel(
+  context: TemplateBlockEditContext,
+  block: TemplateBlockFormData
+) {
   const manualReview = block.importManualReview;
   const warnings = block.importWarnings || [];
   const pointCount =
     block.importPreviewCandidate?.candidateType === 'templateBlock'
       ? block.importPreviewCandidate.templateBlock.points.length
       : 0;
+  const matchedMemory = getTemplateBlockImportMemoryMatch(context, block);
+  const importMemoryMarkup = manualReview?.available
+    ? matchedMemory
+      ? block.importMemoryAppliedId === matchedMemory.memory.id
+        ? `<div class="import-memory-row"><span class="import-memory-status applied">${escapeHtml(
+            t('step2.import.lastSettingsApplied')
+          )}</span></div>`
+        : `
+            <div class="import-memory-row">
+              <button
+                class="import-memory-action"
+                type="button"
+                data-template-block-use-import-memory-id="${block.id}"
+              >
+                ${escapeHtml(t('step2.import.useLastSettings'))}
+              </button>
+            </div>
+          `
+      : block.purposeType
+        ? `<div class="import-memory-row"><span class="import-memory-status">${escapeHtml(
+            t('step2.import.lastSettingsUnavailable')
+          )}</span></div>`
+        : ''
+    : '';
 
   if (
     !block.importPreviewError &&
@@ -10172,6 +11559,8 @@ function renderTemplateBlockImportPanel(block: TemplateBlockFormData) {
               <div class="import-preview-count-chip">${escapeHtml(t('step2.import.pointCount', { count: pointCount }))}</div>
             </div>
 
+            ${importMemoryMarkup}
+
             <details class="import-advanced-range">
               <summary>${escapeHtml(t('step2.import.advancedColumns'))}</summary>
               <div class="import-advanced-range-grid">
@@ -10284,6 +11673,7 @@ function getTemplateBlockFieldConfig(templateType?: TemplateBlockType) {
 }
 
 function renderEditableTemplateBlockBasicFields(
+  context: TemplateBlockEditContext,
   block: TemplateBlockFormData,
   fieldConfig: ReturnType<typeof getTemplateBlockFieldConfig>
 ) {
@@ -10301,6 +11691,8 @@ function renderEditableTemplateBlockBasicFields(
           ).join('')}
         </select>
       </div>
+
+      ${context === 'create-step2' ? renderStructuredCurveTemplateSelector(context, block) : ''}
 
       <div class="form-group">
         <label class="form-label">${escapeHtml(t('step2.structured.blockTitleLabel'))} <span class="required-star">*</span></label>
@@ -10406,7 +11798,7 @@ function renderTemplateBlockCards(
             </button>
           </div>
 
-          ${renderEditableTemplateBlockBasicFields(block, fieldConfig)}
+          ${renderEditableTemplateBlockBasicFields(context, block, fieldConfig)}
 
           <div class="template-block-file-row">
             <button
@@ -10428,7 +11820,7 @@ function renderTemplateBlockCards(
           </div>
 
           ${shouldRenderTemplateBlockImportPanel(block)
-            ? renderTemplateBlockImportPanel(block)
+            ? renderTemplateBlockImportPanel(context, block)
             : ''}
 
           ${renderEditableTemplateBlockFinalResult(block, fieldConfig)}
@@ -11144,6 +12536,7 @@ function renderSettingsSubViewTabs() {
   const subViews: Array<{ key: SettingsSubView; label: string }> = [
     { key: 'general', label: t('common.generalSettings') },
     { key: 'dictionary', label: t('common.dictionaryManagement') },
+    { key: 'template-library', label: t('settings.templateLibraryTab') },
     { key: 'logs', label: t('settings.logsTab') },
     { key: 'about', label: t('common.about') }
   ];
@@ -11163,6 +12556,615 @@ function renderSettingsSubViewTabs() {
           `
         )
         .join('')}
+    </div>
+  `;
+}
+
+function getTemplateLibrarySourceTypeLabel(sourceType: TemplateLibraryEditorDraft['sourceType']) {
+  if (sourceType === 'user') {
+    return t('templateLibrary.sourceType.user');
+  }
+
+  if (sourceType === 'userOverride') {
+    return t('templateLibrary.sourceType.override');
+  }
+
+  return t('templateLibrary.sourceType.builtin');
+}
+
+function renderTemplateLibraryRowEditor(
+  kind: 'conditions' | 'metrics',
+  rows: TemplateLibraryEditableRow[]
+) {
+  if (!rows.length) {
+    return `<div class="empty-tip">${escapeHtml(t('templateLibrary.rowsEmpty'))}</div>`;
+  }
+
+  return `
+    <div class="template-library-row-panel">
+      <div class="template-library-row-list">
+        ${rows
+          .map((row) => {
+            const rowToken = `${kind}:${row.id}`;
+            const isExpanded = templateLibraryExpandedRowToken === rowToken;
+            const summaryTokens = [
+              row.unit ? `${t('templateLibrary.row.unit')}: ${row.unit}` : '',
+              row.defaultValue ? `${t('templateLibrary.row.defaultValue')}: ${row.defaultValue}` : '',
+              row.priority ? `${t('templateLibrary.row.priority')}: ${row.priority}` : ''
+            ].filter(Boolean);
+
+            return `
+              <div class="template-library-row-editor ${isExpanded ? 'template-library-row-editor-expanded' : ''}">
+                <div class="template-library-row-summary">
+                  <div class="template-library-row-summary-main">
+                    <div class="template-library-row-summary-title">${escapeHtml(
+                      row.label.trim() || t('templateLibrary.rowUntitled')
+                    )}</div>
+                    ${
+                      summaryTokens.length
+                        ? `<div class="template-library-row-summary-meta">${summaryTokens
+                            .map((token) => `<span class="template-library-row-summary-chip">${escapeHtml(token)}</span>`)
+                            .join('')}</div>`
+                        : ''
+                    }
+                    ${
+                      row.note.trim()
+                        ? `<div class="template-library-row-summary-note">${escapeHtml(row.note)}</div>`
+                        : ''
+                    }
+                  </div>
+                  <div class="template-library-row-actions">
+                    <button
+                      type="button"
+                      class="secondary-btn action-btn template-library-compact-btn template-library-row-toggle-btn"
+                      data-template-row-toggle="${escapeHtml(rowToken)}"
+                    >
+                      ${escapeHtml(isExpanded ? t('common.done') : t('templateLibrary.edit'))}
+                    </button>
+                    <button
+                      type="button"
+                      class="secondary-btn action-btn template-library-row-remove-btn"
+                      data-template-row-remove="${kind}:${escapeHtml(row.id)}"
+                      title="${escapeHtml(t('templateLibrary.row.remove'))}"
+                      aria-label="${escapeHtml(t('templateLibrary.row.remove'))}"
+                    >
+                      ×
+                    </button>
+                  </div>
+                </div>
+                ${
+                  isExpanded
+                    ? `
+                      <div class="template-library-row-edit-grid">
+                        <label class="template-library-row-field template-library-row-field-label">
+                          <span class="template-library-row-field-name">${escapeHtml(t('templateLibrary.row.label'))}</span>
+                          <input
+                            class="form-input"
+                            data-template-row-field="${kind}:label:${escapeHtml(row.id)}"
+                            value="${escapeHtml(row.label)}"
+                            placeholder="${escapeHtml(t('templateLibrary.row.label'))}"
+                          />
+                        </label>
+                        <div class="template-library-row-meta">
+                          <label class="template-library-row-field">
+                            <span class="template-library-row-field-name">${escapeHtml(t('templateLibrary.row.unit'))}</span>
+                            <input
+                              class="form-input"
+                              data-template-row-field="${kind}:unit:${escapeHtml(row.id)}"
+                              value="${escapeHtml(row.unit)}"
+                              placeholder="${escapeHtml(t('templateLibrary.row.unit'))}"
+                            />
+                          </label>
+                          <label class="template-library-row-field">
+                            <span class="template-library-row-field-name">${escapeHtml(
+                              t('templateLibrary.row.defaultValue')
+                            )}</span>
+                            <input
+                              class="form-input"
+                              data-template-row-field="${kind}:defaultValue:${escapeHtml(row.id)}"
+                              value="${escapeHtml(row.defaultValue)}"
+                              placeholder="${escapeHtml(t('templateLibrary.row.defaultValue'))}"
+                            />
+                          </label>
+                          <label class="template-library-row-field">
+                            <span class="template-library-row-field-name">${escapeHtml(t('templateLibrary.row.priority'))}</span>
+                            <input
+                              class="form-input"
+                              data-template-row-field="${kind}:priority:${escapeHtml(row.id)}"
+                              value="${escapeHtml(row.priority)}"
+                              placeholder="${escapeHtml(t('templateLibrary.row.priority'))}"
+                            />
+                          </label>
+                          <label class="template-library-row-field template-library-row-field-note">
+                            <span class="template-library-row-field-name">${escapeHtml(t('templateLibrary.row.note'))}</span>
+                            <input
+                              class="form-input"
+                              data-template-row-field="${kind}:note:${escapeHtml(row.id)}"
+                              value="${escapeHtml(row.note)}"
+                              placeholder="${escapeHtml(t('templateLibrary.row.note'))}"
+                            />
+                          </label>
+                        </div>
+                      </div>
+                    `
+                    : ''
+                }
+              </div>
+            `;
+          })
+          .join('')}
+      </div>
+    </div>
+  `;
+}
+
+function renderTemplateLibraryPanel() {
+  if (templateLibraryError) {
+    return `<div class="error-message large-error">${escapeHtml(templateLibraryError)}</div>`;
+  }
+
+  if (!templateLibraryResolved) {
+    return `<div class="empty-tip">${escapeHtml(t('templateLibrary.loading'))}</div>`;
+  }
+
+  const families = templateLibraryResolved.scientificTemplates;
+  const familyTemplates = getTemplateLibraryCurvesForFamily(templateLibrarySelectedFamilyId);
+  const searchResults = getTemplateLibrarySearchResults();
+  const isSearchMode = Boolean(getTemplateLibraryNormalizedQuery());
+  const editorDraft = templateLibraryEditorDraft;
+  const editorTitle = editorDraft
+    ? editorDraft.displayName.trim() || editorDraft.blockTitleDefault.trim() || t('templateLibrary.editorTitle')
+    : '';
+  const visibleTemplates =
+    templateLibrarySelectedKind === 'all' || templateLibrarySelectedKind === 'curves' ? familyTemplates : [];
+  const isDraftMode = Boolean(editorDraft && !templateLibrarySelectedCurveTemplateId);
+  const renderTemplates: Array<{
+    id: string;
+    displayName: string;
+    purposeType: StructuredBlockPurpose;
+    sourceType: TemplateLibraryEditorDraft['sourceType'];
+    enabled: boolean;
+    isDraft: boolean;
+  }> = isDraftMode
+    ? [
+        {
+          id: '__draft__',
+          displayName: editorDraft?.displayName.trim() || t('templateLibrary.newDraftTitle'),
+          purposeType: editorDraft?.purposeType || '',
+          sourceType: 'user' as const,
+          enabled: editorDraft?.enabled ?? true,
+          isDraft: true
+        },
+        ...visibleTemplates.map((template) => ({
+          id: template.id,
+          displayName: template.displayName,
+          purposeType: template.purposeType,
+          sourceType: getTemplateLibraryEffectiveSourceType(template),
+          enabled: isTemplateLibraryTemplateEnabled(template),
+          isDraft: false
+        }))
+      ]
+    : visibleTemplates.map((template) => ({
+        id: template.id,
+        displayName: template.displayName,
+        purposeType: template.purposeType,
+        sourceType: getTemplateLibraryEffectiveSourceType(template),
+        enabled: isTemplateLibraryTemplateEnabled(template),
+        isDraft: false
+      }));
+  const listCount = visibleTemplates.length;
+  const selectedFamilyName = getTemplateLibraryFamilyById(templateLibrarySelectedFamilyId)?.displayName || '-';
+  const templateKindTabs: Array<{
+    kind: TemplateLibraryTabKind;
+    labelKey:
+      | 'templateLibrary.kind.all'
+      | 'templateLibrary.kind.curves'
+      | 'templateLibrary.kind.conditions'
+      | 'templateLibrary.kind.metrics'
+      | 'templateLibrary.kind.calculations'
+      | 'templateLibrary.kind.bundles';
+    enabled: boolean;
+  }> = [
+    { kind: 'all', labelKey: 'templateLibrary.kind.all', enabled: true },
+    { kind: 'curves', labelKey: 'templateLibrary.kind.curves', enabled: true },
+    { kind: 'conditions', labelKey: 'templateLibrary.kind.conditions', enabled: false },
+    { kind: 'metrics', labelKey: 'templateLibrary.kind.metrics', enabled: false },
+    { kind: 'calculations', labelKey: 'templateLibrary.kind.calculations', enabled: false },
+    { kind: 'bundles', labelKey: 'templateLibrary.kind.bundles', enabled: false }
+  ];
+
+  return `
+    <div class="template-library-shell">
+      <div class="detail-section template-library-search-section">
+        <div class="template-library-search-row">
+          <div class="template-library-search-box">
+            <input
+              id="template-library-search-input"
+              class="form-input template-library-search-input"
+              value="${escapeHtml(templateLibrarySearchQuery)}"
+              placeholder="${escapeHtml(t('templateLibrary.searchPlaceholder'))}"
+            />
+            ${
+              isSearchMode
+                ? `
+                  <div class="template-library-search-dropdown">
+                    ${
+                      searchResults.length
+                        ? searchResults
+                            .map((result) => {
+                              if (result.resultType === 'family') {
+                                return `
+                                  <button
+                                    type="button"
+                                    class="template-library-search-item"
+                                    data-template-family-id="${escapeHtml(result.familyId)}"
+                                  >
+                                    <div class="template-library-search-item-main">
+                                      <span class="template-library-search-item-title">${escapeHtml(result.title)}</span>
+                                      <span class="template-library-chip">${escapeHtml(result.subtitle)}</span>
+                                    </div>
+                                    <div class="template-library-search-item-subtitle">${escapeHtml(
+                                      t('templateLibrary.familyCount', { count: result.count })
+                                    )}</div>
+                                  </button>
+                                `;
+                              }
+
+                              return `
+                                <button
+                                  type="button"
+                                  class="template-library-search-item"
+                                  data-template-curve-id="${escapeHtml(result.templateId)}"
+                                >
+                                  <div class="template-library-search-item-main">
+                                    <span class="template-library-search-item-title">${escapeHtml(result.title)}</span>
+                                    <span class="template-library-chip">${escapeHtml(t('templateLibrary.resultType.curve'))}</span>
+                                  </div>
+                                  <div class="template-library-search-item-meta">
+                                    <span class="template-library-chip">${escapeHtml(
+                                      getStructuredBlockPurposeLabel(result.purposeType)
+                                    )}</span>
+                                    <span class="template-library-chip">${escapeHtml(
+                                      getTemplateLibrarySourceTypeLabel(result.sourceType)
+                                    )}</span>
+                                    <span class="template-library-chip">${escapeHtml(
+                                      result.enabled ? t('templateLibrary.enabled') : t('templateLibrary.disabled')
+                                    )}</span>
+                                  </div>
+                                  <div class="template-library-search-item-subtitle">${escapeHtml(result.subtitle)}</div>
+                                </button>
+                              `;
+                            })
+                            .join('')
+                        : `<div class="empty-tip">${escapeHtml(t('templateLibrary.searchEmpty'))}</div>`
+                    }
+                  </div>
+                `
+                : ''
+            }
+          </div>
+          <button
+            id="template-library-new-btn"
+            type="button"
+            class="secondary-btn action-btn template-library-compact-btn"
+          >
+            ${escapeHtml(t('templateLibrary.newTemplateCompact'))}
+          </button>
+        </div>
+      </div>
+
+      <div class="detail-section template-library-family-section">
+        <div class="detail-section-title">${escapeHtml(t('templateLibrary.familyListTitle'))}</div>
+        <div class="template-library-family-grid">
+          ${families
+            .map((family) => {
+              const familyCount = getTemplateLibraryFamilyCurveCount(family.id);
+
+              return `
+                <button
+                  type="button"
+                  class="template-library-family-card ${templateLibrarySelectedFamilyId === family.id ? 'template-library-family-card-active' : ''}"
+                  data-template-family-id="${escapeHtml(family.id)}"
+                >
+                  <span class="template-library-family-card-title">${escapeHtml(family.displayName)}</span>
+                  <span class="template-library-family-card-count">${escapeHtml(
+                    t('templateLibrary.familyCountShort', { count: familyCount })
+                  )}</span>
+                </button>
+              `;
+            })
+            .join('')}
+        </div>
+      </div>
+
+      <div class="detail-section template-library-tabs-section">
+        <div class="template-library-kind-tabs">
+          ${templateKindTabs
+            .map(
+              (tab) => `
+                <button
+                  type="button"
+                  class="template-library-kind-tab ${templateLibrarySelectedKind === tab.kind ? 'template-library-kind-tab-active' : ''} ${!tab.enabled ? 'template-library-kind-tab-disabled' : ''}"
+                  data-template-kind="${escapeHtml(tab.kind)}"
+                  ${tab.enabled ? '' : 'disabled'}
+                >
+                  <span>${escapeHtml(t(tab.labelKey))}</span>
+                  ${!tab.enabled ? `<span class="template-library-future-badge">${escapeHtml(t('templateLibrary.future'))}</span>` : ''}
+                </button>
+              `
+            )
+            .join('')}
+        </div>
+      </div>
+
+      <div class="detail-section template-library-results-section">
+        <div class="template-library-results-header">
+          <div>
+            <div class="detail-section-title">${escapeHtml(t('templateLibrary.templateListTitle'))}</div>
+            <div class="detail-section-subtitle">${escapeHtml(
+              t('templateLibrary.currentScopeHint', {
+                family: selectedFamilyName,
+                count: listCount
+              })
+            )}</div>
+          </div>
+        </div>
+        <div class="template-library-result-grid">
+          ${
+            renderTemplates.length
+              ? renderTemplates
+                  .map((template) => `
+                    <div
+                      class="template-library-result-card ${template.isDraft || templateLibrarySelectedCurveTemplateId === template.id ? 'template-library-result-card-active' : ''}"
+                    >
+                      <button
+                        type="button"
+                        class="template-library-result-card-main"
+                        ${template.isDraft ? '' : `data-template-curve-id="${escapeHtml(template.id)}"`}
+                      >
+                        <div class="template-library-result-card-title-row">
+                          <span class="template-library-result-card-title">${escapeHtml(template.displayName)}</span>
+                          ${
+                            template.isDraft
+                              ? `<span class="template-library-chip">${escapeHtml(t('templateLibrary.newDraftBadge'))}</span>`
+                              : ''
+                          }
+                        </div>
+                        <div class="template-library-result-card-meta">
+                          ${
+                            template.purposeType
+                              ? `<span class="template-library-chip">${escapeHtml(
+                                  getStructuredBlockPurposeLabel(template.purposeType)
+                                )}</span>`
+                              : ''
+                          }
+                          <span class="template-library-chip">${escapeHtml(
+                            getTemplateLibrarySourceTypeLabel(template.sourceType)
+                          )}</span>
+                          <span class="template-library-chip">${escapeHtml(
+                            template.enabled ? t('templateLibrary.enabled') : t('templateLibrary.disabled')
+                          )}</span>
+                        </div>
+                      </button>
+                      ${
+                        template.isDraft
+                          ? `
+                            <button
+                              type="button"
+                              class="secondary-btn action-btn template-library-card-close-btn"
+                              data-template-draft-discard="true"
+                              title="${escapeHtml(t('templateLibrary.discardDraft'))}"
+                              aria-label="${escapeHtml(t('templateLibrary.discardDraft'))}"
+                            >
+                              ×
+                            </button>
+                          `
+                          : ''
+                      }
+                    </div>
+                  `)
+                  .join('')
+              : `<div class="empty-tip">${escapeHtml(t('templateLibrary.templateListEmpty'))}</div>`
+          }
+        </div>
+      </div>
+
+      <div class="detail-section template-library-editor-wide-section">
+        ${
+          editorDraft
+            ? `
+              <div class="template-library-editor-shell">
+                <div class="template-library-editor-header">
+                  <div class="template-library-editor-header-main">
+                    <div class="template-library-editor-title-row">
+                      <div class="detail-section-title">${escapeHtml(editorTitle)}</div>
+                      <span id="template-library-save-state" class="template-library-save-state">${escapeHtml(
+                        templateLibrarySaveMessage
+                      )}</span>
+                    </div>
+                  </div>
+                  <div class="template-library-editor-header-side">
+                    <div class="template-library-meta-strip">
+                      <span class="template-library-chip">${escapeHtml(
+                        getTemplateLibrarySourceTypeLabel(editorDraft.sourceType)
+                      )}</span>
+                      <span class="template-library-chip">${escapeHtml(
+                        editorDraft.enabled ? t('templateLibrary.enabled') : t('templateLibrary.disabled')
+                      )}</span>
+                      <span class="template-library-chip">${escapeHtml(
+                        getStructuredBlockPurposeLabel(editorDraft.purposeType)
+                      )}</span>
+                    </div>
+                    <div class="template-library-editor-actions">
+                      ${
+                        editorDraft.isBuiltin && editorDraft.hasLocalOverride
+                          ? `
+                            <button
+                              id="template-library-reset-btn"
+                              type="button"
+                              class="secondary-btn action-btn template-library-compact-btn"
+                              ${templateLibrarySaving ? 'disabled' : ''}
+                            >
+                              ${escapeHtml(t('templateLibrary.resetOverride'))}
+                            </button>
+                          `
+                          : ''
+                      }
+                      <button
+                        id="template-library-duplicate-btn"
+                        type="button"
+                        class="secondary-btn action-btn template-library-compact-btn"
+                        ${templateLibrarySaving ? 'disabled' : ''}
+                      >
+                        ${escapeHtml(t('templateLibrary.duplicateTemplate'))}
+                      </button>
+                      <button
+                        id="template-library-save-btn"
+                        type="button"
+                        class="primary-btn action-btn template-library-compact-btn"
+                        ${templateLibrarySaving ? 'disabled' : ''}
+                      >
+                        ${escapeHtml(templateLibrarySaving ? t('templateLibrary.saving') : t('common.save'))}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                ${
+                  editorDraft.isBuiltin
+                    ? `<div class="empty-tip">${escapeHtml(
+                        t('templateLibrary.builtinOverrideHint')
+                      )}</div>`
+                    : ''
+                }
+
+                <div class="template-library-editor-body">
+                  <div class="detail-section template-library-editor-section">
+                    <div class="detail-section-title">${escapeHtml(t('templateLibrary.section.basic'))}</div>
+                    <div class="template-library-readonly-meta">
+                      <div class="detail-label">${escapeHtml(t('templateLibrary.templateId'))}</div>
+                      <div class="detail-value">${escapeHtml(editorDraft.templateId)}</div>
+                    </div>
+                    <div class="template-library-basic-grid">
+                      <div class="form-group">
+                        <label class="form-label">${escapeHtml(t('templateLibrary.field.displayName'))}</label>
+                        <input id="template-library-display-name" class="form-input" value="${escapeHtml(
+                          editorDraft.displayName
+                        )}" />
+                      </div>
+                      <div class="form-group">
+                        <label class="form-label">${escapeHtml(t('templateLibrary.field.blockTitleDefault'))}</label>
+                        <input id="template-library-block-title" class="form-input" value="${escapeHtml(
+                          editorDraft.blockTitleDefault
+                        )}" />
+                      </div>
+                      <div class="form-group">
+                        <label class="form-label">${escapeHtml(t('templateLibrary.field.purposeType'))}</label>
+                        <select id="template-library-purpose-type" class="form-input">
+                          ${STRUCTURED_BLOCK_PURPOSE_OPTIONS.map(
+                            (option) => `
+                              <option value="${escapeHtml(option.value)}" ${editorDraft.purposeType === option.value ? 'selected' : ''}>
+                                ${escapeHtml(option.label)}
+                              </option>
+                            `
+                          ).join('')}
+                        </select>
+                      </div>
+                      <div class="form-group">
+                        <label class="form-label">${escapeHtml(t('templateLibrary.field.enabled'))}</label>
+                        <label class="checkbox-row">
+                          <input id="template-library-enabled" type="checkbox" ${editorDraft.enabled ? 'checked' : ''} />
+                          <span>${escapeHtml(t('templateLibrary.field.enabledHint'))}</span>
+                        </label>
+                      </div>
+                    </div>
+                    <div class="form-group">
+                      <label class="form-label">${escapeHtml(t('templateLibrary.field.aliases'))}</label>
+                      <textarea id="template-library-aliases" class="form-input template-library-textarea template-library-textarea-compact">${escapeHtml(
+                        editorDraft.aliasesText
+                      )}</textarea>
+                    </div>
+                  </div>
+
+                  <div class="detail-section template-library-editor-section">
+                    <div class="detail-section-title">${escapeHtml(t('templateLibrary.section.axisDefaults'))}</div>
+                    <div class="template-library-axis-rows">
+                      <div class="template-library-axis-row">
+                        <div class="template-library-axis-tag">X</div>
+                        <input id="template-library-primary-label" class="form-input" value="${escapeHtml(
+                          editorDraft.primaryLabel
+                        )}" />
+                        <input id="template-library-primary-unit" class="form-input" value="${escapeHtml(
+                          editorDraft.primaryUnit
+                        )}" />
+                      </div>
+                      <div class="template-library-axis-row">
+                        <div class="template-library-axis-tag">Y</div>
+                        <input id="template-library-secondary-label" class="form-input" value="${escapeHtml(
+                          editorDraft.secondaryLabel
+                        )}" />
+                        <input id="template-library-secondary-unit" class="form-input" value="${escapeHtml(
+                          editorDraft.secondaryUnit
+                        )}" />
+                      </div>
+                    </div>
+                  </div>
+
+                  <div class="detail-section template-library-editor-section">
+                    <div class="template-library-section-header">
+                      <div class="detail-section-title">${escapeHtml(t('templateLibrary.conditionsTitle'))}</div>
+                      <button
+                        type="button"
+                        class="secondary-btn action-btn template-library-compact-btn template-library-inline-add-btn"
+                        id="template-library-add-condition-btn"
+                      >
+                        ${escapeHtml(t('templateLibrary.addCondition'))}
+                      </button>
+                    </div>
+                    ${renderTemplateLibraryRowEditor('conditions', editorDraft.recommendedConditions)}
+                  </div>
+
+                  <div class="detail-section template-library-editor-section">
+                    <div class="template-library-section-header">
+                      <div class="detail-section-title">${escapeHtml(t('templateLibrary.metricsTitle'))}</div>
+                      <button
+                        type="button"
+                        class="secondary-btn action-btn template-library-compact-btn template-library-inline-add-btn"
+                        id="template-library-add-metric-btn"
+                      >
+                        ${escapeHtml(t('templateLibrary.addMetric'))}
+                      </button>
+                    </div>
+                    ${renderTemplateLibraryRowEditor('metrics', editorDraft.recommendedMetrics)}
+                  </div>
+
+                  <details class="template-library-advanced-shell">
+                    <summary class="template-library-advanced-summary">
+                      <span class="detail-section-title">${escapeHtml(t('templateLibrary.section.advanced'))}</span>
+                    </summary>
+                    <div class="detail-section template-library-editor-section template-library-advanced-section">
+                      <div class="template-library-advanced-grid">
+                        <div class="form-group">
+                          <label class="form-label">${escapeHtml(t('templateLibrary.field.filenameHints'))}</label>
+                          <textarea id="template-library-filename-hints" class="form-input template-library-textarea template-library-textarea-compact">${escapeHtml(
+                            editorDraft.filenameHintsText
+                          )}</textarea>
+                        </div>
+                        <div class="template-library-future-note">
+                          <div class="detail-label">${escapeHtml(t('templateLibrary.importDefaultsTitle'))}</div>
+                          <div class="detail-section-subtitle">${escapeHtml(
+                            t('templateLibrary.importDefaultsFutureHint')
+                          )}</div>
+                        </div>
+                      </div>
+                    </div>
+                  </details>
+                </div>
+              </div>
+            `
+            : `<div class="empty-tip">${escapeHtml(t('templateLibrary.editorEmpty'))}</div>`
+        }
+      </div>
     </div>
   `;
 }
@@ -13532,6 +15534,7 @@ async function render() {
         renderDictionaryManagementSection(type, getDictionarySectionLabel(getCurrentLanguage(), type))
       ).join('')}
     `;
+    const templateLibraryHtml = renderTemplateLibraryPanel();
     const aboutSettingsHtml = `
       ${renderAboutSurface(appName, version)}
     `;
@@ -13559,6 +15562,8 @@ async function render() {
                   ? t('settings.heading.general')
                   : settingsSubView === 'dictionary'
                     ? t('settings.heading.dictionary')
+                    : settingsSubView === 'template-library'
+                      ? t('settings.heading.templateLibrary')
                     : settingsSubView === 'logs'
                       ? t('settings.heading.logs')
                       : t('settings.heading.about')
@@ -13569,6 +15574,8 @@ async function render() {
                     ? escapeHtml(t('settings.subtitle.general'))
                     : settingsSubView === 'dictionary'
                       ? escapeHtml(t('settings.subtitle.dictionary'))
+                      : settingsSubView === 'template-library'
+                        ? escapeHtml(t('settings.subtitle.templateLibrary'))
                       : settingsSubView === 'logs'
                         ? escapeHtml(t('settings.subtitle.logs'))
                       : escapeHtml(t('settings.subtitle.about'))
@@ -13581,6 +15588,8 @@ async function render() {
                   ? generalSettingsHtml
                   : settingsSubView === 'dictionary'
                     ? dictionaryManagementHtml
+                    : settingsSubView === 'template-library'
+                      ? templateLibraryHtml
                     : settingsSubView === 'logs'
                       ? logsSettingsHtml
                     : aboutSettingsHtml
@@ -13595,25 +15604,40 @@ async function render() {
     bindAppSidebarEvents();
     bindAboutEntryEvents(true);
     document.getElementById('settings-menu-home')?.addEventListener('click', () => {
+      if (settingsSubView === 'template-library' && !confirmDiscardTemplateLibraryChanges()) {
+        return;
+      }
       currentView = 'home';
       void render();
     });
 
     document.getElementById('settings-menu-add')?.addEventListener('click', async () => {
+      if (settingsSubView === 'template-library' && !confirmDiscardTemplateLibraryChanges()) {
+        return;
+      }
       await openAddDataEntry();
     });
 
     document.getElementById('settings-menu-data')?.addEventListener('click', async () => {
+      if (settingsSubView === 'template-library' && !confirmDiscardTemplateLibraryChanges()) {
+        return;
+      }
       await loadDatabaseListView();
       currentView = 'database-list';
       void render();
     });
 
     document.getElementById('settings-menu-analysis')?.addEventListener('click', async () => {
+      if (settingsSubView === 'template-library' && !confirmDiscardTemplateLibraryChanges()) {
+        return;
+      }
       await openAnalysisWorkspace();
     });
 
     document.getElementById('settings-back-home-btn')?.addEventListener('click', () => {
+      if (settingsSubView === 'template-library' && !confirmDiscardTemplateLibraryChanges()) {
+        return;
+      }
       currentView = 'home';
       void render();
     });
@@ -13760,6 +15784,249 @@ async function render() {
         });
       });
 
+      return;
+    }
+
+    if (settingsSubView === 'template-library') {
+      document.querySelectorAll('[data-template-family-id]').forEach((button) => {
+        button.addEventListener('click', () => {
+          const target = button as HTMLElement;
+          const familyId = target.dataset.templateFamilyId;
+          if (!familyId) {
+            return;
+          }
+
+          void selectTemplateLibraryFamily(familyId);
+        });
+      });
+
+      document.querySelectorAll('[data-template-curve-id]').forEach((button) => {
+        button.addEventListener('click', () => {
+          const target = button as HTMLElement;
+          const templateId = target.dataset.templateCurveId;
+          if (!templateId) {
+            return;
+          }
+
+          void selectTemplateLibraryCurveTemplate(templateId);
+        });
+      });
+
+      document.getElementById('template-library-search-input')?.addEventListener('input', (event) => {
+        const target = event.target as HTMLInputElement;
+        templateLibrarySearchQuery = target.value;
+        templateLibrarySearchShouldRefocus = true;
+        templateLibrarySearchSelectionStart = target.selectionStart ?? target.value.length;
+        templateLibrarySearchSelectionEnd = target.selectionEnd ?? target.value.length;
+        requestRender(true);
+      });
+
+      document.getElementById('template-library-search-input')?.addEventListener('change', () => {
+        requestRender(true);
+      });
+
+      document.getElementById('template-library-search-input')?.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') {
+          requestRender(true);
+        }
+      });
+
+      document.querySelectorAll('[data-template-kind]').forEach((button) => {
+        button.addEventListener('click', () => {
+          const target = button as HTMLElement;
+          const nextKind = target.dataset.templateKind as TemplateLibraryTabKind | undefined;
+          if (!nextKind || target.hasAttribute('disabled')) {
+            return;
+          }
+
+          templateLibrarySelectedKind = nextKind;
+          requestRender(true);
+        });
+      });
+
+      document.getElementById('template-library-new-btn')?.addEventListener('click', () => {
+        startTemplateLibraryNewTemplate();
+      });
+
+      document.querySelectorAll('[data-template-draft-discard]').forEach((button) => {
+        button.addEventListener('click', () => {
+          discardTemplateLibraryDraft();
+        });
+      });
+
+      document.getElementById('template-library-duplicate-btn')?.addEventListener('click', () => {
+        startTemplateLibraryDuplicateTemplate();
+      });
+
+      document.getElementById('template-library-reset-btn')?.addEventListener('click', () => {
+        void resetTemplateLibraryEditorOverride();
+      });
+
+      document.getElementById('template-library-save-btn')?.addEventListener('click', () => {
+        void saveTemplateLibraryEditorDraft();
+      });
+
+      const bindDraftInput = (id: string, setter: (value: string) => void) => {
+        document.getElementById(id)?.addEventListener('input', (event) => {
+          const target = event.target as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement;
+          setter(target.value);
+          markTemplateLibraryDirty();
+        });
+      };
+
+      bindDraftInput('template-library-display-name', (value) => {
+        if (templateLibraryEditorDraft) templateLibraryEditorDraft.displayName = value;
+      });
+      bindDraftInput('template-library-block-title', (value) => {
+        if (templateLibraryEditorDraft) templateLibraryEditorDraft.blockTitleDefault = value;
+      });
+      bindDraftInput('template-library-purpose-type', (value) => {
+        if (templateLibraryEditorDraft) {
+          templateLibraryEditorDraft.purposeType = value as StructuredBlockPurpose;
+        }
+      });
+      bindDraftInput('template-library-aliases', (value) => {
+        if (templateLibraryEditorDraft) templateLibraryEditorDraft.aliasesText = value;
+      });
+      bindDraftInput('template-library-primary-label', (value) => {
+        if (templateLibraryEditorDraft) templateLibraryEditorDraft.primaryLabel = value;
+      });
+      bindDraftInput('template-library-primary-unit', (value) => {
+        if (templateLibraryEditorDraft) templateLibraryEditorDraft.primaryUnit = value;
+      });
+      bindDraftInput('template-library-secondary-label', (value) => {
+        if (templateLibraryEditorDraft) templateLibraryEditorDraft.secondaryLabel = value;
+      });
+      bindDraftInput('template-library-secondary-unit', (value) => {
+        if (templateLibraryEditorDraft) templateLibraryEditorDraft.secondaryUnit = value;
+      });
+      bindDraftInput('template-library-filename-hints', (value) => {
+        if (templateLibraryEditorDraft) templateLibraryEditorDraft.filenameHintsText = value;
+      });
+
+      document.getElementById('template-library-enabled')?.addEventListener('change', (event) => {
+        if (!templateLibraryEditorDraft) {
+          return;
+        }
+
+        const target = event.target as HTMLInputElement;
+        templateLibraryEditorDraft.enabled = target.checked;
+        markTemplateLibraryDirty();
+      });
+
+      document.querySelectorAll('[data-template-row-field]').forEach((input) => {
+        input.addEventListener('input', (event) => {
+          if (!templateLibraryEditorDraft) {
+            return;
+          }
+
+          const target = event.target as HTMLInputElement;
+          const token = target.dataset.templateRowField;
+          if (!token) {
+            return;
+          }
+
+          const [kind, field, rowId] = token.split(':');
+          const rowSource =
+            kind === 'conditions'
+              ? templateLibraryEditorDraft.recommendedConditions
+              : templateLibraryEditorDraft.recommendedMetrics;
+          const row = rowSource.find((item) => item.id === rowId);
+          if (!row) {
+            return;
+          }
+
+          if (field === 'label') row.label = target.value;
+          if (field === 'unit') row.unit = target.value;
+          if (field === 'defaultValue') row.defaultValue = target.value;
+          if (field === 'priority') row.priority = target.value;
+          if (field === 'note') row.note = target.value;
+          markTemplateLibraryDirty();
+        });
+      });
+
+      document.querySelectorAll('[data-template-row-remove]').forEach((button) => {
+        button.addEventListener('click', () => {
+          if (!templateLibraryEditorDraft) {
+            return;
+          }
+
+          const target = button as HTMLElement;
+          const token = target.dataset.templateRowRemove;
+          if (!token) {
+            return;
+          }
+
+          const [kind, rowId] = token.split(':');
+          if (templateLibraryExpandedRowToken === `${kind}:${rowId}`) {
+            templateLibraryExpandedRowToken = '';
+          }
+          if (kind === 'conditions') {
+            templateLibraryEditorDraft.recommendedConditions =
+              templateLibraryEditorDraft.recommendedConditions.filter((item) => item.id !== rowId);
+          } else {
+            templateLibraryEditorDraft.recommendedMetrics =
+              templateLibraryEditorDraft.recommendedMetrics.filter((item) => item.id !== rowId);
+          }
+
+          markTemplateLibraryDirty();
+          requestRender(true);
+        });
+      });
+
+      document.querySelectorAll('[data-template-row-toggle]').forEach((button) => {
+        button.addEventListener('click', () => {
+          const target = button as HTMLElement;
+          const token = target.dataset.templateRowToggle;
+          if (!token) {
+            return;
+          }
+
+          templateLibraryExpandedRowToken = templateLibraryExpandedRowToken === token ? '' : token;
+          requestRender(true);
+        });
+      });
+
+      document.getElementById('template-library-add-condition-btn')?.addEventListener('click', () => {
+        if (!templateLibraryEditorDraft) {
+          return;
+        }
+
+        const nextRow = buildTemplateLibraryEditableRow();
+        templateLibraryEditorDraft.recommendedConditions = [
+          ...templateLibraryEditorDraft.recommendedConditions,
+          nextRow
+        ];
+        templateLibraryExpandedRowToken = `conditions:${nextRow.id}`;
+        markTemplateLibraryDirty();
+        requestRender(true);
+      });
+
+      document.getElementById('template-library-add-metric-btn')?.addEventListener('click', () => {
+        if (!templateLibraryEditorDraft) {
+          return;
+        }
+
+        const nextRow = buildTemplateLibraryEditableRow();
+        templateLibraryEditorDraft.recommendedMetrics = [
+          ...templateLibraryEditorDraft.recommendedMetrics,
+          nextRow
+        ];
+        templateLibraryExpandedRowToken = `metrics:${nextRow.id}`;
+        markTemplateLibraryDirty();
+        requestRender(true);
+      });
+
+      if (templateLibrarySearchShouldRefocus) {
+        const searchInput = document.getElementById('template-library-search-input') as HTMLInputElement | null;
+        if (searchInput) {
+          searchInput.focus();
+          searchInput.setSelectionRange(templateLibrarySearchSelectionStart, templateLibrarySearchSelectionEnd);
+        }
+        templateLibrarySearchShouldRefocus = false;
+      }
+
+      updateTemplateLibrarySaveStateIndicator();
       return;
     }
 

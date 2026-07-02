@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Added
+
+- Added the `v1.6.3` Template Library foundation for local structured-curve template persistence, starter templates, Settings management, global search, local override behavior, and reset-to-built-in support.
+- Added the Step 2 structured curve template selector so users can explicitly apply safe starter metadata for block name, `purposeType`, X/Y labels, and X/Y units without changing manual entry semantics.
+- Added write-success structured import memory plus an explicit `使用上次导入设置 / Use last import settings` action that restores import controls only and never auto-writes `XY 数据`.
+
+### Fixed
+
+- Fixed structured import metadata loss so `写入当前块` preserves the current block's labels, units, and related metadata instead of forcing re-entry after import.
+
 ## v1.6.1 - 2026-07-01
 
 ### Changed

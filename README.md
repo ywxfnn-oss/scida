@@ -391,6 +391,7 @@ These are the main local development and release-prep commands used in the repos
 - [Default Templates](docs/DEFAULT_TEMPLATES.md) / 默认模板说明
 - [Export Flow](docs/EXPORT_FLOW.md) / 导出流程说明
 - [Module Guide](docs/MODULE_GUIDE.md) / 模块说明
+- [Roadmap](docs/ROADMAP.md) / 路线图
 - [Release Process](docs/RELEASE_PROCESS.md)
 - [Release Checklist](docs/RELEASE_CHECKLIST.md)
 - [Release Notes v1.6.1](docs/release-notes/v1.6.1.md)
@@ -405,14 +406,16 @@ If you want a deeper technical view after reading the product overview, these do
 
 ## Roadmap / 路线图
 
-- keep strengthening day-to-day personal research workflows before broad platform expansion  
-  在大规模平台化扩展之前，继续优先强化日常个人科研工作流
-- improve release quality, packaging confidence, and human smoke coverage in parallel  
-  并行提升发布质量、打包可信度和人工 smoke 覆盖
-- continue making database history, structured data, and read-only analysis easier to reuse together  
-  继续提升数据库历史记录、结构化数据和只读分析之间的联动复用体验
-- gradually broaden template and workflow coverage beyond the initial domain focus  
-  在初始领域重点之外，逐步扩展模板和工作流覆盖范围
+- stay on a conservative `v1.6.x` line before considering larger version jumps  
+  在考虑更大版本跃迁之前，先维持保守的 `v1.6.x` 迭代线
+- `v1.6.2`: stability patch only  
+  `v1.6.2`：仅做稳定性修补
+- `v1.6.3`: import memory and high-frequency entry improvements  
+  `v1.6.3`：导入记忆与高频录入改进
+- `v1.6.4`: analysis and research-memory polish  
+  `v1.6.4`：分析与科研记忆体验打磨
+- keep release quality, packaging confidence, and smoke coverage as a parallel quality track  
+  将发布质量、打包可信度和 smoke 覆盖继续作为并行质量线
 
 The roadmap is intentionally practical: make the existing workflow more solid before trying to become a very broad platform.  
 路线图会继续保持务实：先把已有工作流做扎实，再考虑更广泛的平台化扩展。
