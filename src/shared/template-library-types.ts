@@ -1,7 +1,7 @@
 import type { StructuredBlockPurpose } from '../template-blocks';
 
 export type TemplateLibrarySourceType = 'builtin' | 'user' | 'userOverride';
-export type TemplateEntityType = 'scientific' | 'curve' | 'import';
+export type TemplateEntityType = 'scientific' | 'curve' | 'scalar' | 'import';
 export type TemplateLibraryVersion = 1;
 
 export type TemplateAlias = {
@@ -83,10 +83,40 @@ export type StructuredCurveTemplate = {
   purposeType: StructuredBlockPurpose;
   blockTitleDefault: string;
   axisDefaults: AxisDefaults;
+  // Legacy transitional suggestion fields from v1.6.3.
+  // In v1.6.4+, canonical scalar template ownership belongs to
+  // ScalarItemTemplate under the Step 2 condition/metric sections,
+  // not to StructuredCurveTemplate. Keep these for backward
+  // compatibility with existing built-ins and persisted user state.
   recommendedConditions: TemplateRecommendedCondition[];
+  // Legacy transitional suggestion fields from v1.6.3.
+  // In v1.6.4+, canonical scalar template ownership belongs to
+  // ScalarItemTemplate under the Step 2 condition/metric sections,
+  // not to StructuredCurveTemplate. Keep these for backward
+  // compatibility with existing built-ins and persisted user state.
   recommendedMetrics: TemplateRecommendedMetric[];
   importParsingTemplateId?: string;
   filenameHints?: string[];
+  sourceType: TemplateLibrarySourceType;
+  createdAt?: string;
+  updatedAt?: string;
+};
+
+export type ScalarTemplateSection = 'condition' | 'metric';
+export type ScalarTemplateValueType = 'number' | 'text' | 'date' | 'boolean' | 'option';
+
+export type ScalarItemTemplate = {
+  id: string;
+  version: number;
+  familyId: string;
+  section: ScalarTemplateSection;
+  displayName: string;
+  aliases: TemplateAlias[];
+  unitDefault?: string;
+  defaultValue?: string;
+  valueType?: ScalarTemplateValueType;
+  note?: string;
+  enabled: boolean;
   sourceType: TemplateLibrarySourceType;
   createdAt?: string;
   updatedAt?: string;
@@ -141,6 +171,7 @@ export type RecentCurveNames = {
 export type TemplateLibraryUserTemplates = {
   scientificTemplates: ScientificTestTemplate[];
   curveTemplates: StructuredCurveTemplate[];
+  scalarTemplates: ScalarItemTemplate[];
   importParsingTemplates: ImportParsingTemplate[];
 };
 
@@ -158,6 +189,7 @@ export type BuiltinTemplateLibrary = {
   version: number;
   scientificTemplates: ScientificTestTemplate[];
   curveTemplates: StructuredCurveTemplate[];
+  scalarTemplates: ScalarItemTemplate[];
   importParsingTemplates: ImportParsingTemplate[];
 };
 
@@ -166,9 +198,11 @@ export type ResolvedTemplateLibrary = {
   state: TemplateLibraryState;
   scientificTemplates: ScientificTestTemplate[];
   curveTemplates: StructuredCurveTemplate[];
+  scalarTemplates: ScalarItemTemplate[];
   importParsingTemplates: ImportParsingTemplate[];
   activeScientificTemplates: ScientificTestTemplate[];
   activeCurveTemplates: StructuredCurveTemplate[];
+  activeScalarTemplates: ScalarItemTemplate[];
   activeImportParsingTemplates: ImportParsingTemplate[];
 };
 
@@ -180,6 +214,10 @@ export type UpsertUserTemplatePayload =
   | {
       templateType: 'curve';
       template: StructuredCurveTemplate;
+    }
+  | {
+      templateType: 'scalar';
+      template: ScalarItemTemplate;
     }
   | {
       templateType: 'import';
@@ -194,6 +232,11 @@ export type SetTemplateEnabledPayload = {
 export type ResetTemplateOverridePayload = {
   targetId: string;
   targetType: TemplateEntityType;
+};
+
+export type DeleteUserTemplatePayload = {
+  templateType: TemplateEntityType;
+  templateId: string;
 };
 
 export type UpsertImportMemoryPayload = {
@@ -250,6 +293,21 @@ export type FindCurveTemplatesOptions = {
 
 export type CurveTemplateRecommendation = {
   curveTemplate: StructuredCurveTemplate;
+  family?: ScientificTestTemplate;
+  score: number;
+  reason: TemplateRecommendationReason;
+  matchedAlias?: string;
+};
+
+export type FindScalarTemplatesOptions = {
+  includeDisabled?: boolean;
+  limit?: number;
+  query?: string;
+  section?: ScalarTemplateSection;
+};
+
+export type ScalarTemplateRecommendation = {
+  scalarTemplate: ScalarItemTemplate;
   family?: ScientificTestTemplate;
   score: number;
   reason: TemplateRecommendationReason;

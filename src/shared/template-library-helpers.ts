@@ -1,13 +1,19 @@
 import type {
   AxisDefaults,
+  DeleteUserTemplatePayload,
   BuiltinTemplateLibrary,
   CurveTemplateRecommendation,
   FindCurveTemplatesOptions,
+  FindScalarTemplatesOptions,
   ImportMemory,
   ImportParsingSettingsSnapshot,
   ImportParsingTemplate,
   RecentCurveNames,
   ResolvedTemplateLibrary,
+  ScalarItemTemplate,
+  ScalarTemplateRecommendation,
+  ScalarTemplateSection,
+  ScalarTemplateValueType,
   ScientificFamilyRecommendation,
   ScientificTestTemplate,
   SetTemplateEnabledPayload,
@@ -113,6 +119,34 @@ export function normalizePurposeType(value: unknown): StructuredBlockPurpose {
     default:
       return normalizeStructuredBlockPurpose(normalized);
   }
+}
+
+export function normalizeScalarSection(value: unknown): ScalarTemplateSection | '' {
+  const normalized = normalizeText(value).toLowerCase();
+  if (normalized === 'condition' || normalized === 'metric') {
+    return normalized;
+  }
+
+  return '';
+}
+
+export function normalizeScalarValueType(value: unknown): ScalarTemplateValueType | undefined {
+  const normalized = normalizeText(value).toLowerCase();
+  if (
+    normalized === 'number' ||
+    normalized === 'text' ||
+    normalized === 'date' ||
+    normalized === 'boolean' ||
+    normalized === 'option'
+  ) {
+    return normalized;
+  }
+
+  return undefined;
+}
+
+export function normalizeScalarTemplateId(value: unknown) {
+  return normalizeTemplateId(value);
 }
 
 export function normalizeFileExtension(value: unknown) {
@@ -325,6 +359,43 @@ function normalizeStructuredCurveTemplate(
   };
 }
 
+export function normalizeScalarItemTemplate(
+  value: unknown,
+  fallbackSourceType: TemplateLibrarySourceType
+): ScalarItemTemplate | null {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+
+  const candidate = value as Record<string, unknown>;
+  const id = normalizeScalarTemplateId(candidate.id);
+  const familyId = normalizeTemplateId(candidate.familyId);
+  const section = normalizeScalarSection(candidate.section);
+  const displayName = normalizeText(candidate.displayName);
+
+  if (!id || !familyId || !section || !displayName) {
+    return null;
+  }
+
+  return {
+    ...candidate,
+    id,
+    version: normalizePositiveInteger(candidate.version, 1),
+    familyId,
+    section,
+    displayName,
+    aliases: normalizeAliases(candidate.aliases),
+    unitDefault: normalizeOptionalText(candidate.unitDefault),
+    defaultValue: normalizeOptionalText(candidate.defaultValue),
+    valueType: normalizeScalarValueType(candidate.valueType),
+    note: normalizeOptionalText(candidate.note),
+    enabled: normalizeBoolean(candidate.enabled, true),
+    sourceType: fallbackSourceType,
+    createdAt: normalizeOptionalText(candidate.createdAt),
+    updatedAt: normalizeOptionalText(candidate.updatedAt)
+  };
+}
+
 function normalizeImportParsingTemplate(
   value: unknown,
   fallbackSourceType: TemplateLibrarySourceType
@@ -402,6 +473,15 @@ export function sanitizeTemplateOverridePatch(
     sanitized.enabled = patch.enabled;
   }
 
+  if (targetType === 'scientific') {
+    const description = normalizeOptionalText(patch.description);
+    if (description) {
+      sanitized.description = description;
+    } else if (typeof patch.description === 'string') {
+      sanitized.description = '';
+    }
+  }
+
   if (targetType === 'curve') {
     const purposeType = normalizePurposeType(patch.purposeType);
     if (purposeType) {
@@ -441,6 +521,41 @@ export function sanitizeTemplateOverridePatch(
         patch.filenameHints.map((item) => normalizeText(item)),
         12
       );
+    }
+  }
+
+  if (targetType === 'scalar') {
+    const section = normalizeScalarSection(patch.section);
+    if (section) {
+      sanitized.section = section;
+    }
+
+    const unitDefault = normalizeOptionalText(patch.unitDefault);
+    if (unitDefault) {
+      sanitized.unitDefault = unitDefault;
+    } else if (typeof patch.unitDefault === 'string') {
+      sanitized.unitDefault = '';
+    }
+
+    const defaultValue = normalizeOptionalText(patch.defaultValue);
+    if (defaultValue) {
+      sanitized.defaultValue = defaultValue;
+    } else if (typeof patch.defaultValue === 'string') {
+      sanitized.defaultValue = '';
+    }
+
+    const valueType = normalizeScalarValueType(patch.valueType);
+    if (valueType) {
+      sanitized.valueType = valueType;
+    } else if (patch.valueType === null) {
+      sanitized.valueType = null;
+    }
+
+    const note = normalizeOptionalText(patch.note);
+    if (note) {
+      sanitized.note = note;
+    } else if (typeof patch.note === 'string') {
+      sanitized.note = '';
     }
   }
 
@@ -498,7 +613,10 @@ function normalizeTemplateOverride(value: unknown): TemplateOverride | null {
 
   if (
     !targetId ||
-    (targetType !== 'scientific' && targetType !== 'curve' && targetType !== 'import')
+    (targetType !== 'scientific' &&
+      targetType !== 'curve' &&
+      targetType !== 'scalar' &&
+      targetType !== 'import')
   ) {
     return null;
   }
@@ -621,6 +739,11 @@ function normalizeUserTemplates(value: unknown): TemplateLibraryUserTemplates {
           .map((item) => normalizeStructuredCurveTemplate(item, 'user'))
           .filter((item): item is StructuredCurveTemplate => Boolean(item))
       : [],
+    scalarTemplates: Array.isArray(candidate.scalarTemplates)
+      ? candidate.scalarTemplates
+          .map((item) => normalizeScalarItemTemplate(item, 'user'))
+          .filter((item): item is ScalarItemTemplate => Boolean(item))
+      : [],
     importParsingTemplates: Array.isArray(candidate.importParsingTemplates)
       ? candidate.importParsingTemplates
           .map((item) => normalizeImportParsingTemplate(item, 'user'))
@@ -635,6 +758,7 @@ export function createEmptyTemplateLibraryState(): TemplateLibraryState {
     userTemplates: {
       scientificTemplates: [],
       curveTemplates: [],
+      scalarTemplates: [],
       importParsingTemplates: []
     },
     userOverrides: [],
@@ -742,6 +866,14 @@ function normalizeResolvedCurveTemplate(value: unknown) {
   );
 }
 
+function normalizeResolvedScalarTemplate(value: unknown) {
+  const candidate = value as Record<string, unknown> | null;
+  return normalizeScalarItemTemplate(
+    value,
+    candidate?.sourceType === 'user' ? 'user' : 'builtin'
+  );
+}
+
 function normalizeResolvedImportTemplate(value: unknown) {
   const candidate = value as Record<string, unknown> | null;
   return normalizeImportParsingTemplate(
@@ -793,6 +925,15 @@ export function resolveTemplateLibrary(
     'curve',
     normalizeResolvedCurveTemplate
   );
+  const scalarTemplates = applyTemplateOverrides(
+    [
+      ...builtinLibrary.scalarTemplates.map((item) => normalizeScalarItemTemplate(item, 'builtin')),
+      ...normalizedState.userTemplates.scalarTemplates
+    ].filter((item): item is ScalarItemTemplate => Boolean(item)),
+    normalizedState.userOverrides,
+    'scalar',
+    normalizeResolvedScalarTemplate
+  );
   const importParsingTemplates = applyTemplateOverrides(
     [
       ...builtinLibrary.importParsingTemplates.map((item) => normalizeImportParsingTemplate(item, 'builtin')),
@@ -805,6 +946,7 @@ export function resolveTemplateLibrary(
 
   const dedupedScientificTemplates = Array.from(buildTemplateMap(scientificTemplates).values());
   const dedupedCurveTemplates = Array.from(buildTemplateMap(curveTemplates).values());
+  const dedupedScalarTemplates = Array.from(buildTemplateMap(scalarTemplates).values());
   const dedupedImportTemplates = Array.from(buildTemplateMap(importParsingTemplates).values());
   const disabledIds = new Set(normalizedState.disabledTemplateIds.map((item) => normalizeTemplateId(item)));
 
@@ -813,9 +955,11 @@ export function resolveTemplateLibrary(
     state: normalizedState,
     scientificTemplates: dedupedScientificTemplates,
     curveTemplates: dedupedCurveTemplates,
+    scalarTemplates: dedupedScalarTemplates,
     importParsingTemplates: dedupedImportTemplates,
     activeScientificTemplates: filterActiveTemplates(dedupedScientificTemplates, disabledIds),
     activeCurveTemplates: filterActiveTemplates(dedupedCurveTemplates, disabledIds),
+    activeScalarTemplates: filterActiveTemplates(dedupedScalarTemplates, disabledIds),
     activeImportParsingTemplates: filterActiveTemplates(dedupedImportTemplates, disabledIds)
   };
 }
@@ -824,6 +968,7 @@ export function createTemplateCompatibilityLookup(resolvedLibrary: ResolvedTempl
   return {
     scientificTemplates: buildTemplateMap(resolvedLibrary.scientificTemplates),
     curveTemplates: buildTemplateMap(resolvedLibrary.curveTemplates),
+    scalarTemplates: buildTemplateMap(resolvedLibrary.scalarTemplates),
     importParsingTemplates: buildTemplateMap(resolvedLibrary.importParsingTemplates)
   };
 }
@@ -908,6 +1053,30 @@ export function findScientificFamiliesForTestProject(
 
   return [...source].sort((left, right) =>
     compareRecommendationScore(left.score, right.score, left.family.displayName, right.family.displayName)
+  );
+}
+
+export function findExactScientificFamilyForTestProject(
+  testProject: string,
+  resolvedLibrary: ResolvedTemplateLibrary
+): ScientificTestTemplate | null {
+  const normalizedQuery = normalizeBlockName(testProject);
+  if (!normalizedQuery) {
+    return null;
+  }
+
+  return (
+    resolvedLibrary.activeScientificTemplates.find((family) => {
+      if (normalizeBlockName(family.displayName) === normalizedQuery) {
+        return true;
+      }
+
+      if (normalizeBlockName(family.id) === normalizedQuery) {
+        return true;
+      }
+
+      return family.aliases.some((alias) => normalizeBlockName(alias.value) === normalizedQuery);
+    }) || null
   );
 }
 
@@ -1020,6 +1189,125 @@ export function findCurveTemplatesForTestProject(
     : source;
 }
 
+export function findScalarTemplatesForFamily(
+  familyId: string,
+  resolvedLibrary: ResolvedTemplateLibrary,
+  options: FindScalarTemplatesOptions = {}
+): ScalarTemplateRecommendation[] {
+  const includeDisabled = Boolean(options.includeDisabled);
+  const familyKey = normalizeTemplateId(familyId);
+  const query = normalizeText(options.query);
+  const section = normalizeScalarSection(options.section);
+  const limit = options.limit && options.limit > 0 ? options.limit : undefined;
+  const families = includeDisabled
+    ? resolvedLibrary.scientificTemplates
+    : resolvedLibrary.activeScientificTemplates;
+  const scalars = includeDisabled ? resolvedLibrary.scalarTemplates : resolvedLibrary.activeScalarTemplates;
+  const family = families.find((item) => item.id === familyKey);
+
+  const scopedScalars = (familyKey ? scalars.filter((item) => item.familyId === familyKey) : scalars).filter(
+    (item) => !section || item.section === section
+  );
+
+  const recommendations = scopedScalars
+    .map((scalarTemplate) => {
+      const matched = matchQueryToTemplate(
+        query,
+        scalarTemplate.displayName,
+        scalarTemplate.aliases,
+        scalarTemplate.id
+      );
+
+      return {
+        scalarTemplate,
+        family,
+        score: matched.score,
+        reason: query ? matched.reason : 'fallback',
+        matchedAlias: matched.matchedAlias
+      };
+    })
+    .filter((item) => !query || item.score > 0)
+    .sort((left, right) =>
+      compareRecommendationScore(
+        left.score,
+        right.score,
+        left.scalarTemplate.displayName,
+        right.scalarTemplate.displayName
+      )
+    );
+
+  return typeof limit === 'number' ? recommendations.slice(0, limit) : recommendations;
+}
+
+export function findScalarTemplatesForSection(
+  section: ScalarTemplateSection,
+  resolvedLibrary: ResolvedTemplateLibrary,
+  options: Omit<FindScalarTemplatesOptions, 'section'> = {}
+) {
+  return findScalarTemplatesForFamily('', resolvedLibrary, { ...options, section });
+}
+
+export function findScalarTemplatesForTestProject(
+  testProject: string,
+  resolvedLibrary: ResolvedTemplateLibrary,
+  options: FindScalarTemplatesOptions = {}
+): ScalarTemplateRecommendation[] {
+  const familyRecommendations = findScientificFamiliesForTestProject(testProject, resolvedLibrary);
+  const scalarMap = new Map<string, ScalarTemplateRecommendation>();
+
+  for (const familyRecommendation of familyRecommendations) {
+    const familyScalarRecommendations = findScalarTemplatesForFamily(
+      familyRecommendation.family.id,
+      resolvedLibrary,
+      {
+        includeDisabled: options.includeDisabled,
+        query: options.query,
+        section: options.section
+      }
+    );
+
+    for (const scalarRecommendation of familyScalarRecommendations) {
+      const score =
+        familyRecommendation.score +
+        scalarRecommendation.score +
+        (familyRecommendation.score > 0 ? 20 : 0);
+      const existing = scalarMap.get(scalarRecommendation.scalarTemplate.id);
+
+      if (!existing || score > existing.score) {
+        scalarMap.set(scalarRecommendation.scalarTemplate.id, {
+          scalarTemplate: scalarRecommendation.scalarTemplate,
+          family: familyRecommendation.family,
+          score,
+          reason:
+            scalarRecommendation.reason !== 'fallback'
+              ? scalarRecommendation.reason
+              : familyRecommendation.reason !== 'fallback'
+                ? 'family'
+                : 'fallback',
+          matchedAlias: scalarRecommendation.matchedAlias || familyRecommendation.matchedAlias
+        });
+      }
+    }
+  }
+
+  const recommendations = Array.from(scalarMap.values()).sort((left, right) =>
+    compareRecommendationScore(
+      left.score,
+      right.score,
+      left.scalarTemplate.displayName,
+      right.scalarTemplate.displayName
+    )
+  );
+
+  const source = recommendations.length
+    ? recommendations
+    : findScalarTemplatesForFamily('', resolvedLibrary, options);
+
+  return typeof options.limit === 'number' && options.limit > 0
+    ? source.slice(0, options.limit)
+    : source;
+}
+
 export function getTemplateApplicationPreview(
   curveTemplate: StructuredCurveTemplate,
   resolvedLibrary: ResolvedTemplateLibrary
@@ -1090,6 +1378,23 @@ export function upsertUserTemplateState(
       ...nextState.userTemplates.curveTemplates.filter((item) => item.id !== normalizedTemplate.id),
       normalizedTemplate
     ];
+  } else if (payload.templateType === 'scalar') {
+    const normalizedTemplate = normalizeScalarItemTemplate(
+      {
+        ...payload.template,
+        updatedAt: now,
+        createdAt: payload.template.createdAt || now
+      },
+      'user'
+    );
+    if (!normalizedTemplate) {
+      return nextState;
+    }
+
+    nextState.userTemplates.scalarTemplates = [
+      ...nextState.userTemplates.scalarTemplates.filter((item) => item.id !== normalizedTemplate.id),
+      normalizedTemplate
+    ];
   } else {
     const normalizedTemplate = normalizeImportParsingTemplate(
       {
@@ -1110,6 +1415,110 @@ export function upsertUserTemplateState(
   }
 
   nextState.updatedAt = now;
+  return normalizeTemplateLibraryState(nextState);
+}
+
+export function deleteUserTemplateState(
+  state: TemplateLibraryState,
+  payload: DeleteUserTemplatePayload
+) {
+  const normalizedState = normalizeTemplateLibraryState(state);
+  const nextState = normalizeTemplateLibraryState(normalizedState);
+  const templateId = normalizeTemplateId(payload.templateId);
+  let deleted = false;
+
+  if (!templateId) {
+    return normalizedState;
+  }
+
+  if (payload.templateType === 'curve') {
+    const previousCount = nextState.userTemplates.curveTemplates.length;
+    nextState.userTemplates.curveTemplates = nextState.userTemplates.curveTemplates.filter(
+      (item) => item.id !== templateId
+    );
+    deleted = nextState.userTemplates.curveTemplates.length !== previousCount;
+    if (deleted) {
+      nextState.importMemories = nextState.importMemories.map((item) =>
+        item.curveTemplateId === templateId
+          ? {
+              ...item,
+              curveTemplateId: undefined
+            }
+          : item
+      );
+    }
+  } else if (payload.templateType === 'scalar') {
+    const previousCount = nextState.userTemplates.scalarTemplates.length;
+    nextState.userTemplates.scalarTemplates = nextState.userTemplates.scalarTemplates.filter(
+      (item) => item.id !== templateId
+    );
+    deleted = nextState.userTemplates.scalarTemplates.length !== previousCount;
+  } else if (payload.templateType === 'import') {
+    const previousCount = nextState.userTemplates.importParsingTemplates.length;
+    nextState.userTemplates.importParsingTemplates = nextState.userTemplates.importParsingTemplates.filter(
+      (item) => item.id !== templateId
+    );
+    deleted = nextState.userTemplates.importParsingTemplates.length !== previousCount;
+  } else if (payload.templateType === 'scientific') {
+    const previousCount = nextState.userTemplates.scientificTemplates.length;
+    nextState.userTemplates.scientificTemplates = nextState.userTemplates.scientificTemplates.filter(
+      (item) => item.id !== templateId
+    );
+    deleted = nextState.userTemplates.scientificTemplates.length !== previousCount;
+    if (deleted) {
+      const deletedCurveIds = nextState.userTemplates.curveTemplates
+        .filter((item) => item.familyId === templateId)
+        .map((item) => item.id);
+      const deletedScalarIds = nextState.userTemplates.scalarTemplates
+        .filter((item) => item.familyId === templateId)
+        .map((item) => item.id);
+      const deletedImportTemplateIds = nextState.userTemplates.importParsingTemplates
+        .filter(
+          (item) => item.familyId === templateId || (!!item.curveTemplateId && deletedCurveIds.includes(item.curveTemplateId))
+        )
+        .map((item) => item.id);
+      nextState.userTemplates.curveTemplates = nextState.userTemplates.curveTemplates.filter(
+        (item) => item.familyId !== templateId
+      );
+      nextState.userTemplates.scalarTemplates = nextState.userTemplates.scalarTemplates.filter(
+        (item) => item.familyId !== templateId
+      );
+      nextState.userTemplates.importParsingTemplates = nextState.userTemplates.importParsingTemplates.filter(
+        (item) => item.familyId !== templateId && (!item.curveTemplateId || !deletedCurveIds.includes(item.curveTemplateId))
+      );
+      if (deletedCurveIds.length) {
+        nextState.importMemories = nextState.importMemories.map((item) =>
+          item.curveTemplateId && deletedCurveIds.includes(item.curveTemplateId)
+            ? {
+                ...item,
+                curveTemplateId: undefined
+              }
+            : item
+        );
+      }
+      const deletedIds = new Set([
+        templateId,
+        ...deletedCurveIds,
+        ...deletedScalarIds,
+        ...deletedImportTemplateIds
+      ]);
+      nextState.disabledTemplateIds = nextState.disabledTemplateIds.filter(
+        (item) => !deletedIds.has(item)
+      );
+      nextState.userOverrides = nextState.userOverrides.filter(
+        (override) => !deletedIds.has(override.targetId)
+      );
+    }
+  } else {
+    return normalizedState;
+  }
+
+  if (!deleted) {
+    return normalizedState;
+  }
+
+  nextState.disabledTemplateIds = nextState.disabledTemplateIds.filter((item) => item !== templateId);
+  nextState.updatedAt = new Date().toISOString();
   return normalizeTemplateLibraryState(nextState);
 }
 

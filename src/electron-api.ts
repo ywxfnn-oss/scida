@@ -1,5 +1,6 @@
 import type { StructuredBlockPurpose } from './template-blocks';
 import type {
+  DeleteUserTemplatePayload,
   ResetTemplateOverridePayload,
   ResolvedTemplateLibrary,
   SetTemplateEnabledPayload,
@@ -12,13 +13,19 @@ export type {
   AxisDefaults,
   BuiltinTemplateLibrary,
   CurveTemplateRecommendation,
+  DeleteUserTemplatePayload,
   FindCurveTemplatesOptions,
+  FindScalarTemplatesOptions,
   ImportMemory,
   ImportParsingSettingsSnapshot,
   ImportParsingTemplate,
   RecentCurveNames,
   ResetTemplateOverridePayload,
   ResolvedTemplateLibrary,
+  ScalarItemTemplate,
+  ScalarTemplateRecommendation,
+  ScalarTemplateSection,
+  ScalarTemplateValueType,
   ScientificFamilyRecommendation,
   ScientificTestTemplate,
   SetTemplateEnabledPayload,
@@ -837,6 +844,7 @@ export interface ElectronAPI {
   upsertTemplateLibraryOverride: (payload: TemplateOverride) => Promise<ActionResult>;
   resetTemplateLibraryOverride: (payload: ResetTemplateOverridePayload) => Promise<ActionResult>;
   upsertUserTemplate: (payload: UpsertUserTemplatePayload) => Promise<ActionResult>;
+  deleteUserTemplate: (payload: DeleteUserTemplatePayload) => Promise<ActionResult>;
   recordTemplateImportMemory: (
     payload: UpsertImportMemoryPayload
   ) => Promise<ResolvedTemplateLibrary>;

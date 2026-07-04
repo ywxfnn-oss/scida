@@ -1,7 +1,7 @@
 {
   "name": "scidata-manager",
   "productName": "Scida",
-  "version": "1.6.3",
+  "version": "1.6.5",
   "description": "Scida is a local-first desktop scientific data workspace for experiment records, structured data, read-only analysis, and export.",
   "main": ".vite/build/main.js",
   "private": true,

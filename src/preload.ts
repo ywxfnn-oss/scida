@@ -38,6 +38,9 @@ const electronAPI: ElectronAPI = {
     upsertUserTemplate: (payload) =>
         ipcRenderer.invoke('templateLibrary:upsertUserTemplate', payload),
 
+    deleteUserTemplate: (payload) =>
+        ipcRenderer.invoke('templateLibrary:deleteUserTemplate', payload),
+
     recordTemplateImportMemory: (payload) =>
         ipcRenderer.invoke('templateLibrary:recordImportMemory', payload),
 

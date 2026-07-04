@@ -192,7 +192,7 @@ export async function discardActiveEntryDraft(prisma: PrismaClient): Promise<Act
 
 function collectRecentValues(
   rows: Array<{ testProject: string; instrument: string }>,
-  allowedValues: Set<string>,
+  allowedValues: Set<string> | null,
   key: 'testProject' | 'instrument'
 ) {
   const seen = new Set<string>();
@@ -200,7 +200,7 @@ function collectRecentValues(
 
   for (const row of rows) {
     const candidate = normalizeText(row[key]);
-    if (!candidate || seen.has(candidate) || !allowedValues.has(candidate)) {
+    if (!candidate || seen.has(candidate) || (allowedValues && !allowedValues.has(candidate))) {
       continue;
     }
 
@@ -230,15 +230,12 @@ export async function getRecentEntrySuggestions(
     })
   ]);
 
-  const allowedProjects = new Set(
-    dictionaryItems.testProject.filter((item) => item.isActive).map((item) => item.value)
-  );
   const allowedInstruments = new Set(
     dictionaryItems.instrument.filter((item) => item.isActive).map((item) => item.value)
   );
 
   return {
-    testProjects: collectRecentValues(experiments, allowedProjects, 'testProject'),
+    testProjects: collectRecentValues(experiments, null, 'testProject'),
     instruments: collectRecentValues(experiments, allowedInstruments, 'instrument')
   };
 }

@@ -2,15 +2,27 @@
 
 ## Unreleased
 
+## v1.6.5 - 2026-07-04
+
 ### Added
 
-- Added the `v1.6.3` Template Library foundation for local structured-curve template persistence, starter templates, Settings management, global search, local override behavior, and reset-to-built-in support.
-- Added the Step 2 structured curve template selector so users can explicitly apply safe starter metadata for block name, `purposeType`, X/Y labels, and X/Y units without changing manual entry semantics.
-- Added write-success structured import memory plus an explicit `使用上次导入设置 / Use last import settings` action that restores import controls only and never auto-writes `XY 数据`.
+- Added a Test Type-centered template system so the Test Template Library now manages built-in and user-defined Test Types, Curve/Spectrum Templates, Test Condition Templates, and Result Metric Templates together.
+- Added custom user Test Types, including child-template ownership under those custom Test Types without changing the runtime database schema.
+- Added built-in Test Condition and Result Metric starter templates plus Step 2 template-assisted insertion for both sections while preserving full manual entry.
+- Added Test Type-scoped Curve/Spectrum Template filtering in Test Data so curve recommendations now follow the selected Record Info Test Type.
+- Added user-template deletion support in the Test Template Library, including safe cascade cleanup for child user templates.
 
-### Fixed
+### Changed
 
-- Fixed structured import metadata loss so `写入当前块` preserves the current block's labels, units, and related metadata instead of forcing re-entry after import.
+- Improved the Test Template Library layout and interactions with full-card click selection, list-end plus cards, clearer enable/disable controls, cleaner delete behavior, simplified Template/Data Name wording, clearer Axis Settings, and hidden `purposeType` from the primary UI.
+- Unified terminology across New Record, Record Info, Test Data, Records, Test Template Library, and Provenance Elements.
+- Reworked the Provenance Elements module for tester, instrument, owner, and sample-code management only, and removed Test Type management from the old dictionary-style module.
+- Kept Step 2 save-as-template deferred.
+
+### Compatibility
+
+- Kept schema, export behavior, analysis behavior, multi-Y support, and formula/calculation features unchanged in this release.
+- Kept old records compatible by preserving internal `testProject`, `ScientificTestTemplate`, and `purposeType` semantics while updating user-facing terminology.
 
 ## v1.6.1 - 2026-07-01
 

@@ -1,4 +1,9 @@
-import type { BuiltinTemplateLibrary } from './template-library-types';
+import type {
+  BuiltinTemplateLibrary,
+  ScalarItemTemplate,
+  ScalarTemplateSection,
+  ScalarTemplateValueType
+} from './template-library-types';
 
 function createConditions(
   items: Array<{
@@ -23,6 +28,291 @@ function createMetrics(
 ) {
   return items;
 }
+
+function createScalarTemplates(
+  familyKey: string,
+  familyId: string,
+  section: ScalarTemplateSection,
+  items: Array<{
+    slug: string;
+    label: string;
+    unitDefault?: string;
+    defaultValue?: string;
+    valueType?: ScalarTemplateValueType;
+    note?: string;
+    aliases?: string[];
+  }>
+): ScalarItemTemplate[] {
+  return items.map((item) => ({
+    id: `scalar:${familyKey}:${section}:${item.slug}`,
+    version: 1,
+    familyId,
+    section,
+    displayName: item.label,
+    aliases: (item.aliases ?? []).map((value) => ({ value, kind: 'search' as const })),
+    unitDefault: item.unitDefault,
+    defaultValue: item.defaultValue,
+    valueType: item.valueType,
+    note: item.note,
+    enabled: true,
+    sourceType: 'builtin'
+  }));
+}
+
+const IV_CONDITION_SCALARS = [
+  { slug: 'bias-voltage', label: 'Bias voltage', unitDefault: 'V', aliases: ['偏压'] },
+  { slug: 'sweep-range', label: 'Sweep range', unitDefault: 'V', aliases: ['扫描范围', '电压范围'] },
+  { slug: 'sweep-direction', label: 'Sweep direction', valueType: 'text' as const, aliases: ['扫描方向'] },
+  { slug: 'sweep-step', label: 'Sweep step', unitDefault: 'V', aliases: ['步进电压', '电压步进'] },
+  { slug: 'sweep-rate', label: 'Sweep rate', unitDefault: 'V/s', aliases: ['扫描速率'] },
+  { slug: 'temperature', label: 'Temperature', unitDefault: 'K', aliases: ['温度'] },
+  { slug: 'device-area', label: 'Device area', unitDefault: 'cm²', aliases: ['器件面积'] },
+  {
+    slug: 'illumination-state',
+    label: 'Illumination state',
+    valueType: 'text' as const,
+    aliases: ['光照状态']
+  },
+  { slug: 'dark-environment', label: 'Dark environment', valueType: 'text' as const, aliases: ['暗环境'] }
+];
+
+const IV_METRIC_SCALARS = [
+  { slug: 'dark-current', label: 'Dark current', unitDefault: 'A', aliases: ['暗电流'] },
+  { slug: 'photocurrent', label: 'Photocurrent', unitDefault: 'A', aliases: ['光电流'] },
+  { slug: 'current-density', label: 'Current density', unitDefault: 'A/cm²', aliases: ['电流密度'] },
+  {
+    slug: 'dark-current-density',
+    label: 'Dark current density',
+    unitDefault: 'A/cm²',
+    aliases: ['暗电流密度']
+  },
+  { slug: 'on-off-ratio', label: 'On/off ratio', aliases: ['开关比'] },
+  { slug: 'rectification-ratio', label: 'Rectification ratio', aliases: ['整流比'] },
+  { slug: 'hysteresis', label: 'Hysteresis', aliases: ['滞后'] }
+];
+
+const RESPONSIVITY_EQE_CONDITION_SCALARS = [
+  { slug: 'bias-voltage', label: 'Bias voltage', unitDefault: 'V', aliases: ['偏压'] },
+  { slug: 'wavelength-range', label: 'Wavelength range', unitDefault: 'nm', aliases: ['波长范围'] },
+  {
+    slug: 'incident-optical-power',
+    label: 'Incident optical power',
+    unitDefault: 'mW',
+    aliases: ['入射光功率']
+  },
+  { slug: 'irradiance', label: 'Irradiance', unitDefault: 'mW/cm²', aliases: ['辐照度'] },
+  {
+    slug: 'reference-detector',
+    label: 'Reference detector',
+    valueType: 'text' as const,
+    aliases: ['参考探测器']
+  },
+  { slug: 'illuminated-area', label: 'Illuminated area', unitDefault: 'cm²', aliases: ['受光面积'] },
+  {
+    slug: 'modulation-frequency',
+    label: 'Modulation frequency',
+    unitDefault: 'Hz',
+    aliases: ['调制频率']
+  },
+  { slug: 'temperature', label: 'Temperature', unitDefault: 'K', aliases: ['温度'] }
+];
+
+const RESPONSIVITY_EQE_METRIC_SCALARS = [
+  {
+    slug: 'peak-responsivity',
+    label: 'Peak responsivity',
+    unitDefault: 'A/W',
+    aliases: ['峰值响应率']
+  },
+  { slug: 'peak-eqe', label: 'Peak EQE', unitDefault: '%', aliases: ['峰值EQE'] },
+  { slug: 'spectral-cutoff', label: 'Spectral cutoff', unitDefault: 'nm', aliases: ['截止波长'] },
+  {
+    slug: 'wavelength-of-peak-response',
+    label: 'Wavelength of peak response',
+    unitDefault: 'nm',
+    aliases: ['峰值响应波长']
+  },
+  {
+    slug: 'responsivity-at-selected-wavelength',
+    label: 'Responsivity at selected wavelength',
+    unitDefault: 'A/W',
+    aliases: ['指定波长响应率']
+  },
+  {
+    slug: 'eqe-at-selected-wavelength',
+    label: 'EQE at selected wavelength',
+    unitDefault: '%',
+    aliases: ['指定波长EQE']
+  }
+];
+
+const LINEARITY_LDR_CONDITION_SCALARS = [
+  { slug: 'wavelength', label: 'Wavelength', unitDefault: 'nm', aliases: ['波长'] },
+  {
+    slug: 'optical-power-range',
+    label: 'Optical power range',
+    unitDefault: 'mW',
+    aliases: ['光功率范围']
+  },
+  {
+    slug: 'irradiance-range',
+    label: 'Irradiance range',
+    unitDefault: 'mW/cm²',
+    aliases: ['辐照度范围']
+  },
+  { slug: 'bias-voltage', label: 'Bias voltage', unitDefault: 'V', aliases: ['偏压'] },
+  { slug: 'spot-size', label: 'Spot size', unitDefault: 'mm', aliases: ['光斑尺寸'] },
+  { slug: 'illuminated-area', label: 'Illuminated area', unitDefault: 'cm²', aliases: ['受光面积'] },
+  { slug: 'temperature', label: 'Temperature', unitDefault: 'K', aliases: ['温度'] }
+];
+
+const LINEARITY_LDR_METRIC_SCALARS = [
+  { slug: 'linear-fitting-exponent', label: 'Linear fitting exponent', aliases: ['拟合指数'] },
+  { slug: 'ldr', label: 'LDR', unitDefault: 'dB', aliases: ['线性动态范围'] },
+  { slug: 'ldrapp', label: 'LDRapp', unitDefault: 'dB', aliases: ['表观线性动态范围'] },
+  { slug: 'saturation-point', label: 'Saturation point', unitDefault: 'mW/cm²', aliases: ['饱和点'] }
+];
+
+const NOISE_CONDITION_SCALARS = [
+  { slug: 'bias-voltage', label: 'Bias voltage', unitDefault: 'V', aliases: ['偏压'] },
+  { slug: 'dark-light-state', label: 'Dark/light state', valueType: 'text' as const, aliases: ['明暗状态'] },
+  { slug: 'bandwidth', label: 'Bandwidth', unitDefault: 'Hz', aliases: ['带宽'] },
+  { slug: 'sampling-rate', label: 'Sampling rate', unitDefault: 'Hz', aliases: ['采样率'] },
+  {
+    slug: 'instrument-noise-floor',
+    label: 'Instrument noise floor',
+    unitDefault: 'A/√Hz',
+    aliases: ['仪器噪声底']
+  },
+  { slug: 'temperature', label: 'Temperature', unitDefault: 'K', aliases: ['温度'] }
+];
+
+const NOISE_METRIC_SCALARS = [
+  {
+    slug: 'noise-current-density',
+    label: 'Noise current density',
+    unitDefault: 'A/√Hz',
+    aliases: ['噪声电流密度']
+  },
+  { slug: 'noise-psd', label: 'Noise PSD', unitDefault: 'A²/Hz', aliases: ['噪声功率谱密度'] },
+  { slug: 'integrated-noise', label: 'Integrated noise', unitDefault: 'A', aliases: ['积分噪声'] }
+];
+
+const NEP_DETECTIVITY_CONDITION_SCALARS = [
+  { slug: 'bias-voltage', label: 'Bias voltage', unitDefault: 'V', aliases: ['偏压'] },
+  { slug: 'wavelength', label: 'Wavelength', unitDefault: 'nm', aliases: ['波长'] },
+  {
+    slug: 'modulation-frequency',
+    label: 'Modulation frequency',
+    unitDefault: 'Hz',
+    aliases: ['调制频率']
+  },
+  { slug: 'bandwidth', label: 'Bandwidth', unitDefault: 'Hz', aliases: ['带宽'] },
+  { slug: 'device-area', label: 'Device area', unitDefault: 'cm²', aliases: ['器件面积'] },
+  {
+    slug: 'responsivity-source',
+    label: 'Responsivity source',
+    valueType: 'text' as const,
+    aliases: ['响应率来源']
+  },
+  {
+    slug: 'noise-measurement-method',
+    label: 'Noise measurement method',
+    valueType: 'text' as const,
+    aliases: ['噪声测量方法']
+  }
+];
+
+const NEP_DETECTIVITY_METRIC_SCALARS = [
+  { slug: 'nep', label: 'NEP', unitDefault: 'W/√Hz', aliases: ['噪声等效功率'] },
+  {
+    slug: 'specific-detectivity-d-star',
+    label: 'Specific detectivity D*',
+    unitDefault: 'Jones',
+    aliases: ['比探测率', 'D*']
+  },
+  { slug: 'bandwidth', label: 'Bandwidth', unitDefault: 'Hz', aliases: ['带宽'] }
+];
+
+const SPEED_RESPONSE_CONDITION_SCALARS = [
+  { slug: 'bias-voltage', label: 'Bias voltage', unitDefault: 'V', aliases: ['偏压'] },
+  { slug: 'wavelength', label: 'Wavelength', unitDefault: 'nm', aliases: ['波长'] },
+  { slug: 'optical-power', label: 'Optical power', unitDefault: 'mW', aliases: ['光功率'] },
+  { slug: 'load-resistance', label: 'Load resistance', unitDefault: 'Ω', aliases: ['负载电阻'] },
+  { slug: 'sampling-rate', label: 'Sampling rate', unitDefault: 'Hz', aliases: ['采样率'] },
+  { slug: 'pulse-width', label: 'Pulse width', unitDefault: 's', aliases: ['脉冲宽度'] },
+  {
+    slug: 'modulation-frequency',
+    label: 'Modulation frequency',
+    unitDefault: 'Hz',
+    aliases: ['调制频率']
+  }
+];
+
+const SPEED_RESPONSE_METRIC_SCALARS = [
+  { slug: 'rise-time', label: 'Rise time', unitDefault: 's', aliases: ['上升时间'] },
+  { slug: 'fall-time', label: 'Fall time', unitDefault: 's', aliases: ['下降时间'] },
+  { slug: 'response-time', label: 'Response time', unitDefault: 's', aliases: ['响应时间'] },
+  { slug: 'bandwidth', label: 'Bandwidth', unitDefault: 'Hz', aliases: ['带宽'] }
+];
+
+const STABILITY_CONDITION_SCALARS = [
+  { slug: 'bias-voltage', label: 'Bias voltage', unitDefault: 'V', aliases: ['偏压'] },
+  { slug: 'wavelength', label: 'Wavelength', unitDefault: 'nm', aliases: ['波长'] },
+  { slug: 'optical-power', label: 'Optical power', unitDefault: 'mW', aliases: ['光功率'] },
+  { slug: 'cycle-count', label: 'Cycle count', aliases: ['循环次数'] },
+  { slug: 'on-off-period', label: 'On/off period', unitDefault: 's', aliases: ['开关周期'] },
+  { slug: 'atmosphere', label: 'Atmosphere', valueType: 'text' as const, aliases: ['气氛'] },
+  { slug: 'temperature', label: 'Temperature', unitDefault: 'K', aliases: ['温度'] }
+];
+
+const STABILITY_METRIC_SCALARS = [
+  { slug: 'initial-current', label: 'Initial current', unitDefault: 'A', aliases: ['初始电流'] },
+  { slug: 'final-current', label: 'Final current', unitDefault: 'A', aliases: ['最终电流'] },
+  { slug: 'retention', label: 'Retention', unitDefault: '%', aliases: ['保持率'] },
+  { slug: 'degradation-rate', label: 'Degradation rate', unitDefault: '%/h', aliases: ['退化速率'] }
+];
+
+const XRD_CONDITION_SCALARS = [
+  { slug: 'scan-range', label: 'Scan range', unitDefault: '°', aliases: ['扫描范围'] },
+  { slug: 'step-size', label: 'Step size', unitDefault: '°', aliases: ['步长'] },
+  { slug: 'scan-speed', label: 'Scan speed', unitDefault: '°/min', aliases: ['扫描速度'] },
+  { slug: 'x-ray-source', label: 'X-ray source', valueType: 'text' as const, aliases: ['X射线源'] },
+  { slug: 'x-ray-wavelength', label: 'X-ray wavelength', unitDefault: 'Å', aliases: ['X射线波长'] },
+  { slug: 'sample-state', label: 'Sample state', valueType: 'text' as const, aliases: ['样品状态'] }
+];
+
+const XRD_METRIC_SCALARS = [
+  { slug: 'peak-position', label: 'Peak position', unitDefault: '°', aliases: ['峰位'] },
+  { slug: 'fwhm', label: 'FWHM', unitDefault: '°', aliases: ['半高宽'] },
+  { slug: 'phase-assignment', label: 'Phase assignment', valueType: 'text' as const, aliases: ['物相判定'] },
+  {
+    slug: 'crystallinity-note',
+    label: 'Crystallinity note',
+    valueType: 'text' as const,
+    aliases: ['结晶性备注']
+  }
+];
+
+const PL_CONDITION_SCALARS = [
+  {
+    slug: 'excitation-wavelength',
+    label: 'Excitation wavelength',
+    unitDefault: 'nm',
+    aliases: ['激发波长']
+  },
+  { slug: 'excitation-power', label: 'Excitation power', unitDefault: 'mW', aliases: ['激发功率'] },
+  { slug: 'integration-time', label: 'Integration time', unitDefault: 's', aliases: ['积分时间'] },
+  { slug: 'temperature', label: 'Temperature', unitDefault: 'K', aliases: ['温度'] },
+  { slug: 'sample-state', label: 'Sample state', valueType: 'text' as const, aliases: ['样品状态'] }
+];
+
+const PL_METRIC_SCALARS = [
+  { slug: 'peak-wavelength', label: 'Peak wavelength', unitDefault: 'nm', aliases: ['峰值波长'] },
+  { slug: 'peak-intensity', label: 'Peak intensity', unitDefault: 'a.u.', aliases: ['峰强'] },
+  { slug: 'fwhm', label: 'FWHM', unitDefault: 'nm', aliases: ['半高宽'] },
+  { slug: 'integrated-intensity', label: 'Integrated intensity', unitDefault: 'a.u.', aliases: ['积分强度'] }
+];
 
 export const DEFAULT_TEMPLATE_LIBRARY: BuiltinTemplateLibrary = {
   version: 1,
@@ -155,6 +445,73 @@ export const DEFAULT_TEMPLATE_LIBRARY: BuiltinTemplateLibrary = {
       description: 'Photoluminescence and optical spectrum workflows.',
       sourceType: 'builtin'
     }
+  ],
+  scalarTemplates: [
+    ...createScalarTemplates('iv', 'scientific:iv', 'condition', IV_CONDITION_SCALARS),
+    ...createScalarTemplates('iv', 'scientific:iv', 'metric', IV_METRIC_SCALARS),
+    ...createScalarTemplates('dark-current', 'scientific:dark-current', 'condition', IV_CONDITION_SCALARS),
+    ...createScalarTemplates('dark-current', 'scientific:dark-current', 'metric', IV_METRIC_SCALARS),
+    ...createScalarTemplates(
+      'responsivity-eqe',
+      'scientific:responsivity-eqe',
+      'condition',
+      RESPONSIVITY_EQE_CONDITION_SCALARS
+    ),
+    ...createScalarTemplates(
+      'responsivity-eqe',
+      'scientific:responsivity-eqe',
+      'metric',
+      RESPONSIVITY_EQE_METRIC_SCALARS
+    ),
+    ...createScalarTemplates(
+      'linearity-ldr',
+      'scientific:linearity-ldr',
+      'condition',
+      LINEARITY_LDR_CONDITION_SCALARS
+    ),
+    ...createScalarTemplates(
+      'linearity-ldr',
+      'scientific:linearity-ldr',
+      'metric',
+      LINEARITY_LDR_METRIC_SCALARS
+    ),
+    ...createScalarTemplates('noise', 'scientific:noise', 'condition', NOISE_CONDITION_SCALARS),
+    ...createScalarTemplates('noise', 'scientific:noise', 'metric', NOISE_METRIC_SCALARS),
+    ...createScalarTemplates(
+      'nep-detectivity',
+      'scientific:nep-detectivity',
+      'condition',
+      NEP_DETECTIVITY_CONDITION_SCALARS
+    ),
+    ...createScalarTemplates(
+      'nep-detectivity',
+      'scientific:nep-detectivity',
+      'metric',
+      NEP_DETECTIVITY_METRIC_SCALARS
+    ),
+    ...createScalarTemplates(
+      'speed-response',
+      'scientific:speed-response',
+      'condition',
+      SPEED_RESPONSE_CONDITION_SCALARS
+    ),
+    ...createScalarTemplates(
+      'speed-response',
+      'scientific:speed-response',
+      'metric',
+      SPEED_RESPONSE_METRIC_SCALARS
+    ),
+    ...createScalarTemplates(
+      'stability',
+      'scientific:stability',
+      'condition',
+      STABILITY_CONDITION_SCALARS
+    ),
+    ...createScalarTemplates('stability', 'scientific:stability', 'metric', STABILITY_METRIC_SCALARS),
+    ...createScalarTemplates('xrd', 'scientific:xrd', 'condition', XRD_CONDITION_SCALARS),
+    ...createScalarTemplates('xrd', 'scientific:xrd', 'metric', XRD_METRIC_SCALARS),
+    ...createScalarTemplates('pl', 'scientific:pl', 'condition', PL_CONDITION_SCALARS),
+    ...createScalarTemplates('pl', 'scientific:pl', 'metric', PL_METRIC_SCALARS)
   ],
   curveTemplates: [
     {

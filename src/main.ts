@@ -14,6 +14,7 @@ import type {
   CompleteOnboardingPayload,
   CopyFileToStoragePayload,
   CopyFileToStorageResult,
+  DeleteUserTemplatePayload,
   DeactivateDictionaryItemPayload,
   ListDictionaryItemsPayload,
   PersistedAnalysisUIState,
@@ -87,6 +88,7 @@ import {
 } from './main/ui-state-settings';
 import {
   clearTemplateLibraryUserState,
+  deleteUserTemplate,
   getResolvedTemplateLibrary,
   getTemplateLibraryState,
   recordTemplateImportMemory,
@@ -727,6 +729,7 @@ app.whenReady().then(async () => {
         userTemplates: {
           scientificTemplates: [],
           curveTemplates: [],
+          scalarTemplates: [],
           importParsingTemplates: []
         },
         userOverrides: [],
@@ -765,6 +768,7 @@ app.whenReady().then(async () => {
           userTemplates: {
             scientificTemplates: [],
             curveTemplates: [],
+            scalarTemplates: [],
             importParsingTemplates: []
           },
           userOverrides: [],
@@ -778,9 +782,11 @@ app.whenReady().then(async () => {
         },
         scientificTemplates: [],
         curveTemplates: [],
+        scalarTemplates: [],
         importParsingTemplates: [],
         activeScientificTemplates: [],
         activeCurveTemplates: [],
+        activeScalarTemplates: [],
         activeImportParsingTemplates: []
       };
     }
@@ -821,6 +827,18 @@ app.whenReady().then(async () => {
       } catch (error) {
         console.error('upsertUserTemplate failed:', error);
         return { success: false, error: '保存用户模板失败，请稍后重试' };
+      }
+    }
+  );
+
+  ipcMain.handle(
+    'templateLibrary:deleteUserTemplate',
+    async (_event, payload: DeleteUserTemplatePayload): Promise<ActionResult> => {
+      try {
+        return await deleteUserTemplate(prisma, payload);
+      } catch (error) {
+        console.error('deleteUserTemplate failed:', error);
+        return { success: false, error: '删除用户模板失败，请稍后重试' };
       }
     }
   );

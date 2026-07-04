@@ -10,6 +10,7 @@ import type {
   CrossFilterField,
   CrossFilterOperator,
   DatabaseWorkspaceState,
+  DictionaryItem,
   DictionaryItemsByType,
   DictionaryType,
   DuplicateExperimentMatch,
@@ -43,6 +44,11 @@ import type {
   RecordDatabaseWorkspaceUsagePayload,
   SaveExperimentPayload,
   SaveExperimentTemplateBlockPayload,
+  ScalarItemTemplate,
+  ScalarTemplateRecommendation,
+  ScalarTemplateSection,
+  ScalarTemplateValueType,
+  ScientificTestTemplate,
   StructuredCurveTemplate,
   UpsertImportMemoryPayload,
   TemplateApplicationPreview,
@@ -77,19 +83,18 @@ import {
 } from './cross-filters';
 import {
   buildTemplateMemoryCandidates,
-  findCurveTemplatesForTestProject,
+  findExactScientificFamilyForTestProject,
+  findCurveTemplatesForFamily,
+  findScientificFamiliesForTestProject,
+  findScalarTemplatesForFamily,
   getTemplateApplicationPreview,
   isGenericStructuredBlockName,
   rankTemplateMemoryMatches,
 } from './shared/template-library-helpers';
 import {
   getStructuredBlockPurposeLabel,
-  getValueNatureLabelText,
-  resolveStep2TemplateFamily,
   STRUCTURED_BLOCK_PURPOSE_OPTIONS,
-  type Step2RecommendedScalarItem,
   type Step2RecommendedStructuredBlock,
-  type Step2TemplateFamily,
   type StructuredBlockPurpose
 } from './renderer/step2-template-registry';
 import {
@@ -155,6 +160,12 @@ type DataItem = {
 type ScalarItemRole = 'condition' | 'metric';
 
 type ScalarItemEditContext = 'create-step2' | 'detail-edit';
+
+type Step2ScalarTemplatePickerState = {
+  context: ScalarItemEditContext;
+  role: ScalarItemRole;
+  query: string;
+};
 
 type Step1FormData = {
   testProject: string;
@@ -259,11 +270,18 @@ type TemplateLibraryEditableRow = {
 };
 
 type TemplateLibraryEditorDraft = {
+  templateType: 'curve' | 'scalar' | 'scientific';
   templateId: string;
   familyId: string;
   displayName: string;
   aliasesText: string;
   enabled: boolean;
+  descriptionText: string;
+  scalarSection: ScalarTemplateSection;
+  unitDefault: string;
+  defaultValue: string;
+  valueType: ScalarTemplateValueType | '';
+  note: string;
   purposeType: StructuredBlockPurpose;
   blockTitleDefault: string;
   primaryLabel: string;
@@ -302,6 +320,16 @@ type TemplateLibrarySearchResult =
       title: string;
       subtitle: string;
       purposeType: StructuredBlockPurpose;
+      sourceType: TemplateLibraryEditorDraft['sourceType'];
+      enabled: boolean;
+    }
+  | {
+      resultType: 'condition' | 'metric';
+      familyId: string;
+      templateId: string;
+      title: string;
+      subtitle: string;
+      unitDefault: string;
       sourceType: TemplateLibraryEditorDraft['sourceType'];
       enabled: boolean;
     };
@@ -491,6 +519,8 @@ type AnalysisChartDragState = {
   plotHeight: number;
 };
 
+type ProvenanceDictionaryType = Exclude<DictionaryType, 'testProject'>;
+
 const DICTIONARY_TYPES: DictionaryType[] = [
   'testProject',
   'tester',
@@ -498,7 +528,13 @@ const DICTIONARY_TYPES: DictionaryType[] = [
   'sampleCode',
   'sampleOwner'
 ];
-const STEP1_SUGGESTION_LIMIT = 8;
+const PROVENANCE_DICTIONARY_TYPES: ProvenanceDictionaryType[] = [
+  'tester',
+  'instrument',
+  'sampleOwner',
+  'sampleCode'
+];
+const STEP1_SUGGESTION_RESULT_LIMIT = 48;
 const ANALYSIS_CHART_COLORS = [
   '#1d4ed8',
   '#b91c1c',
@@ -585,14 +621,6 @@ const METRIC_NAME_KEYWORDS = [
   '上升时间',
   '下降时间'
 ];
-const DICTIONARY_SECTION_META: DictionaryType[] = [
-  'testProject',
-  'tester',
-  'instrument',
-  'sampleCode',
-  'sampleOwner'
-];
-
 function buildEmptyDictionaryItems(): DictionaryItemsByType {
   return {
     testProject: [],
@@ -674,11 +702,11 @@ function buildAnalysisPreparationWarnings(
       const itemUnit = row.itemUnit.trim();
 
       if (isScalarValueLikelyNumeric(row.itemValue) && !itemUnit) {
-        warnings.add(`标量数据“${itemName}”为数值，但未填写单位；后续分析比较可能受限。`);
+        warnings.add(`测试条件/结果指标项“${itemName}”为数值，但未填写单位；后续分析比较可能受限。`);
       }
 
       if (!isScalarValueLikelyNumeric(row.itemValue) && itemUnit) {
-        warnings.add(`标量数据“${itemName}”更像文本值，但填写了单位；后续分析会将其视为不可绘制文本。`);
+        warnings.add(`测试条件/结果指标项“${itemName}”更像文本值，但填写了单位；后续分析会将其视为不可绘制文本。`);
       }
 
       if (!itemUnit) {
@@ -693,7 +721,7 @@ function buildAnalysisPreparationWarnings(
   unitsByItem.forEach((units, itemName) => {
     if (units.size > 1) {
       warnings.add(
-        `标量数据“${itemName}”在当前记录内存在多个单位（${Array.from(units).join(' / ')}）；后续分析需谨慎。`
+        `测试条件/结果指标项“${itemName}”在当前记录内存在多个单位（${Array.from(units).join(' / ')}）；后续分析需谨慎。`
       );
     }
   });
@@ -762,11 +790,6 @@ function collectStep1PendingDictionaryLabels() {
   };
 
   const checks: Array<{ dictionaryType: DictionaryType; value: string; label: string }> = [
-    {
-      dictionaryType: 'testProject',
-      value: step1FormData.testProject,
-      label: t('step1.field.testProject')
-    },
     {
       dictionaryType: 'sampleCode',
       value: step1FormData.sampleCode,
@@ -994,6 +1017,10 @@ const dictionaryInputValues = buildEmptyDictionaryInputState();
 const dictionarySectionErrors = buildEmptyDictionaryErrorState();
 let dictionarySubmittingType: DictionaryType | null = null;
 let dictionaryDeletingId: string | null = null;
+let provenanceSelectedType: ProvenanceDictionaryType = 'tester';
+let provenanceSearchQuery = '';
+let provenanceHighlightedItemId: string | null = null;
+let provenanceAddExpandedType: ProvenanceDictionaryType | null = null;
 let activeEntryDraft: ActiveEntryDraft | null = null;
 let activeEntryDraftLoaded = false;
 let activeEntryDraftLoadPromise: Promise<void> | null = null;
@@ -1052,10 +1079,12 @@ let step1FormData: Step1FormData = {
 
 let step2DataItems: DataItem[] = [];
 let step2TemplateBlocks: TemplateBlockFormData[] = [];
+let step2ScalarTemplatePicker: Step2ScalarTemplatePickerState | null = null;
 let templateLibraryResolved: ResolvedTemplateLibrary | null = null;
 let templateLibraryLoaded = false;
 let templateLibraryLoadPromise: Promise<void> | null = null;
 let templateLibraryError = '';
+const preservedUiScrollPositions: Record<string, { left: number; top: number }> = {};
 let templateLibrarySaving = false;
 let templateLibrarySaveMessage = '';
 let templateLibrarySearchQuery = '';
@@ -1137,35 +1166,50 @@ function getTemplateLibraryDisabledIdsSet() {
   return new Set(templateLibraryResolved?.state.disabledTemplateIds || []);
 }
 
-function hasTemplateLibraryOverride(templateId: string) {
+function hasTemplateLibraryOverride(templateId: string, targetType: 'curve' | 'scalar' | 'scientific') {
   return Boolean(
     templateLibraryResolved?.state.userOverrides.some(
-      (override) => override.targetType === 'curve' && override.targetId === templateId
+      (override) => override.targetType === targetType && override.targetId === templateId
     )
   );
 }
 
-function getTemplateLibraryEffectiveSourceType(template: StructuredCurveTemplate) {
+function getTemplateLibraryEffectiveSourceType(
+  template:
+    | Pick<StructuredCurveTemplate, 'id' | 'sourceType'>
+    | Pick<ScalarItemTemplate, 'id' | 'sourceType'>
+    | Pick<ScientificTestTemplate, 'id' | 'sourceType'>,
+  targetType: 'curve' | 'scalar' | 'scientific'
+) {
   if (template.sourceType === 'user') {
     return 'user' as const;
   }
 
-  return hasTemplateLibraryOverride(template.id) ? ('userOverride' as const) : ('builtin' as const);
+  return hasTemplateLibraryOverride(template.id, targetType) ? ('userOverride' as const) : ('builtin' as const);
 }
 
-function isTemplateLibraryTemplateEnabled(template: StructuredCurveTemplate) {
+function isTemplateLibraryTemplateEnabled(
+  template: Pick<StructuredCurveTemplate, 'id' | 'enabled'> | Pick<ScalarItemTemplate, 'id' | 'enabled'>
+) {
   return template.enabled && !getTemplateLibraryDisabledIdsSet().has(template.id);
 }
 
 function buildTemplateLibraryEditorDraft(template: StructuredCurveTemplate): TemplateLibraryEditorDraft {
-  const sourceType = getTemplateLibraryEffectiveSourceType(template);
+  const sourceType = getTemplateLibraryEffectiveSourceType(template, 'curve');
 
   return {
+    templateType: 'curve',
     templateId: template.id,
     familyId: template.familyId,
     displayName: template.displayName,
     aliasesText: template.aliases.map((alias) => alias.value).join('\n'),
     enabled: isTemplateLibraryTemplateEnabled(template),
+    descriptionText: '',
+    scalarSection: 'condition',
+    unitDefault: '',
+    defaultValue: '',
+    valueType: '',
+    note: '',
     purposeType: template.purposeType,
     blockTitleDefault: template.blockTitleDefault,
     primaryLabel: template.axisDefaults.primaryLabel,
@@ -1182,19 +1226,102 @@ function buildTemplateLibraryEditorDraft(template: StructuredCurveTemplate): Tem
   };
 }
 
+function buildScalarTemplateLibraryEditorDraft(template: ScalarItemTemplate): TemplateLibraryEditorDraft {
+  const sourceType = getTemplateLibraryEffectiveSourceType(template, 'scalar');
+
+  return {
+    templateType: 'scalar',
+    templateId: template.id,
+    familyId: template.familyId,
+    displayName: template.displayName,
+    aliasesText: template.aliases.map((alias) => alias.value).join('\n'),
+    enabled: isTemplateLibraryTemplateEnabled(template),
+    descriptionText: '',
+    scalarSection: template.section,
+    unitDefault: template.unitDefault || '',
+    defaultValue: template.defaultValue || '',
+    valueType: template.valueType || '',
+    note: template.note || '',
+    purposeType: '',
+    blockTitleDefault: '',
+    primaryLabel: '',
+    primaryUnit: '',
+    secondaryLabel: '',
+    secondaryUnit: '',
+    recommendedConditions: [],
+    recommendedMetrics: [],
+    filenameHintsText: '',
+    sourceType,
+    isBuiltin: template.sourceType === 'builtin',
+    hasLocalOverride: sourceType === 'userOverride'
+  };
+}
+
+function buildScientificTemplateLibraryEditorDraft(
+  template: ScientificTestTemplate
+): TemplateLibraryEditorDraft {
+  const sourceType = getTemplateLibraryEffectiveSourceType(template, 'scientific');
+
+  return {
+    templateType: 'scientific',
+    templateId: template.id,
+    familyId: template.id,
+    displayName: template.displayName,
+    aliasesText: template.aliases.map((alias) => alias.value).join('\n'),
+    enabled: isTemplateLibraryTemplateEnabled(template),
+    descriptionText: template.description || '',
+    scalarSection: 'condition',
+    unitDefault: '',
+    defaultValue: '',
+    valueType: '',
+    note: '',
+    purposeType: '',
+    blockTitleDefault: '',
+    primaryLabel: '',
+    primaryUnit: '',
+    secondaryLabel: '',
+    secondaryUnit: '',
+    recommendedConditions: [],
+    recommendedMetrics: [],
+    filenameHintsText: '',
+    sourceType,
+    isBuiltin: template.sourceType === 'builtin',
+    hasLocalOverride: sourceType === 'userOverride'
+  };
+}
+
 function createUserCurveTemplateId() {
   return `user:curve:${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
     .toLowerCase()
     .replace(/[^a-z0-9:-]+/g, '-');
 }
 
-function buildEmptyTemplateLibraryDraft(familyId: string): TemplateLibraryEditorDraft {
+function createUserScalarTemplateId(section: ScalarTemplateSection) {
+  return `user:scalar:${section}:${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+    .toLowerCase()
+    .replace(/[^a-z0-9:-]+/g, '-');
+}
+
+function createUserScientificFamilyId() {
+  return `user:family:${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+    .toLowerCase()
+    .replace(/[^a-z0-9:-]+/g, '-');
+}
+
+function buildEmptyCurveTemplateLibraryDraft(familyId: string): TemplateLibraryEditorDraft {
   return {
+    templateType: 'curve',
     templateId: createUserCurveTemplateId(),
     familyId,
     displayName: '',
     aliasesText: '',
     enabled: true,
+    descriptionText: '',
+    scalarSection: 'condition',
+    unitDefault: '',
+    defaultValue: '',
+    valueType: '',
+    note: '',
     purposeType: '',
     blockTitleDefault: '',
     primaryLabel: '',
@@ -1208,6 +1335,199 @@ function buildEmptyTemplateLibraryDraft(familyId: string): TemplateLibraryEditor
     isBuiltin: false,
     hasLocalOverride: false
   };
+}
+
+function buildEmptyScalarTemplateLibraryDraft(
+  familyId: string,
+  section: ScalarTemplateSection
+): TemplateLibraryEditorDraft {
+  return {
+    templateType: 'scalar',
+    templateId: createUserScalarTemplateId(section),
+    familyId,
+    displayName: '',
+    aliasesText: '',
+    enabled: true,
+    descriptionText: '',
+    scalarSection: section,
+    unitDefault: '',
+    defaultValue: '',
+    valueType: '',
+    note: '',
+    purposeType: '',
+    blockTitleDefault: '',
+    primaryLabel: '',
+    primaryUnit: '',
+    secondaryLabel: '',
+    secondaryUnit: '',
+    recommendedConditions: [],
+    recommendedMetrics: [],
+    filenameHintsText: '',
+    sourceType: 'user',
+    isBuiltin: false,
+    hasLocalOverride: false
+  };
+}
+
+function buildEmptyScientificTemplateLibraryDraft(): TemplateLibraryEditorDraft {
+  return {
+    templateType: 'scientific',
+    templateId: createUserScientificFamilyId(),
+    familyId: '',
+    displayName: t('templateLibrary.newFamilyDefaultName'),
+    aliasesText: '',
+    enabled: true,
+    descriptionText: '',
+    scalarSection: 'condition',
+    unitDefault: '',
+    defaultValue: '',
+    valueType: '',
+    note: '',
+    purposeType: '',
+    blockTitleDefault: '',
+    primaryLabel: '',
+    primaryUnit: '',
+    secondaryLabel: '',
+    secondaryUnit: '',
+    recommendedConditions: [],
+    recommendedMetrics: [],
+    filenameHintsText: '',
+    sourceType: 'user',
+    isBuiltin: false,
+    hasLocalOverride: false
+  };
+}
+
+function getTemplateLibrarySectionLabel(section: ScalarTemplateSection | '') {
+  if (section === 'metric') {
+    return t('templateLibrary.resultType.metric');
+  }
+  return t('templateLibrary.resultType.condition');
+}
+
+function getTemplateLibraryStatusLabel(enabled: boolean) {
+  return enabled ? t('templateLibrary.enabled') : t('templateLibrary.disabled');
+}
+
+function getTemplateLibraryStatusChipClass(enabled: boolean) {
+  return `template-library-chip ${
+    enabled ? 'template-library-chip-status-enabled' : 'template-library-chip-status-disabled'
+  }`;
+}
+
+function getTemplateLibraryKindLabel(kind: TemplateLibraryTabKind) {
+  switch (kind) {
+    case 'all':
+      return t('templateLibrary.kind.all');
+    case 'conditions':
+      return t('templateLibrary.kind.conditions');
+    case 'metrics':
+      return t('templateLibrary.kind.metrics');
+    case 'curves':
+    default:
+      return t('templateLibrary.kind.curves');
+  }
+}
+
+function getTemplateLibraryCreateCardLabel(kind: TemplateLibraryTabKind) {
+  switch (kind) {
+    case 'conditions':
+      return t('templateLibrary.createCard.condition');
+    case 'metrics':
+      return t('templateLibrary.createCard.metric');
+    case 'curves':
+      return t('templateLibrary.createCard.curve');
+    case 'all':
+    default:
+      return t('templateLibrary.createCard.chooseKind');
+  }
+}
+
+function getTemplateLibraryVisibleBlockTitleOverride(draft: TemplateLibraryEditorDraft) {
+  if (draft.templateType !== 'curve') {
+    return '';
+  }
+
+  const normalizedDisplayName = draft.displayName.trim();
+  const normalizedBlockTitle = draft.blockTitleDefault.trim();
+  if (!normalizedBlockTitle || normalizedBlockTitle === normalizedDisplayName) {
+    return '';
+  }
+
+  return draft.blockTitleDefault;
+}
+
+function getTemplateLibraryFamilyScalars(
+  familyId: string,
+  section?: ScalarTemplateSection
+) {
+  if (!templateLibraryResolved) {
+    return [];
+  }
+
+  return findScalarTemplatesForFamily(familyId, templateLibraryResolved, {
+    includeDisabled: true,
+    section
+  })
+    .map((item) => item.scalarTemplate)
+    .sort((left, right) => left.displayName.localeCompare(right.displayName, 'zh-CN'));
+}
+
+function getTemplateLibraryFamilyTemplates(
+  familyId: string,
+  kind: TemplateLibraryTabKind
+): Array<StructuredCurveTemplate | ScalarItemTemplate> {
+  if (kind === 'conditions') {
+    return getTemplateLibraryFamilyScalars(familyId, 'condition');
+  }
+
+  if (kind === 'metrics') {
+    return getTemplateLibraryFamilyScalars(familyId, 'metric');
+  }
+
+  const curves = getTemplateLibraryAllCurvesForFamily(familyId);
+  const conditions = getTemplateLibraryFamilyScalars(familyId, 'condition');
+  const metrics = getTemplateLibraryFamilyScalars(familyId, 'metric');
+
+  if (kind === 'all') {
+    return [...curves, ...conditions, ...metrics].sort((left, right) =>
+      left.displayName.localeCompare(right.displayName, 'zh-CN')
+    );
+  }
+
+  return curves;
+}
+
+function getTemplateLibraryFamilyTemplateCount(
+  familyId: string,
+  kind: TemplateLibraryTabKind = templateLibrarySelectedKind
+) {
+  return getTemplateLibraryFamilyTemplates(familyId, kind).length;
+}
+
+function getTemplateLibraryUserFamilyDeleteStats(familyId: string) {
+  const userTemplates = templateLibraryResolved?.state.userTemplates;
+  if (!userTemplates) {
+    return {
+      conditions: 0,
+      metrics: 0,
+      curves: 0
+    };
+  }
+
+  return {
+    conditions: userTemplates.scalarTemplates.filter(
+      (template) => template.familyId === familyId && template.section === 'condition'
+    ).length,
+    metrics: userTemplates.scalarTemplates.filter(
+      (template) => template.familyId === familyId && template.section === 'metric'
+    ).length,
+    curves: userTemplates.curveTemplates.filter((template) => template.familyId === familyId).length
+  };
+}
+
+function isPersistedScientificFamily(templateId: string) {
+  return Boolean(templateLibraryResolved?.scientificTemplates.some((family) => family.id === templateId));
 }
 
 function updateTemplateLibrarySaveStateIndicator() {
@@ -1252,10 +1572,6 @@ function getTemplateLibraryFamilyById(familyId: string) {
   return templateLibraryResolved?.scientificTemplates.find((family) => family.id === familyId) || null;
 }
 
-function getTemplateLibraryFamilyCurveCount(familyId: string) {
-  return templateLibraryResolved?.curveTemplates.filter((template) => template.familyId === familyId).length || 0;
-}
-
 function getTemplateLibraryAllCurvesForFamily(familyId: string) {
   if (!templateLibraryResolved) {
     return [];
@@ -1266,36 +1582,41 @@ function getTemplateLibraryAllCurvesForFamily(familyId: string) {
     .sort((left, right) => left.displayName.localeCompare(right.displayName, 'zh-CN'));
 }
 
-function getTemplateLibraryCurvesForFamily(familyId: string) {
-  if (!templateLibraryResolved) {
-    return [];
+function templateLibraryTemplateMatchesQuery(template: StructuredCurveTemplate | ScalarItemTemplate, query: string) {
+  if (!query) {
+    return true;
   }
 
-  const query = getTemplateLibraryNormalizedQuery();
-  const curves = getTemplateLibraryAllCurvesForFamily(familyId)
-    .filter((template) => {
-      if (!query) {
-        return true;
-      }
+  const family = getTemplateLibraryFamilyById(template.familyId);
+  if ('purposeType' in template) {
+    return [
+      family?.displayName || '',
+      family?.id || '',
+      ...(family?.aliases.map((alias) => alias.value) || []),
+      template.displayName,
+      template.blockTitleDefault,
+      template.id,
+      template.purposeType,
+      ...template.aliases.map((alias) => alias.value)
+    ]
+      .join('\n')
+      .toLowerCase()
+      .includes(query);
+  }
 
-      const family = getTemplateLibraryFamilyById(template.familyId);
-      const haystacks = [
-        family?.displayName || '',
-        family?.id || '',
-        ...(family?.aliases.map((alias) => alias.value) || []),
-        template.displayName,
-        template.blockTitleDefault,
-        template.id,
-        template.purposeType,
-        ...template.aliases.map((alias) => alias.value)
-      ]
-        .join('\n')
-        .toLowerCase();
-
-      return haystacks.includes(query);
-    });
-
-  return curves;
+  return [
+    family?.displayName || '',
+    family?.id || '',
+    ...(family?.aliases.map((alias) => alias.value) || []),
+    template.displayName,
+    template.id,
+    template.unitDefault || '',
+    getTemplateLibrarySectionLabel(template.section),
+    ...template.aliases.map((alias) => alias.value)
+  ]
+    .join('\n')
+    .toLowerCase()
+    .includes(query);
 }
 
 function getTemplateLibrarySearchResults(): TemplateLibrarySearchResult[] {
@@ -1320,7 +1641,7 @@ function getTemplateLibrarySearchResults(): TemplateLibrarySearchResult[] {
       familyId: family.id,
       title: family.displayName,
       subtitle: t('templateLibrary.resultType.family'),
-      count: getTemplateLibraryFamilyCurveCount(family.id)
+      count: getTemplateLibraryFamilyTemplateCount(family.id, 'all')
     }))
     .sort((left, right) => left.title.localeCompare(right.title, 'zh-CN'));
 
@@ -1350,7 +1671,7 @@ function getTemplateLibrarySearchResults(): TemplateLibrarySearchResult[] {
         title: template.displayName,
         subtitle: family?.displayName || '',
         purposeType: template.purposeType,
-        sourceType: getTemplateLibraryEffectiveSourceType(template),
+        sourceType: getTemplateLibraryEffectiveSourceType(template, 'curve'),
         enabled: isTemplateLibraryTemplateEnabled(template)
       };
     })
@@ -1362,7 +1683,82 @@ function getTemplateLibrarySearchResults(): TemplateLibrarySearchResult[] {
       return left.title.localeCompare(right.title, 'zh-CN');
     });
 
-  return [...familyResults, ...curveResults];
+  const scalarResults: TemplateLibrarySearchResult[] = templateLibraryResolved.scalarTemplates
+    .filter((template) => {
+      const family = getTemplateLibraryFamilyById(template.familyId);
+      const sectionLabel = getTemplateLibrarySectionLabel(template.section);
+      const haystack = [
+        family?.displayName || '',
+        family?.id || '',
+        ...(family?.aliases.map((alias) => alias.value) || []),
+        template.displayName,
+        template.id,
+        template.unitDefault || '',
+        sectionLabel,
+        ...template.aliases.map((alias) => alias.value)
+      ]
+        .join('\n')
+        .toLowerCase();
+      return haystack.includes(query);
+    })
+    .map((template) => {
+      const family = getTemplateLibraryFamilyById(template.familyId);
+      return {
+        resultType: template.section === 'metric' ? ('metric' as const) : ('condition' as const),
+        familyId: template.familyId,
+        templateId: template.id,
+        title: template.displayName,
+        subtitle: family?.displayName || '',
+        unitDefault: template.unitDefault || '',
+        sourceType: getTemplateLibraryEffectiveSourceType(template, 'scalar'),
+        enabled: isTemplateLibraryTemplateEnabled(template)
+      };
+    })
+    .sort((left, right) => {
+      const familyCompare = left.subtitle.localeCompare(right.subtitle, 'zh-CN');
+      if (familyCompare !== 0) {
+        return familyCompare;
+      }
+      return left.title.localeCompare(right.title, 'zh-CN');
+    });
+
+  return [...familyResults, ...curveResults, ...scalarResults];
+}
+
+function getTemplateLibraryTemplateById(templateId: string) {
+  if (!templateLibraryResolved) {
+    return null;
+  }
+
+  return (
+    templateLibraryResolved.curveTemplates.find((template) => template.id === templateId) ||
+    templateLibraryResolved.scalarTemplates.find((template) => template.id === templateId) ||
+    null
+  );
+}
+
+function buildTemplateLibraryEditorDraftForCurrentSelection() {
+  if (
+    templateLibraryResolved &&
+    templateLibrarySelectedFamilyId &&
+    !templateLibrarySelectedCurveTemplateId
+  ) {
+    const selectedFamily = templateLibraryResolved.scientificTemplates.find(
+      (family) => family.id === templateLibrarySelectedFamilyId
+    );
+    if (selectedFamily) {
+      return buildScientificTemplateLibraryEditorDraft(selectedFamily);
+    }
+  }
+
+  const selectedTemplate = getTemplateLibraryTemplateById(templateLibrarySelectedCurveTemplateId);
+  if (selectedTemplate) {
+    return 'purposeType' in selectedTemplate
+      ? buildTemplateLibraryEditorDraft(selectedTemplate)
+      : buildScalarTemplateLibraryEditorDraft(selectedTemplate);
+  }
+
+  return null;
 }
 
 function syncTemplateLibrarySelection() {
@@ -1392,18 +1788,19 @@ function syncTemplateLibrarySelection() {
     templateLibrarySelectedFamilyId = families[0].id;
   }
 
-  const familyCurves = getTemplateLibraryAllCurvesForFamily(templateLibrarySelectedFamilyId);
-  const curveExists = familyCurves.some((curve) => curve.id === templateLibrarySelectedCurveTemplateId);
-  if (!curveExists) {
-    templateLibrarySelectedCurveTemplateId = familyCurves[0]?.id || '';
+  const familyTemplates = getTemplateLibraryFamilyTemplates(
+    templateLibrarySelectedFamilyId,
+    templateLibrarySelectedKind
+  );
+  const shouldPreserveFamilyEditor =
+    !templateLibrarySelectedCurveTemplateId &&
+    templateLibraryEditorDraft?.templateType === 'scientific';
+  const templateExists = familyTemplates.some((template) => template.id === templateLibrarySelectedCurveTemplateId);
+  if (!templateExists && !shouldPreserveFamilyEditor) {
+    templateLibrarySelectedCurveTemplateId = familyTemplates[0]?.id || '';
   }
 
-  const selectedCurve = templateLibraryResolved.curveTemplates.find(
-    (template) => template.id === templateLibrarySelectedCurveTemplateId
-  );
-  templateLibraryEditorDraft = selectedCurve
-    ? buildTemplateLibraryEditorDraft(selectedCurve)
-    : buildEmptyTemplateLibraryDraft(templateLibrarySelectedFamilyId);
+  templateLibraryEditorDraft = buildTemplateLibraryEditorDraftForCurrentSelection();
   templateLibraryExpandedRowToken = '';
   clearTemplateLibraryDirtyState('');
 }
@@ -1469,11 +1866,9 @@ async function selectTemplateLibraryFamily(nextFamilyId: string) {
   if (getTemplateLibraryNormalizedQuery()) {
     templateLibrarySearchQuery = '';
   }
-  const nextCurve = getTemplateLibraryAllCurvesForFamily(nextFamilyId)[0];
-  templateLibrarySelectedCurveTemplateId = nextCurve?.id || '';
-  templateLibraryEditorDraft = nextCurve
-    ? buildTemplateLibraryEditorDraft(nextCurve)
-    : buildEmptyTemplateLibraryDraft(nextFamilyId);
+  templateLibrarySelectedCurveTemplateId = '';
+  const nextFamily = templateLibraryResolved.scientificTemplates.find((family) => family.id === nextFamilyId);
+  templateLibraryEditorDraft = nextFamily ? buildScientificTemplateLibraryEditorDraft(nextFamily) : null;
   templateLibraryExpandedRowToken = '';
   clearTemplateLibraryDirtyState('');
   requestRender(true);
@@ -1502,6 +1897,7 @@ async function selectTemplateLibraryCurveTemplate(nextTemplateId: string) {
   }
 
   templateLibrarySelectedFamilyId = nextTemplate.familyId;
+  templateLibrarySelectedKind = 'curves';
   if (getTemplateLibraryNormalizedQuery()) {
     templateLibrarySearchQuery = '';
   }
@@ -1509,6 +1905,78 @@ async function selectTemplateLibraryCurveTemplate(nextTemplateId: string) {
   templateLibraryEditorDraft = buildTemplateLibraryEditorDraft(nextTemplate);
   templateLibraryExpandedRowToken = '';
   clearTemplateLibraryDirtyState('');
+  requestRender(true);
+}
+
+async function selectTemplateLibraryScalarTemplate(nextTemplateId: string) {
+  if (!templateLibraryResolved) {
+    return;
+  }
+
+  if (templateLibrarySelectedCurveTemplateId === nextTemplateId) {
+    if (getTemplateLibraryNormalizedQuery()) {
+      templateLibrarySearchQuery = '';
+      requestRender(true);
+    }
+    return;
+  }
+
+  if (!confirmDiscardTemplateLibraryChanges()) {
+    return;
+  }
+
+  const nextTemplate = templateLibraryResolved.scalarTemplates.find((item) => item.id === nextTemplateId);
+  if (!nextTemplate) {
+    return;
+  }
+
+  templateLibrarySelectedFamilyId = nextTemplate.familyId;
+  templateLibrarySelectedKind = nextTemplate.section === 'metric' ? 'metrics' : 'conditions';
+  if (getTemplateLibraryNormalizedQuery()) {
+    templateLibrarySearchQuery = '';
+  }
+  templateLibrarySelectedCurveTemplateId = nextTemplate.id;
+  templateLibraryEditorDraft = buildScalarTemplateLibraryEditorDraft(nextTemplate);
+  templateLibraryExpandedRowToken = '';
+  clearTemplateLibraryDirtyState('');
+  requestRender(true);
+}
+
+async function selectTemplateLibraryKind(nextKind: TemplateLibraryTabKind) {
+  if (templateLibrarySelectedKind === nextKind) {
+    return;
+  }
+
+  if (!confirmDiscardTemplateLibraryChanges()) {
+    return;
+  }
+
+  templateLibrarySelectedKind = nextKind;
+  if (templateLibrarySelectedCurveTemplateId) {
+    const nextTemplate = getTemplateLibraryFamilyTemplates(templateLibrarySelectedFamilyId, nextKind)[0];
+    templateLibrarySelectedCurveTemplateId = nextTemplate?.id || '';
+    templateLibraryEditorDraft = nextTemplate
+      ? 'purposeType' in nextTemplate
+        ? buildTemplateLibraryEditorDraft(nextTemplate)
+        : buildScalarTemplateLibraryEditorDraft(nextTemplate)
+      : buildTemplateLibraryEditorDraftForCurrentSelection();
+  } else {
+    templateLibraryEditorDraft = buildTemplateLibraryEditorDraftForCurrentSelection();
+  }
+  templateLibraryExpandedRowToken = '';
+  clearTemplateLibraryDirtyState('');
+  requestRender(true);
+}
+
+function startTemplateLibraryNewFamily() {
+  if (!confirmDiscardTemplateLibraryChanges()) {
+    return;
+  }
+
+  templateLibrarySelectedCurveTemplateId = '';
+  templateLibraryEditorDraft = buildEmptyScientificTemplateLibraryDraft();
+  templateLibraryExpandedRowToken = '';
+  clearTemplateLibraryDirtyState(t('templateLibrary.newFamilyReady'));
   requestRender(true);
 }
 
@@ -1521,8 +1989,18 @@ function startTemplateLibraryNewTemplate() {
     return;
   }
 
+  if (templateLibrarySelectedKind === 'all') {
+    alert(t('templateLibrary.chooseSpecificKindBeforeCreate'));
+    return;
+  }
+
   templateLibrarySelectedCurveTemplateId = '';
-  templateLibraryEditorDraft = buildEmptyTemplateLibraryDraft(templateLibrarySelectedFamilyId);
+  templateLibraryEditorDraft =
+    templateLibrarySelectedKind === 'conditions'
+      ? buildEmptyScalarTemplateLibraryDraft(templateLibrarySelectedFamilyId, 'condition')
+      : templateLibrarySelectedKind === 'metrics'
+        ? buildEmptyScalarTemplateLibraryDraft(templateLibrarySelectedFamilyId, 'metric')
+        : buildEmptyCurveTemplateLibraryDraft(templateLibrarySelectedFamilyId);
   templateLibraryExpandedRowToken = '';
   clearTemplateLibraryDirtyState(t('templateLibrary.newTemplateReady'));
   requestRender(true);
@@ -1538,36 +2016,73 @@ function startTemplateLibraryDuplicateTemplate() {
   }
 
   templateLibrarySelectedCurveTemplateId = '';
-  templateLibraryEditorDraft = {
-    ...templateLibraryEditorDraft,
-    templateId: createUserCurveTemplateId(),
-    familyId: templateLibraryEditorDraft.familyId,
-    displayName: templateLibraryEditorDraft.displayName
-      ? `${templateLibraryEditorDraft.displayName} ${t('templateLibrary.copySuffix')}`
-      : '',
-    aliasesText: templateLibraryEditorDraft.aliasesText,
-    enabled: templateLibraryEditorDraft.enabled,
-    purposeType: templateLibraryEditorDraft.purposeType,
-    blockTitleDefault: templateLibraryEditorDraft.blockTitleDefault,
-    primaryLabel: templateLibraryEditorDraft.primaryLabel,
-    primaryUnit: templateLibraryEditorDraft.primaryUnit,
-    secondaryLabel: templateLibraryEditorDraft.secondaryLabel,
-    secondaryUnit: templateLibraryEditorDraft.secondaryUnit,
-    recommendedConditions: templateLibraryEditorDraft.recommendedConditions.map((item) => ({ ...item })),
-    recommendedMetrics: templateLibraryEditorDraft.recommendedMetrics.map((item) => ({ ...item })),
-    filenameHintsText: templateLibraryEditorDraft.filenameHintsText,
-    importParsingTemplateId: templateLibraryEditorDraft.importParsingTemplateId,
-    sourceType: 'user',
-    isBuiltin: false,
-    hasLocalOverride: false
-  };
+  templateLibraryEditorDraft =
+    templateLibraryEditorDraft.templateType === 'scientific'
+      ? {
+          ...templateLibraryEditorDraft,
+          templateId: createUserScientificFamilyId(),
+          familyId: '',
+          displayName: templateLibraryEditorDraft.displayName
+            ? `${templateLibraryEditorDraft.displayName} ${t('templateLibrary.copySuffix')}`
+            : t('templateLibrary.newFamilyDefaultName'),
+          aliasesText: templateLibraryEditorDraft.aliasesText,
+          enabled: templateLibraryEditorDraft.enabled,
+          descriptionText: templateLibraryEditorDraft.descriptionText,
+          sourceType: 'user',
+          isBuiltin: false,
+          hasLocalOverride: false
+        }
+      : templateLibraryEditorDraft.templateType === 'scalar'
+      ? {
+          ...templateLibraryEditorDraft,
+          templateId: createUserScalarTemplateId(templateLibraryEditorDraft.scalarSection),
+          familyId: templateLibraryEditorDraft.familyId,
+          displayName: templateLibraryEditorDraft.displayName
+            ? `${templateLibraryEditorDraft.displayName} ${t('templateLibrary.copySuffix')}`
+            : '',
+          aliasesText: templateLibraryEditorDraft.aliasesText,
+          enabled: templateLibraryEditorDraft.enabled,
+          unitDefault: templateLibraryEditorDraft.unitDefault,
+          defaultValue: templateLibraryEditorDraft.defaultValue,
+          valueType: templateLibraryEditorDraft.valueType,
+          note: templateLibraryEditorDraft.note,
+          sourceType: 'user',
+          isBuiltin: false,
+          hasLocalOverride: false
+        }
+      : {
+          ...templateLibraryEditorDraft,
+          templateId: createUserCurveTemplateId(),
+          familyId: templateLibraryEditorDraft.familyId,
+          displayName: templateLibraryEditorDraft.displayName
+            ? `${templateLibraryEditorDraft.displayName} ${t('templateLibrary.copySuffix')}`
+            : '',
+          aliasesText: templateLibraryEditorDraft.aliasesText,
+          enabled: templateLibraryEditorDraft.enabled,
+          purposeType: templateLibraryEditorDraft.purposeType,
+          blockTitleDefault: templateLibraryEditorDraft.blockTitleDefault,
+          primaryLabel: templateLibraryEditorDraft.primaryLabel,
+          primaryUnit: templateLibraryEditorDraft.primaryUnit,
+          secondaryLabel: templateLibraryEditorDraft.secondaryLabel,
+          secondaryUnit: templateLibraryEditorDraft.secondaryUnit,
+          recommendedConditions: templateLibraryEditorDraft.recommendedConditions.map((item) => ({ ...item })),
+          recommendedMetrics: templateLibraryEditorDraft.recommendedMetrics.map((item) => ({ ...item })),
+          filenameHintsText: templateLibraryEditorDraft.filenameHintsText,
+          importParsingTemplateId: templateLibraryEditorDraft.importParsingTemplateId,
+          sourceType: 'user',
+          isBuiltin: false,
+          hasLocalOverride: false
+        };
   templateLibraryExpandedRowToken = '';
   clearTemplateLibraryDirtyState(t('templateLibrary.duplicateReady'));
   requestRender(true);
 }
 
 function discardTemplateLibraryDraft() {
-  if (templateLibrarySelectedCurveTemplateId) {
+  const isScientificPersistedSelection =
+    templateLibraryEditorDraft?.templateType === 'scientific' &&
+    isPersistedScientificFamily(templateLibraryEditorDraft.templateId);
+  if (templateLibrarySelectedCurveTemplateId || isScientificPersistedSelection) {
     return;
   }
 
@@ -1575,11 +2090,20 @@ function discardTemplateLibraryDraft() {
     return;
   }
 
-  const nextCurve = getTemplateLibraryAllCurvesForFamily(templateLibrarySelectedFamilyId)[0];
-  templateLibrarySelectedCurveTemplateId = nextCurve?.id || '';
-  templateLibraryEditorDraft = nextCurve
-    ? buildTemplateLibraryEditorDraft(nextCurve)
-    : buildEmptyTemplateLibraryDraft(templateLibrarySelectedFamilyId);
+  const nextTemplate = getTemplateLibraryFamilyTemplates(
+    templateLibrarySelectedFamilyId,
+    templateLibrarySelectedKind
+  )[0];
+  templateLibrarySelectedCurveTemplateId = '';
+  if (nextTemplate) {
+    templateLibrarySelectedCurveTemplateId = nextTemplate.id;
+    templateLibraryEditorDraft =
+      'purposeType' in nextTemplate
+        ? buildTemplateLibraryEditorDraft(nextTemplate)
+        : buildScalarTemplateLibraryEditorDraft(nextTemplate);
+  } else {
+    templateLibraryEditorDraft = buildTemplateLibraryEditorDraftForCurrentSelection();
+  }
   templateLibraryExpandedRowToken = '';
   clearTemplateLibraryDirtyState('');
   requestRender(true);
@@ -1592,15 +2116,9 @@ async function saveTemplateLibraryEditorDraft() {
 
   const draft = templateLibraryEditorDraft;
   const trimmedDisplayName = draft.displayName.trim();
-  const trimmedBlockTitle = draft.blockTitleDefault.trim();
 
   if (!trimmedDisplayName) {
     alert(t('templateLibrary.validation.displayNameRequired'));
-    return;
-  }
-
-  if (!trimmedBlockTitle) {
-    alert(t('templateLibrary.validation.blockTitleRequired'));
     return;
   }
 
@@ -1613,15 +2131,128 @@ async function saveTemplateLibraryEditorDraft() {
       value,
       kind: 'search' as const
     }));
-    const filenameHints = normalizeTemplateKeywordList(draft.filenameHintsText);
-    const recommendedConditions = convertTemplateLibraryRowsToRecommendationItems(
-      draft.recommendedConditions
-    );
-    const recommendedMetrics = convertTemplateLibraryRowsToRecommendationItems(
-      draft.recommendedMetrics
-    );
+    if (draft.templateType === 'scientific') {
+      if (draft.isBuiltin) {
+        const overridePayload: TemplateOverride = {
+          targetId: draft.templateId,
+          targetType: 'scientific',
+          patch: {
+            displayName: trimmedDisplayName,
+            aliases,
+            enabled: draft.enabled,
+            description: draft.descriptionText.trim()
+          },
+          updatedAt: new Date().toISOString()
+        };
 
-    if (draft.isBuiltin) {
+        const [overrideResult, enabledResult] = await Promise.all([
+          window.electronAPI.upsertTemplateLibraryOverride(overridePayload),
+          window.electronAPI.setTemplateEnabled({
+            templateId: draft.templateId,
+            enabled: draft.enabled
+          })
+        ]);
+
+        if (!overrideResult.success || !enabledResult.success) {
+          throw new Error(overrideResult.error || enabledResult.error || t('templateLibrary.saveFailed'));
+        }
+      } else {
+        const saveResult = await window.electronAPI.upsertUserTemplate({
+          templateType: 'scientific',
+          template: {
+            id: draft.templateId,
+            version: 1,
+            displayName: trimmedDisplayName,
+            aliases,
+            enabled: draft.enabled,
+            description: draft.descriptionText.trim() || undefined,
+            sourceType: 'user'
+          }
+        });
+
+        if (!saveResult.success) {
+          throw new Error(saveResult.error || t('templateLibrary.saveFailed'));
+        }
+
+        const enabledResult = await window.electronAPI.setTemplateEnabled({
+          templateId: draft.templateId,
+          enabled: draft.enabled
+        });
+
+        if (!enabledResult.success) {
+          throw new Error(enabledResult.error || t('templateLibrary.saveFailed'));
+        }
+      }
+    } else if (draft.templateType === 'scalar') {
+      if (draft.isBuiltin) {
+        const overridePayload: TemplateOverride = {
+          targetId: draft.templateId,
+          targetType: 'scalar',
+          patch: {
+            displayName: trimmedDisplayName,
+            aliases,
+            enabled: draft.enabled,
+            section: draft.scalarSection,
+            unitDefault: draft.unitDefault.trim(),
+            defaultValue: draft.defaultValue.trim(),
+            valueType: draft.valueType || null,
+            note: draft.note.trim()
+          },
+          updatedAt: new Date().toISOString()
+        };
+
+        const [overrideResult, enabledResult] = await Promise.all([
+          window.electronAPI.upsertTemplateLibraryOverride(overridePayload),
+          window.electronAPI.setTemplateEnabled({
+            templateId: draft.templateId,
+            enabled: draft.enabled
+          })
+        ]);
+
+        if (!overrideResult.success || !enabledResult.success) {
+          throw new Error(overrideResult.error || enabledResult.error || t('templateLibrary.saveFailed'));
+        }
+      } else {
+        const saveResult = await window.electronAPI.upsertUserTemplate({
+          templateType: 'scalar',
+          template: {
+            id: draft.templateId,
+            version: 1,
+            familyId: draft.familyId,
+            section: draft.scalarSection,
+            displayName: trimmedDisplayName,
+            aliases,
+            unitDefault: draft.unitDefault.trim() || undefined,
+            defaultValue: draft.defaultValue.trim() || undefined,
+            valueType: draft.valueType || undefined,
+            note: draft.note.trim() || undefined,
+            enabled: draft.enabled,
+            sourceType: 'user'
+          }
+        });
+
+        if (!saveResult.success) {
+          throw new Error(saveResult.error || t('templateLibrary.saveFailed'));
+        }
+
+        const enabledResult = await window.electronAPI.setTemplateEnabled({
+          templateId: draft.templateId,
+          enabled: draft.enabled
+        });
+
+        if (!enabledResult.success) {
+          throw new Error(enabledResult.error || t('templateLibrary.saveFailed'));
+        }
+      }
+    } else if (draft.isBuiltin) {
+      const trimmedBlockTitle = draft.blockTitleDefault.trim() || trimmedDisplayName;
+      const filenameHints = normalizeTemplateKeywordList(draft.filenameHintsText);
+      const recommendedConditions = convertTemplateLibraryRowsToRecommendationItems(
+        draft.recommendedConditions
+      );
+      const recommendedMetrics = convertTemplateLibraryRowsToRecommendationItems(
+        draft.recommendedMetrics
+      );
       const overridePayload: TemplateOverride = {
         targetId: draft.templateId,
         targetType: 'curve',
@@ -1660,6 +2291,14 @@ async function saveTemplateLibraryEditorDraft() {
         );
       }
     } else {
+      const trimmedBlockTitle = draft.blockTitleDefault.trim() || trimmedDisplayName;
+      const filenameHints = normalizeTemplateKeywordList(draft.filenameHintsText);
+      const recommendedConditions = convertTemplateLibraryRowsToRecommendationItems(
+        draft.recommendedConditions
+      );
+      const recommendedMetrics = convertTemplateLibraryRowsToRecommendationItems(
+        draft.recommendedMetrics
+      );
       const saveResult = await window.electronAPI.upsertUserTemplate({
         templateType: 'curve',
         template: {
@@ -1699,9 +2338,15 @@ async function saveTemplateLibraryEditorDraft() {
       }
     }
 
+    if (draft.templateType === 'scientific') {
+      templateLibrarySelectedCurveTemplateId = '';
+    } else if (draft.templateType === 'scalar') {
+      templateLibrarySelectedKind = draft.scalarSection === 'metric' ? 'metrics' : 'conditions';
+    }
+
     await reloadTemplateLibraryResolved({
-      nextFamilyId: draft.familyId,
-      nextTemplateId: draft.templateId
+      nextFamilyId: draft.templateType === 'scientific' ? draft.templateId : draft.familyId,
+      nextTemplateId: draft.templateType === 'scientific' ? undefined : draft.templateId
     });
     clearTemplateLibraryDirtyState(t('templateLibrary.saveSuccess'));
     requestRender(true);
@@ -1735,7 +2380,7 @@ async function resetTemplateLibraryEditorOverride() {
   try {
     const result = await window.electronAPI.resetTemplateLibraryOverride({
       targetId: templateLibraryEditorDraft.templateId,
-      targetType: 'curve'
+      targetType: templateLibraryEditorDraft.templateType
     });
 
     if (!result.success) {
@@ -1743,13 +2388,100 @@ async function resetTemplateLibraryEditorOverride() {
     }
 
     await reloadTemplateLibraryResolved({
-      nextFamilyId: templateLibraryEditorDraft.familyId,
-      nextTemplateId: templateLibraryEditorDraft.templateId
+      nextFamilyId:
+        templateLibraryEditorDraft.templateType === 'scientific'
+          ? templateLibraryEditorDraft.templateId
+          : templateLibraryEditorDraft.familyId,
+      nextTemplateId:
+        templateLibraryEditorDraft.templateType === 'scientific'
+          ? undefined
+          : templateLibraryEditorDraft.templateId
     });
     clearTemplateLibraryDirtyState(t('templateLibrary.resetOverrideSuccess'));
     requestRender(true);
   } catch (error) {
     templateLibrarySaveMessage = getErrorMessage(error) || t('templateLibrary.resetOverrideFailed');
+    updateTemplateLibrarySaveStateIndicator();
+    alert(templateLibrarySaveMessage);
+  } finally {
+    templateLibrarySaving = false;
+  }
+}
+
+async function deleteTemplateLibraryEditorTemplate() {
+  if (!templateLibraryEditorDraft || templateLibrarySaving) {
+    return;
+  }
+
+  const isScientificTemplate = templateLibraryEditorDraft.templateType === 'scientific';
+  if (!templateLibrarySelectedCurveTemplateId && !isScientificTemplate) {
+    return;
+  }
+
+  if (templateLibraryEditorDraft.sourceType !== 'user' || templateLibraryEditorDraft.isBuiltin) {
+    alert(t('templateLibrary.builtinDeleteHint'));
+    return;
+  }
+
+  if (isScientificTemplate && !isPersistedScientificFamily(templateLibraryEditorDraft.templateId)) {
+    discardTemplateLibraryDraft();
+    return;
+  }
+
+  const familyDeleteStats = isScientificTemplate
+    ? getTemplateLibraryUserFamilyDeleteStats(templateLibraryEditorDraft.templateId)
+    : null;
+  const shouldContinue = window.confirm(
+    isScientificTemplate
+      ? t('templateLibrary.deleteFamilyConfirm', {
+          conditions: familyDeleteStats?.conditions || 0,
+          metrics: familyDeleteStats?.metrics || 0,
+          curves: familyDeleteStats?.curves || 0
+        })
+      : t('templateLibrary.deleteConfirm')
+  );
+  if (!shouldContinue) {
+    return;
+  }
+
+  const familyTemplates = getTemplateLibraryFamilyTemplates(
+    templateLibraryEditorDraft.familyId || templateLibraryEditorDraft.templateId,
+    templateLibrarySelectedKind
+  );
+  const currentIndex = familyTemplates.findIndex(
+    (template) => template.id === templateLibraryEditorDraft?.templateId
+  );
+  const fallbackTemplateId =
+    !isScientificTemplate
+      ? familyTemplates[currentIndex + 1]?.id || familyTemplates[currentIndex - 1]?.id || ''
+      : '';
+  const fallbackFamilyId = isScientificTemplate
+    ? templateLibraryResolved?.scientificTemplates.find((family) => family.id !== templateLibraryEditorDraft.templateId)
+        ?.id || ''
+    : templateLibraryEditorDraft.familyId;
+
+  templateLibrarySaving = true;
+  templateLibrarySaveMessage = t('templateLibrary.saving');
+  updateTemplateLibrarySaveStateIndicator();
+
+  try {
+    const result = await window.electronAPI.deleteUserTemplate({
+      templateType: templateLibraryEditorDraft.templateType,
+      templateId: templateLibraryEditorDraft.templateId
+    });
+
+    if (!result.success) {
+      throw new Error(result.error || t('templateLibrary.deleteFailed'));
+    }
+
+    await reloadTemplateLibraryResolved({
+      nextFamilyId: fallbackFamilyId || undefined,
+      nextTemplateId: fallbackTemplateId || undefined
+    });
+    clearTemplateLibraryDirtyState('');
+    requestRender(true);
+  } catch (error) {
+    templateLibrarySaveMessage = getErrorMessage(error) || t('templateLibrary.deleteFailed');
     updateTemplateLibrarySaveStateIndicator();
     alert(templateLibrarySaveMessage);
   } finally {
@@ -2241,6 +2973,9 @@ async function ensureEntryWorkflowAssistDataLoaded() {
     }),
     ensureRecentEntrySuggestionsLoaded().catch((error) => {
       console.error('load recent entry workflow suggestions failed:', error);
+    }),
+    ensureTemplateLibraryLoaded().catch((error) => {
+      console.error('load template library for entry workflow failed:', error);
     })
   ]);
 }
@@ -2658,6 +3393,249 @@ function saveDictionaryInputsToState() {
   });
 }
 
+function getProvenanceCategoryHelperText(dictionaryType: ProvenanceDictionaryType) {
+  switch (dictionaryType) {
+    case 'tester':
+      return t('provenance.categoryHelp.tester');
+    case 'instrument':
+      return t('provenance.categoryHelp.instrument');
+    case 'sampleOwner':
+      return t('provenance.categoryHelp.sampleOwner');
+    case 'sampleCode':
+      return t('provenance.categoryHelp.sampleCode');
+    default:
+      return '';
+  }
+}
+
+function getProvenanceAddLabel(dictionaryType: ProvenanceDictionaryType) {
+  switch (dictionaryType) {
+    case 'tester':
+      return t('provenance.addTester');
+    case 'instrument':
+      return t('provenance.addInstrument');
+    case 'sampleOwner':
+      return t('provenance.addOwner');
+    case 'sampleCode':
+      return t('provenance.addSampleIdentifier');
+    default:
+      return t('dictionary.add');
+  }
+}
+
+function getProvenanceEmptyText(dictionaryType: ProvenanceDictionaryType) {
+  switch (dictionaryType) {
+    case 'tester':
+      return t('provenance.emptyTester');
+    case 'instrument':
+      return t('provenance.emptyInstrument');
+    case 'sampleOwner':
+      return t('provenance.emptyOwner');
+    case 'sampleCode':
+      return t('provenance.emptySampleIdentifier');
+    default:
+      return t('dictionary.empty');
+  }
+}
+
+function getNormalizedProvenanceSearchQuery() {
+  return provenanceSearchQuery.trim().toLowerCase();
+}
+
+function getProvenanceSearchResults(): Array<{
+  dictionaryType: ProvenanceDictionaryType;
+  item: DictionaryItem;
+}> {
+  const query = getNormalizedProvenanceSearchQuery();
+  if (!query) {
+    return [];
+  }
+
+  return PROVENANCE_DICTIONARY_TYPES.flatMap((dictionaryType) =>
+    dictionaryItems[dictionaryType]
+      .filter((item) => item.value.trim().toLowerCase().includes(query))
+      .map((item) => ({ dictionaryType, item }))
+  );
+}
+
+function renderProvenanceSearchResults() {
+  const query = getNormalizedProvenanceSearchQuery();
+  if (!query) {
+    return '';
+  }
+
+  const results = getProvenanceSearchResults();
+  if (!results.length) {
+    return `<div class="provenance-search-results provenance-search-results-empty">${escapeHtml(
+      t('provenance.noMatches')
+    )}</div>`;
+  }
+
+  return `
+    <div class="provenance-search-results">
+      ${results
+        .map(
+          ({ dictionaryType, item }) => `
+            <button
+              class="provenance-search-result"
+              type="button"
+              data-provenance-result-type="${dictionaryType}"
+              data-provenance-result-id="${escapeHtml(item.id)}"
+            >
+              <span class="provenance-search-result-name">${escapeHtml(item.value)}</span>
+              <span class="provenance-search-result-category">${escapeHtml(
+                getDictionarySectionLabel(getCurrentLanguage(), dictionaryType)
+              )}</span>
+            </button>
+          `
+        )
+        .join('')}
+    </div>
+  `;
+}
+
+function renderProvenanceAddCard(dictionaryType: ProvenanceDictionaryType) {
+  const isExpanded = provenanceAddExpandedType === dictionaryType;
+  const isSubmitting = dictionarySubmittingType === dictionaryType;
+  const errorMessage = dictionarySectionErrors[dictionaryType];
+
+  if (!isExpanded) {
+    return `
+      <button
+        class="provenance-add-card"
+        type="button"
+        data-provenance-add-toggle="${dictionaryType}"
+        ${dictionarySubmittingType || dictionaryDeletingId ? 'disabled' : ''}
+      >
+        <span class="provenance-add-card-plus">＋</span>
+        <span>${escapeHtml(getProvenanceAddLabel(dictionaryType))}</span>
+      </button>
+    `;
+  }
+
+  return `
+    <div class="provenance-add-card provenance-add-card-expanded">
+      <input
+        id="dictionary-input-${dictionaryType}"
+        class="form-input provenance-add-input"
+        value="${escapeHtml(dictionaryInputValues[dictionaryType])}"
+        placeholder="${escapeHtml(t('dictionary.placeholder', { label: getDictionarySectionLabel(getCurrentLanguage(), dictionaryType) }))}"
+      />
+      <div class="provenance-add-actions">
+        <button
+          class="secondary-btn provenance-inline-btn"
+          type="button"
+          data-provenance-add-submit="${dictionaryType}"
+          ${isSubmitting || !!dictionaryDeletingId ? 'disabled' : ''}
+        >
+          ${escapeHtml(isSubmitting ? t('dictionary.adding') : t('dictionary.add'))}
+        </button>
+        <button
+          class="text-btn provenance-inline-text-btn"
+          type="button"
+          data-provenance-add-cancel="${dictionaryType}"
+          ${isSubmitting ? 'disabled' : ''}
+        >
+          ${escapeHtml(t('common.cancelAction'))}
+        </button>
+      </div>
+      ${errorMessage ? `<div class="error-message">${escapeHtml(errorMessage)}</div>` : ''}
+    </div>
+  `;
+}
+
+function renderProvenanceCategoryPanel(dictionaryType: ProvenanceDictionaryType) {
+  const items = dictionaryItems[dictionaryType];
+
+  return `
+    <div class="provenance-category-panel">
+      <div class="provenance-category-header">
+        <div class="detail-section-title">${escapeHtml(
+          getDictionarySectionLabel(getCurrentLanguage(), dictionaryType)
+        )}</div>
+        <div class="detail-section-subtitle">${escapeHtml(getProvenanceCategoryHelperText(dictionaryType))}</div>
+      </div>
+
+      ${items.length ? '' : `<div class="empty-tip provenance-empty-tip">${escapeHtml(getProvenanceEmptyText(dictionaryType))}</div>`}
+
+      <div class="provenance-chip-grid">
+        ${items
+          .map(
+            (item) => `
+              <div
+                class="provenance-chip-card ${provenanceHighlightedItemId === item.id ? 'provenance-chip-card-active' : ''}"
+                data-provenance-chip-id="${escapeHtml(item.id)}"
+              >
+                <button
+                  class="provenance-chip-main"
+                  type="button"
+                  data-provenance-chip-select="${escapeHtml(item.id)}"
+                >
+                  ${escapeHtml(item.value)}
+                </button>
+                <button
+                  class="provenance-chip-delete"
+                  type="button"
+                  data-dictionary-delete-id="${escapeHtml(item.id)}"
+                  data-dictionary-delete-label="${escapeHtml(item.value)}"
+                  title="${escapeHtml(t('provenance.delete'))}"
+                  aria-label="${escapeHtml(t('provenance.delete'))}"
+                  ${dictionaryDeletingId ? 'disabled' : ''}
+                >
+                  ${dictionaryDeletingId === item.id ? '…' : '×'}
+                </button>
+              </div>
+            `
+          )
+          .join('')}
+        ${renderProvenanceAddCard(dictionaryType)}
+      </div>
+    </div>
+  `;
+}
+
+function renderProvenanceManagementPanel() {
+  const activeDictionaryType = provenanceSelectedType;
+
+  return `
+    <div class="provenance-management-shell">
+      ${dictionaryLoadError ? `<div class="error-message large-error">${escapeHtml(dictionaryLoadError)}</div>` : ''}
+      ${dictionaryLoading && !dictionaryLoaded ? `<div class="empty-tip">${escapeHtml(t('provenance.loading'))}</div>` : ''}
+
+      <div class="provenance-search-shell">
+        <div class="provenance-search-row">
+          <input
+            id="provenance-search-input"
+            class="form-input provenance-search-input"
+            value="${escapeHtml(provenanceSearchQuery)}"
+            placeholder="${escapeHtml(t('provenance.searchPlaceholder'))}"
+          />
+          <button id="provenance-search-btn" class="secondary-btn provenance-search-btn" type="button">
+            ${escapeHtml(t('common.search'))}
+          </button>
+        </div>
+        ${renderProvenanceSearchResults()}
+      </div>
+
+      <div class="provenance-tab-row">
+        ${PROVENANCE_DICTIONARY_TYPES.map(
+          (dictionaryType) => `
+            <button
+              class="group-tab-btn ${activeDictionaryType === dictionaryType ? 'active-group-tab' : ''}"
+              type="button"
+              data-provenance-tab="${dictionaryType}"
+            >
+              ${escapeHtml(getDictionarySectionLabel(getCurrentLanguage(), dictionaryType))}
+            </button>
+          `
+        ).join('')}
+      </div>
+
+      ${renderProvenanceCategoryPanel(activeDictionaryType)}
+    </div>
+  `;
+}
+
 async function openSettingsView(subView: SettingsSubView = 'general') {
   if (currentView === 'settings' && settingsSubView === 'template-library' && subView !== 'template-library') {
     if (!confirmDiscardTemplateLibraryChanges()) {
@@ -2707,7 +3685,7 @@ async function switchSettingsSubView(nextSubView: SettingsSubView) {
   try {
     await reloadDictionaryItems();
   } catch (error) {
-    dictionaryLoadError = getErrorMessage(error) || t('dictionary.loadFailed');
+    dictionaryLoadError = getErrorMessage(error) || t('provenance.loadFailed');
   } finally {
     dictionaryLoading = false;
     requestRender(true);
@@ -3923,11 +4901,15 @@ function isGenericStructuredBlockTitle(title: string) {
     '结构化数据',
     '结构化数据块',
     '结构化曲线',
+    '曲线/谱图数据',
+    '曲线/谱图项',
     '未指定',
     'unnamed block',
     'structured data',
     'structured block',
-    'structured curve'
+    'structured curve',
+    'curve/spectrum data',
+    'curve/spectrum item'
   ].includes(normalized);
 }
 
@@ -3963,7 +4945,8 @@ function getAnalysisStructuredBlockLegacyDisplayName(
   const trimmedTitle = trimBlockTitle(block.blockTitle);
   const hasSpecificTitle = trimmedTitle && !isGenericStructuredBlockTitle(trimmedTitle);
   const { xLabel, yLabel } = getAnalysisStructuredBlockAxisMeta(block);
-  const axisSummary = [yLabel.trim(), xLabel.trim()].filter(Boolean).join(' - ') || '结构化数据';
+  const axisSummary =
+    [yLabel.trim(), xLabel.trim()].filter(Boolean).join(' - ') || t('step2.structured.sectionTitle');
 
   if (hasKnownPurpose && hasSpecificTitle) {
     return trimmedTitle === purposeLabel ? trimmedTitle : `${trimmedTitle} · ${purposeLabel}`;
@@ -3997,7 +4980,7 @@ function getAnalysisStructuredBlockDisplayName(
     return purposeLabel;
   }
 
-  return `结构化曲线 ${index + 1}`;
+  return `${t('step2.structured.typeLabel')} ${index + 1}`;
 }
 
 function getAnalysisStructuredBlockOptionLabel(
@@ -4037,7 +5020,7 @@ function getTemplateBlockReviewTitle(block: TemplateBlockFormData, index: number
     return purposeLabel;
   }
 
-  return `结构化曲线 ${index + 1}`;
+  return `${t('step2.structured.typeLabel')} ${index + 1}`;
 }
 
 function getTemplateBlockReviewOrdinal(index: number) {
@@ -4561,7 +5544,7 @@ function buildAnalysisScalarSeries(
   }
 
   if (xUnits.size > 1 || yUnits.size > 1) {
-    return { error: '所选记录中的轴单位不一致，当前标量图不会自动混合不兼容单位' };
+    return { error: '所选记录中的轴单位不一致，当前数值图不会自动混合不兼容单位' };
   }
 
   const xUnit = Array.from(xUnits)[0] || '';
@@ -4573,14 +5556,14 @@ function buildAnalysisScalarSeries(
     const firstSeries = chart.scalarSeries[0];
 
     if (firstSeries.xMode !== xMode || firstSeries.xSourceValue !== xSourceValue) {
-      return { error: '同一张标量图中的多条序列必须共享相同的 X 轴来源' };
+      return { error: '同一张数值图中的多条序列必须共享相同的 X 轴来源' };
     }
 
     if (
       normalizeAnalysisUnit(firstSeries.xUnit) !== normalizeAnalysisUnit(xUnit) ||
       normalizeAnalysisUnit(firstSeries.yUnit) !== normalizeAnalysisUnit(yUnit)
     ) {
-      return { error: '同一张标量图中的多条序列不能静默混用不同单位' };
+      return { error: '同一张数值图中的多条序列不能静默混用不同单位' };
     }
   }
 
@@ -4701,7 +5684,7 @@ function buildAnalysisStructuredSeries(
   });
 
   if (!seriesList.length) {
-    return { error: '当前选择下没有可绘制的结构化数据，请更换记录或数据块。', skippedRecordIds };
+    return { error: '当前选择下没有可绘制的曲线/谱图数据，请更换记录或曲线/谱图项。', skippedRecordIds };
   }
 
   return { seriesList, skippedRecordIds };
@@ -4744,15 +5727,15 @@ function buildAnalysisChartStatusMessages(chart: AnalysisChartCard) {
   );
 
   if (unknownPurposeCount) {
-    messages.push('包含未指定数据用途的结构化块，请谨慎解释叠加结果');
+    messages.push('包含未指定曲线数据类型的曲线/谱图项，请谨慎解释叠加结果');
   }
 
   if (purposeSet.size > 1) {
-    messages.push('当前结构化图混合了多种 purposeType，v1 仅提供并列可视化，不做自动语义对齐');
+    messages.push('当前曲线图混合了多种曲线数据类型，v1 仅提供并列可视化，不做自动语义对齐');
   }
 
   if (xMetaSet.size > 1 || yMetaSet.size > 1) {
-    messages.push('当前结构化图的坐标标签或单位不完全一致，图中仍按各序列原始元数据显示');
+    messages.push('当前曲线图的坐标标签或单位不完全一致，图中仍按各序列原始元数据显示');
   }
 
   if (hiddenSeriesCount === chart.structuredSeries.length && chart.structuredSeries.length) {
@@ -8498,6 +9481,17 @@ async function openExportModal() {
 async function renderPreservingContentScroll() {
   const contentArea = document.querySelector('.content-area') as HTMLElement | null;
   const scrollTop = contentArea?.scrollTop || 0;
+  document.querySelectorAll<HTMLElement>('[data-preserve-scroll-key]').forEach((element) => {
+    const key = element.dataset.preserveScrollKey;
+    if (!key) {
+      return;
+    }
+
+    preservedUiScrollPositions[key] = {
+      left: element.scrollLeft,
+      top: element.scrollTop
+    };
+  });
 
   await render();
 
@@ -8505,6 +9499,21 @@ async function renderPreservingContentScroll() {
   if (nextContentArea) {
     nextContentArea.scrollTop = scrollTop;
   }
+
+  document.querySelectorAll<HTMLElement>('[data-preserve-scroll-key]').forEach((element) => {
+    const key = element.dataset.preserveScrollKey;
+    if (!key) {
+      return;
+    }
+
+    const position = preservedUiScrollPositions[key];
+    if (!position) {
+      return;
+    }
+
+    element.scrollLeft = position.left;
+    element.scrollTop = position.top;
+  });
 }
 
 function requestRender(preserveContentScroll = false) {
@@ -8551,24 +9560,63 @@ async function ensureDictionaryItemsLoaded() {
 
 function getStep1SuggestionMatches(dictionaryType: DictionaryType, rawValue: string) {
   const query = rawValue.trim();
+  const normalizedQuery = query.toLowerCase();
   const recentValues =
     dictionaryType === 'testProject'
       ? recentEntrySuggestions.testProjects
       : dictionaryType === 'instrument'
         ? recentEntrySuggestions.instruments
+        : [];
+  const dictionaryValues =
+    dictionaryItems[dictionaryType].filter((item) => item.isActive).map((item) => item.value);
+  const familyValues =
+    dictionaryType === 'testProject' && templateLibraryResolved
+      ? (() => {
+          if (!query) {
+            return [...templateLibraryResolved.activeScientificTemplates]
+              .sort((left, right) => {
+                const leftPriority = left.sourceType === 'user' ? 0 : 1;
+                const rightPriority = right.sourceType === 'user' ? 0 : 1;
+                if (leftPriority !== rightPriority) {
+                  return leftPriority - rightPriority;
+                }
+
+                return left.displayName.localeCompare(right.displayName, 'zh-CN');
+              })
+              .map((family) => family.displayName);
+          }
+
+          return findScientificFamiliesForTestProject(query, templateLibraryResolved)
+            .filter((item) => item.score > 0)
+            .sort((left, right) => {
+              const leftPriority = left.family.sourceType === 'user' ? 0 : 1;
+              const rightPriority = right.family.sourceType === 'user' ? 0 : 1;
+              if (leftPriority !== rightPriority) {
+                return leftPriority - rightPriority;
+              }
+
+              if (right.score !== left.score) {
+                return right.score - left.score;
+              }
+
+              return left.family.displayName.localeCompare(right.family.displayName, 'zh-CN');
+            })
+            .map((item) => item.family.displayName);
+        })()
       : [];
-  const dictionaryValues = dictionaryItems[dictionaryType]
-    .filter((item) => item.isActive)
-    .map((item) => item.value);
 
   if (!query) {
-    return Array.from(new Set([...recentValues, ...dictionaryValues])).slice(0, STEP1_SUGGESTION_LIMIT);
+    return Array.from(new Set([...recentValues, ...familyValues, ...dictionaryValues])).slice(0, STEP1_SUGGESTION_RESULT_LIMIT);
   }
 
-  const dictionaryMatches = dictionaryValues.filter((value) => value.includes(query));
-  const recentMatches = recentValues.filter((value) => value.includes(query));
+  const dictionaryMatches = dictionaryValues.filter((value) => value.toLowerCase().includes(normalizedQuery));
+  const recentMatches = recentValues.filter((value) => value.toLowerCase().includes(normalizedQuery));
+  const familyMatches = familyValues.filter((value) => value.toLowerCase().includes(normalizedQuery));
 
-  return Array.from(new Set([...recentMatches, ...dictionaryMatches])).slice(0, STEP1_SUGGESTION_LIMIT);
+  return Array.from(new Set([...familyMatches, ...recentMatches, ...dictionaryMatches])).slice(
+    0,
+    STEP1_SUGGESTION_RESULT_LIMIT
+  );
 }
 
 function splitLocalDateTimeValue(value: string) {
@@ -8954,14 +10002,15 @@ function buildEmptyTemplateBlock(templateType: TemplateBlockType): TemplateBlock
   };
 }
 
-function buildRecommendedScalarItem(
+function buildScalarTemplateDataItem(
   role: ScalarItemRole,
-  recommendation?: Step2RecommendedScalarItem
+  template: Pick<ScalarItemTemplate, 'displayName' | 'unitDefault' | 'defaultValue'>
 ) {
   return {
     ...buildEmptyDataItem(role),
-    itemName: recommendation?.name || '',
-    itemUnit: recommendation?.defaultUnit || ''
+    itemName: template.displayName || '',
+    itemUnit: template.unitDefault || '',
+    itemValue: template.defaultValue || ''
   };
 }
 
@@ -9032,18 +10081,142 @@ function getStep2TemplateContext(context: ScalarItemEditContext | TemplateBlockE
   return step1FormData.testProject;
 }
 
+function getMatchedScientificFamilyForTestProject(testProject: string) {
+  ensureTemplateLibraryLoadedForStructuredBlocks();
+  if (!templateLibraryResolved || !testProject.trim()) {
+    return null;
+  }
+
+  return findExactScientificFamilyForTestProject(testProject, templateLibraryResolved);
+}
+
+function getResolvedStep2ScientificFamily(
+  context: ScalarItemEditContext | TemplateBlockEditContext | 'detail-readonly'
+) {
+  return getMatchedScientificFamilyForTestProject(getStep2TemplateContext(context));
+}
+
 function getActiveStep2TemplateFamily(
   context: ScalarItemEditContext | TemplateBlockEditContext | 'detail-readonly'
 ) {
-  return resolveStep2TemplateFamily(getStep2TemplateContext(context));
-}
-
-function getLocalizedTemplateFamilyLabel(family: Step2TemplateFamily) {
-  if (family.id === 'generic') {
-    return t('step2.templateContext.family.generic');
+  const resolvedFamily = getResolvedStep2ScientificFamily(context);
+  if (resolvedFamily) {
+    return {
+      id: resolvedFamily.id,
+      displayName: resolvedFamily.displayName,
+      description: resolvedFamily.description || ''
+    };
   }
 
-  return family.label;
+  return null;
+}
+
+function getLocalizedTemplateFamilyLabel(
+  family: Pick<ScientificTestTemplate, 'id' | 'displayName'>
+) {
+  return family.id === 'generic' ? t('step2.templateContext.family.generic') : family.displayName;
+}
+
+function getScalarTemplateRecommendations(
+  context: ScalarItemEditContext,
+  role: ScalarItemRole,
+  options?: {
+    limit?: number;
+    query?: string;
+  }
+) {
+  if (!templateLibraryResolved) {
+    ensureTemplateLibraryLoadedForScalarSections();
+    return [] as ScalarTemplateRecommendation[];
+  }
+
+  const testProject = getStep2TemplateContext(context);
+  const section: ScalarTemplateSection = role === 'condition' ? 'condition' : 'metric';
+  const matchedFamily = findExactScientificFamilyForTestProject(testProject, templateLibraryResolved);
+  if (!matchedFamily) {
+    return [] as ScalarTemplateRecommendation[];
+  }
+
+  return findScalarTemplatesForFamily(matchedFamily.id, templateLibraryResolved, {
+    section,
+    query: options?.query,
+    limit: options?.limit
+  });
+}
+
+function getScalarTemplateFamilyLabelForStep2(recommendation: ScalarTemplateRecommendation) {
+  return (
+    recommendation.family?.displayName ||
+    getTemplateLibraryFamilyById(recommendation.scalarTemplate.familyId)?.displayName ||
+    recommendation.scalarTemplate.familyId
+  );
+}
+
+function normalizeScalarItemNameForDuplicateCheck(value: string) {
+  return value.trim().toLowerCase();
+}
+
+function hasScalarTemplateNameInSection(
+  context: ScalarItemEditContext,
+  role: ScalarItemRole,
+  displayName: string
+) {
+  const normalizedTarget = normalizeScalarItemNameForDuplicateCheck(displayName);
+  if (!normalizedTarget) {
+    return false;
+  }
+
+  return getScalarItemsForContext(context).some(
+    (row) =>
+      (row.scalarRole || 'metric') === role &&
+      normalizeScalarItemNameForDuplicateCheck(row.itemName) === normalizedTarget
+  );
+}
+
+function toggleStep2ScalarTemplatePicker(
+  context: ScalarItemEditContext,
+  role: ScalarItemRole
+) {
+  const isOpen =
+    step2ScalarTemplatePicker?.context === context && step2ScalarTemplatePicker?.role === role;
+
+  step2ScalarTemplatePicker = isOpen
+    ? null
+    : {
+        context,
+        role,
+        query: ''
+      };
+}
+
+function addScalarItemFromTemplate(
+  context: ScalarItemEditContext,
+  role: ScalarItemRole,
+  templateId: string
+) {
+  if (!templateLibraryResolved) {
+    return;
+  }
+
+  const template = templateLibraryResolved.activeScalarTemplates.find((item) => item.id === templateId);
+  if (!template) {
+    return;
+  }
+
+  if (template.section !== (role === 'condition' ? 'condition' : 'metric')) {
+    return;
+  }
+
+  if (hasScalarTemplateNameInSection(context, role, template.displayName)) {
+    alert(t('step2.scalar.duplicateNameExists'));
+    return;
+  }
+
+  setScalarItemsForContext(context, [
+    ...getScalarItemsForContext(context),
+    buildScalarTemplateDataItem(role, template)
+  ]);
+  step2ScalarTemplatePicker = null;
 }
 
 function renderStep2TemplateContextHint(
@@ -9070,53 +10243,157 @@ function renderStep2TemplateContextHint(
   `;
 }
 
-function renderScalarRecommendationButtons(
+function renderScalarTemplateAssist(
   context: ScalarItemEditContext,
-  role: ScalarItemRole,
-  items: Step2RecommendedScalarItem[]
+  role: ScalarItemRole
 ) {
-  if (!items.length) {
-    return '';
-  }
+  const commonRecommendations = getScalarTemplateRecommendations(context, role, { limit: 6 });
+  const pickerOpen =
+    step2ScalarTemplatePicker?.context === context && step2ScalarTemplatePicker?.role === role;
+  const pickerQuery = pickerOpen ? step2ScalarTemplatePicker?.query || '' : '';
+  const pickerResults = pickerOpen
+    ? getScalarTemplateRecommendations(context, role, {
+        query: pickerQuery,
+        limit: pickerQuery.trim() ? 24 : 12
+      })
+    : [];
+  const commonLabel =
+    role === 'condition' ? t('step2.scalar.commonConditions') : t('step2.scalar.commonMetrics');
+  const pickerTitle =
+    role === 'condition'
+      ? t('step2.scalar.selectConditionTemplate')
+      : t('step2.scalar.selectMetricTemplate');
 
   return `
-    <div class="step2-template-recommendation-row">
-      <div class="step2-template-recommendation-label">${escapeHtml(
-        getScalarRoleMeta(role).recommendationLabel
-      )}</div>
-      <div class="step2-template-recommendation-list">
-        ${items
-          .map((item) => {
-            const defaultUnit = item.defaultUnit ? ` · ${item.defaultUnit}` : '';
-            const valueNature = getValueNatureLabelText(item.valueNatures);
+    ${
+      commonRecommendations.length
+        ? `
+          <div class="step2-template-recommendation-row">
+            <div class="step2-template-recommendation-label">${escapeHtml(commonLabel)}</div>
+            <div class="step2-template-recommendation-list">
+              ${commonRecommendations
+                .map((recommendation) => {
+                  const template = recommendation.scalarTemplate;
+                  const alreadyAdded = hasScalarTemplateNameInSection(context, role, template.displayName);
+                  const defaultUnit = template.unitDefault ? ` · ${template.unitDefault}` : '';
 
-            return `
+                  return `
+                    <button
+                      class="step2-template-pill ${alreadyAdded ? 'step2-template-pill-disabled' : ''}"
+                      type="button"
+                      data-step2-scalar-template-add="${escapeHtml(template.id)}"
+                      data-step2-scalar-template-context="${escapeHtml(context)}"
+                      data-step2-scalar-template-role="${escapeHtml(role)}"
+                      ${alreadyAdded ? 'disabled' : ''}
+                    >
+                      <span>+ ${escapeHtml(template.displayName)}${escapeHtml(defaultUnit)}</span>
+                      ${
+                        alreadyAdded
+                          ? `<span class="step2-template-pill-meta">${escapeHtml(t('step2.scalar.added'))}</span>`
+                          : ''
+                      }
+                    </button>
+                  `;
+                })
+                .join('')}
+            </div>
+          </div>
+        `
+        : ''
+    }
+    ${
+      pickerOpen
+        ? `
+          <div class="detail-section step2-template-picker-shell">
+            <div class="step2-template-picker-header">
+              <div class="detail-section-title">${escapeHtml(pickerTitle)}</div>
               <button
-                class="step2-template-pill"
+                class="secondary-btn step2-template-picker-toggle-btn"
                 type="button"
-                data-template-scalar-context="${context}"
-                data-template-scalar-role="${role}"
-                data-template-scalar-name="${escapeHtml(item.name)}"
-                data-template-scalar-unit="${escapeHtml(item.defaultUnit)}"
+                data-step2-scalar-picker-toggle="${escapeHtml(`${context}:${role}`)}"
               >
-                <span>+ ${escapeHtml(item.name)}${escapeHtml(defaultUnit)}</span>
-                ${valueNature
-                  ? `<span class="step2-template-pill-meta">${escapeHtml(valueNature)}</span>`
-                  : ''}
+                ${escapeHtml(t('common.done'))}
               </button>
-            `;
-          })
-          .join('')}
-      </div>
-    </div>
+            </div>
+            <input
+              class="form-input"
+              data-step2-scalar-picker-search="${escapeHtml(`${context}:${role}`)}"
+              value="${escapeHtml(pickerQuery)}"
+              placeholder="${escapeHtml(t('step2.scalar.searchTemplates'))}"
+            />
+            <div
+              class="template-library-result-grid step2-template-picker-grid"
+              data-preserve-scroll-key="${escapeHtml(`step2-template-picker:${context}:${role}`)}"
+            >
+              ${
+                pickerResults.length
+                  ? pickerResults
+                      .map((recommendation) => {
+                        const template = recommendation.scalarTemplate;
+                        const alreadyAdded = hasScalarTemplateNameInSection(
+                          context,
+                          role,
+                          template.displayName
+                        );
+
+                        return `
+                          <button
+                            type="button"
+                            class="template-library-search-item ${alreadyAdded ? 'template-library-search-item-disabled' : ''}"
+                            data-step2-scalar-template-add="${escapeHtml(template.id)}"
+                            data-step2-scalar-template-context="${escapeHtml(context)}"
+                            data-step2-scalar-template-role="${escapeHtml(role)}"
+                            ${alreadyAdded ? 'disabled' : ''}
+                          >
+                            <div class="template-library-search-item-main">
+                              <span class="template-library-search-item-title">${escapeHtml(template.displayName)}</span>
+                              <span class="template-library-chip">${escapeHtml(
+                                role === 'condition'
+                                  ? t('templateLibrary.resultType.condition')
+                                  : t('templateLibrary.resultType.metric')
+                              )}</span>
+                            </div>
+                            <div class="template-library-search-item-meta">
+                              ${
+                                template.unitDefault
+                                  ? `<span class="template-library-chip">${escapeHtml(
+                                      `${t('templateLibrary.field.unitDefault')}: ${template.unitDefault}`
+                                    )}</span>`
+                                  : ''
+                              }
+                              <span class="template-library-chip">${escapeHtml(
+                                getTemplateLibrarySourceTypeLabel(
+                                  getTemplateLibraryEffectiveSourceType(template, 'scalar')
+                                )
+                              )}</span>
+                              ${
+                                alreadyAdded
+                                  ? `<span class="template-library-chip">${escapeHtml(
+                                      t('step2.scalar.added')
+                                    )}</span>`
+                                  : ''
+                              }
+                            </div>
+                            <div class="template-library-search-item-subtitle">${escapeHtml(
+                              getScalarTemplateFamilyLabelForStep2(recommendation)
+                            )}</div>
+                          </button>
+                        `;
+                      })
+                      .join('')
+                  : `<div class="empty-tip">${escapeHtml(t('step2.scalar.noMatchingTemplates'))}</div>`
+              }
+            </div>
+          </div>
+        `
+        : ''
+    }
   `;
 }
 
-function renderStructuredRecommendationButtons(
-  context: TemplateBlockEditContext,
-  family: Step2TemplateFamily | null
-) {
-  if (!family?.recommendedStructuredBlocks.length) {
+function renderStructuredRecommendationButtons(context: TemplateBlockEditContext) {
+  const previews = getStructuredCurveTemplateOptions(context).slice(0, 6);
+  if (!previews.length) {
     return '';
   }
 
@@ -9124,16 +10401,16 @@ function renderStructuredRecommendationButtons(
     <div class="step2-template-recommendation-row">
       <div class="step2-template-recommendation-label">${escapeHtml(t('step2.structured.recommendationLabel'))}</div>
       <div class="step2-template-recommendation-list">
-        ${family.recommendedStructuredBlocks
+        ${previews
           .map(
-            (item, index) => `
+            (item) => `
               <button
                 class="step2-template-pill"
                 type="button"
                 data-template-block-context="${context}"
-                data-template-block-recommendation-index="${index}"
+                data-template-block-curve-template-add="${escapeHtml(item.curveTemplateId)}"
               >
-                <span>+ ${escapeHtml(item.label)}</span>
+                <span>+ ${escapeHtml(item.displayName)}</span>
                 <span class="step2-template-pill-meta">${escapeHtml(
                   getStructuredBlockPurposeLabel(item.purposeType)
                 )}</span>
@@ -9164,6 +10441,44 @@ function isGenericStructuredAxisLabel(
     : GENERIC_SECONDARY_AXIS_LABELS.has(normalized);
 }
 
+function getStructuredFamilyContextDisplay(
+  context: TemplateBlockEditContext | 'detail-readonly'
+) {
+  const testProject = getStep2TemplateContext(context);
+  const matchedFamily = getResolvedStep2ScientificFamily(context);
+  return {
+    testProject,
+    matchedFamily,
+    familyLabel: matchedFamily?.displayName || ''
+  };
+}
+
+function getDefaultStructuredPurposeTypeForContext(context: TemplateBlockEditContext) {
+  ensureTemplateLibraryLoadedForStructuredBlocks();
+  const matchedFamily = getResolvedStep2ScientificFamily(context);
+  if (matchedFamily && templateLibraryResolved) {
+    const familyCurves = findCurveTemplatesForFamily(matchedFamily.id, templateLibraryResolved, { limit: 1 });
+    if (familyCurves[0]?.curveTemplate.purposeType) {
+      return familyCurves[0].curveTemplate.purposeType;
+    }
+  }
+
+  return 'custom';
+}
+
+function buildTemplateBlockFromCurveTemplatePreview(preview: TemplateApplicationPreview) {
+  return {
+    ...buildEmptyTemplateBlock(XY_TEMPLATE_TYPE),
+    purposeType: preview.purposeType || 'custom',
+    blockTitle: preview.blockTitleDefault,
+    primaryLabel: preview.axisDefaults.primaryLabel,
+    primaryUnit: preview.axisDefaults.primaryUnit,
+    secondaryLabel: preview.axisDefaults.secondaryLabel,
+    secondaryUnit: preview.axisDefaults.secondaryUnit,
+    appliedCurveTemplateId: preview.curveTemplateId
+  };
+}
+
 function ensureTemplateLibraryLoadedForStructuredBlocks() {
   if (templateLibraryLoaded || templateLibraryLoadPromise) {
     return;
@@ -9178,59 +10493,49 @@ function ensureTemplateLibraryLoadedForStructuredBlocks() {
     });
 }
 
-function getStructuredCurveTemplateOptions(
-  context: TemplateBlockEditContext,
-  purposeType: StructuredBlockPurpose
-) {
-  if (!purposeType) {
-    return [] as TemplateApplicationPreview[];
+function ensureTemplateLibraryLoadedForScalarSections() {
+  if (templateLibraryLoaded || templateLibraryLoadPromise) {
+    return;
   }
 
+  void ensureTemplateLibraryLoaded()
+    .then(() => {
+      requestRender(true);
+    })
+    .catch(() => {
+      requestRender(true);
+    });
+}
+
+function getStructuredCurveTemplateOptions(
+  context: TemplateBlockEditContext
+) {
   ensureTemplateLibraryLoadedForStructuredBlocks();
 
   if (!templateLibraryResolved) {
     return [] as TemplateApplicationPreview[];
   }
 
-  const recommendations = findCurveTemplatesForTestProject(
-    getStep2TemplateContext(context),
-    templateLibraryResolved,
-    { limit: 50 }
+  const matchedFamily = getResolvedStep2ScientificFamily(context);
+  if (!matchedFamily) {
+    return [] as TemplateApplicationPreview[];
+  }
+
+  return findCurveTemplatesForFamily(matchedFamily.id, templateLibraryResolved, { limit: 50 }).map((item) =>
+    getTemplateApplicationPreview(item.curveTemplate, templateLibraryResolved)
   );
-  const seenTemplateIds = new Set<string>();
-  const orderedTemplates: StructuredCurveTemplate[] = [];
-
-  recommendations.forEach((item) => {
-    if (item.curveTemplate.purposeType !== purposeType || seenTemplateIds.has(item.curveTemplate.id)) {
-      return;
-    }
-
-    seenTemplateIds.add(item.curveTemplate.id);
-    orderedTemplates.push(item.curveTemplate);
-  });
-
-  templateLibraryResolved.activeCurveTemplates
-    .filter((item) => item.purposeType === purposeType && !seenTemplateIds.has(item.id))
-    .sort((left, right) => left.displayName.localeCompare(right.displayName, 'zh-CN'))
-    .forEach((item) => {
-      seenTemplateIds.add(item.id);
-      orderedTemplates.push(item);
-    });
-
-  return orderedTemplates.map((item) => getTemplateApplicationPreview(item, templateLibraryResolved));
 }
 
 function getAppliedStructuredCurveTemplateOption(
   context: TemplateBlockEditContext,
   block: TemplateBlockFormData
 ) {
-  const options = getStructuredCurveTemplateOptions(context, block.purposeType || '');
-  if (!options.length) {
-    return null;
-  }
-
   if (block.appliedCurveTemplateId) {
-    return options.find((item) => item.curveTemplateId === block.appliedCurveTemplateId) || null;
+    return (
+      getStructuredCurveTemplateOptions(context).find(
+        (item) => item.curveTemplateId === block.appliedCurveTemplateId
+      ) || null
+    );
   }
 
   return null;
@@ -9331,7 +10636,7 @@ function buildTemplateBlockImportMemoryPayload(
 
   return {
     testProject: getStep2TemplateContext(context) || undefined,
-    familyId: appliedTemplate?.familyId,
+    familyId: appliedTemplate?.familyId || getResolvedStep2ScientificFamily(context)?.id,
     curveTemplateId: appliedTemplate?.id,
     blockName: block.blockTitle,
     purposeType: block.purposeType,
@@ -9496,11 +10801,11 @@ function applyStructuredCurveTemplateToBlock(
 ) {
   const blocks = getTemplateBlocksForContext(context);
   const targetBlock = blocks.find((block) => block.id === blockId);
-  if (!targetBlock || !targetBlock.purposeType) {
+  if (!targetBlock) {
     return;
   }
 
-  const preview = getStructuredCurveTemplateOptions(context, targetBlock.purposeType).find(
+  const preview = getStructuredCurveTemplateOptions(context).find(
     (item) => item.curveTemplateId === curveTemplateId
   );
   if (!preview) {
@@ -9565,62 +10870,67 @@ function renderStructuredCurveTemplateSelector(
   context: TemplateBlockEditContext,
   block: TemplateBlockFormData
 ) {
-  const options = getStructuredCurveTemplateOptions(context, block.purposeType || '');
+  const options = getStructuredCurveTemplateOptions(context);
   const appliedTemplate = getAppliedStructuredCurveTemplateOption(context, block);
+  const familyContext = getStructuredFamilyContextDisplay(context);
 
-  if (!block.purposeType) {
+  if (!familyContext.matchedFamily) {
     return `
-      <div class="form-group template-block-template-selector-group">
-        <label class="form-label">${escapeHtml(t('step2.structured.curveTemplateLabel'))}</label>
-        <div class="detail-section-subtitle">${escapeHtml(t('step2.structured.curveTemplateChoosePurpose'))}</div>
+      <div class="form-group template-block-template-selector-group template-block-compact-field">
+        <label class="form-label template-block-compact-label">${escapeHtml(t('step2.structured.curveTemplateLabel'))}</label>
+        <div class="template-block-compact-control">
+          <div class="detail-section-subtitle">${escapeHtml(t('step2.structured.curveTemplateChooseFamily'))}</div>
+        </div>
       </div>
     `;
   }
 
   if (!options.length) {
     return `
-      <div class="form-group template-block-template-selector-group">
-        <label class="form-label">${escapeHtml(t('step2.structured.curveTemplateLabel'))}</label>
-        <div class="detail-section-subtitle">${escapeHtml(t('step2.structured.curveTemplateEmpty'))}</div>
+      <div class="form-group template-block-template-selector-group template-block-compact-field">
+        <label class="form-label template-block-compact-label">${escapeHtml(t('step2.structured.curveTemplateLabel'))}</label>
+        <div class="template-block-compact-control">
+          <div class="detail-section-subtitle">${escapeHtml(t('step2.structured.curveTemplateEmpty'))}</div>
+        </div>
       </div>
     `;
   }
 
   return `
-    <div class="form-group template-block-template-selector-group">
-      <label class="form-label">${escapeHtml(t('step2.structured.curveTemplateLabel'))}</label>
-      <div class="template-block-template-selector-row">
-        <select
-          id="template-block-curve-template-${block.id}"
-          class="form-input"
-          data-template-block-curve-template-id="${block.id}"
-        >
-          <option value="">${escapeHtml(t('step2.structured.curveTemplateSelect'))}</option>
-          ${options
-            .map(
-              (item) => `
-                <option
-                  value="${escapeHtml(item.curveTemplateId)}"
-                  ${block.appliedCurveTemplateId === item.curveTemplateId ? 'selected' : ''}
-                >
-                  ${escapeHtml(item.displayName)}
-                </option>
-              `
-            )
-            .join('')}
-        </select>
-        <span class="template-library-chip template-block-template-chip">${escapeHtml(
-          appliedTemplate
-            ? t('step2.structured.curveTemplateApplied', { template: appliedTemplate.displayName })
-            : t('step2.structured.curveTemplateCustom')
-        )}</span>
+    <div class="form-group template-block-template-selector-group template-block-compact-field">
+      <label class="form-label template-block-compact-label">${escapeHtml(t('step2.structured.curveTemplateLabel'))}</label>
+      <div class="template-block-compact-control">
+        <div class="template-block-template-selector-row">
+          <select
+            id="template-block-curve-template-${block.id}"
+            class="form-input"
+            data-template-block-curve-template-id="${block.id}"
+          >
+            <option value="__custom__" ${block.appliedCurveTemplateId ? '' : 'selected'}>${escapeHtml(
+              t('step2.structured.curveTemplateCustom')
+            )}</option>
+            ${options
+              .map(
+                (item) => `
+                  <option
+                    value="${escapeHtml(item.curveTemplateId)}"
+                    ${block.appliedCurveTemplateId === item.curveTemplateId ? 'selected' : ''}
+                  >
+                    ${escapeHtml(item.displayName)}
+                  </option>
+                `
+              )
+              .join('')}
+          </select>
+          <span class="template-library-chip template-block-template-chip">${escapeHtml(
+            appliedTemplate
+              ? t('step2.structured.curveTemplateApplied', { template: appliedTemplate.displayName })
+              : t('step2.structured.curveTemplateCustom')
+          )}</span>
+        </div>
       </div>
     </div>
   `;
-}
-
-function getDefaultStructuredRecommendation(context: TemplateBlockEditContext) {
-  return getActiveStep2TemplateFamily(context)?.recommendedStructuredBlocks[0];
 }
 
 function renderEditableStructuredSectionContent(
@@ -9632,7 +10942,7 @@ function renderEditableStructuredSectionContent(
     <div class="template-block-toolbar">
       <button id="${addButtonId}" class="secondary-btn" type="button">${escapeHtml(t('step2.structured.addButton'))}</button>
     </div>
-    ${renderStructuredRecommendationButtons(context, getActiveStep2TemplateFamily(context))}
+    ${renderStructuredRecommendationButtons(context)}
     ${renderTemplateBlockCards(blocks, context)}
   `;
 }
@@ -10256,6 +11566,9 @@ function addTemplateBlockForContext(
   recommendation?: Step2RecommendedStructuredBlock
 ) {
   const block = buildRecommendedTemplateBlock(templateType, recommendation);
+  if (!block.purposeType) {
+    block.purposeType = getDefaultStructuredPurposeTypeForContext(context);
+  }
   if (context === 'detail-edit') {
     detailEditTemplateBlocks = [...detailEditTemplateBlocks, block];
     return;
@@ -10278,19 +11591,18 @@ function bindTemplateBlockEditorEvents(params: {
 
       addTemplateBlockForContext(
         params.context,
-        XY_TEMPLATE_TYPE,
-        getDefaultStructuredRecommendation(params.context)
+        XY_TEMPLATE_TYPE
       );
       requestRender(true);
     });
   }
 
-  document.querySelectorAll('[data-template-block-recommendation-index]').forEach((button) => {
+  document.querySelectorAll('[data-template-block-curve-template-add]').forEach((button) => {
     button.addEventListener('click', () => {
       const target = button as HTMLElement;
       const context = target.dataset.templateBlockContext as TemplateBlockEditContext | undefined;
-      const recommendationIndex = Number(target.dataset.templateBlockRecommendationIndex);
-      if (context !== params.context || Number.isNaN(recommendationIndex)) {
+      const curveTemplateId = target.dataset.templateBlockCurveTemplateAdd;
+      if (context !== params.context || !curveTemplateId) {
         return;
       }
 
@@ -10300,9 +11612,15 @@ function bindTemplateBlockEditorEvents(params: {
         saveStep2InputsToState();
       }
 
-      const recommendation =
-        getActiveStep2TemplateFamily(params.context)?.recommendedStructuredBlocks[recommendationIndex];
-      addTemplateBlockForContext(params.context, XY_TEMPLATE_TYPE, recommendation);
+      const preview = getStructuredCurveTemplateOptions(params.context).find(
+        (item) => item.curveTemplateId === curveTemplateId
+      );
+      if (!preview) {
+        return;
+      }
+
+      const nextBlock = buildTemplateBlockFromCurveTemplatePreview(preview);
+      setTemplateBlocksForContext(params.context, [...getTemplateBlocksForContext(params.context), nextBlock]);
       requestRender(true);
     });
   });
@@ -10341,44 +11659,6 @@ function bindTemplateBlockEditorEvents(params: {
     });
   });
 
-  document.querySelectorAll('[id^="template-block-purpose-"]').forEach((select) => {
-    select.addEventListener('change', () => {
-      if (params.context === 'detail-edit') {
-        collectDetailEditState();
-      } else {
-        saveStep2InputsToState();
-      }
-
-      const target = select as HTMLSelectElement;
-      const blockId = target.id.replace('template-block-purpose-', '');
-      const nextPurposeType = target.value as StructuredBlockPurpose;
-
-      setTemplateBlocksForContext(
-        params.context,
-        getTemplateBlocksForContext(params.context).map((block) => {
-          if (block.id !== blockId) {
-            return block;
-          }
-
-          return {
-            ...block,
-            purposeType: nextPurposeType,
-            importMemoryAppliedId: '',
-            appliedCurveTemplateId:
-              block.appliedCurveTemplateId &&
-              getStructuredCurveTemplateOptions(params.context, nextPurposeType).some(
-                (item) => item.curveTemplateId === block.appliedCurveTemplateId
-              )
-                ? block.appliedCurveTemplateId
-                : ''
-          };
-        })
-      );
-
-      requestRender(true);
-    });
-  });
-
   document.querySelectorAll('[data-template-block-curve-template-id]').forEach((select) => {
     select.addEventListener('change', () => {
       const target = select as HTMLSelectElement;
@@ -10393,7 +11673,7 @@ function bindTemplateBlockEditorEvents(params: {
         saveStep2InputsToState();
       }
 
-      if (!target.value) {
+      if (!target.value || target.value === '__custom__') {
         setTemplateBlocksForContext(
           params.context,
           getTemplateBlocksForContext(params.context).map((block) =>
@@ -10401,7 +11681,8 @@ function bindTemplateBlockEditorEvents(params: {
               ? {
                   ...block,
                   importMemoryAppliedId: '',
-                  appliedCurveTemplateId: ''
+                  appliedCurveTemplateId: '',
+                  purposeType: block.purposeType || getDefaultStructuredPurposeTypeForContext(params.context)
                 }
               : block
           )
@@ -10776,7 +12057,6 @@ function renderEditableScalarSection(
   rows: DataItem[]
 ) {
   const meta = getScalarRoleMeta(role);
-  const family = getActiveStep2TemplateFamily(context);
   const oppositeRole: ScalarItemRole = role === 'condition' ? 'metric' : 'condition';
   const contextPrefix = context === 'detail-edit' ? 'detail' : 'create';
   const addButtonId =
@@ -10796,6 +12076,15 @@ function renderEditableScalarSection(
         </div>
         <div class="table-toolbar step2-section-toolbar">
           <button
+            class="secondary-btn step2-compact-add-btn"
+            type="button"
+            title="${escapeHtml(t('step2.scalar.addFromTemplate'))}"
+            aria-label="${escapeHtml(t('step2.scalar.addFromTemplate'))}"
+            data-step2-scalar-picker-toggle="${escapeHtml(`${context}:${role}`)}"
+          >
+            ${escapeHtml(t('step2.scalar.addFromTemplate'))}
+          </button>
+          <button
             id="${addButtonId}"
             class="secondary-btn step2-compact-add-btn"
             type="button"
@@ -10807,17 +12096,15 @@ function renderEditableScalarSection(
         </div>
       </div>
 
-      ${renderScalarRecommendationButtons(
-        context,
-        role,
-        role === 'condition'
-          ? family?.recommendedConditions || []
-          : family?.recommendedMetrics || []
-      )}
+      ${renderScalarTemplateAssist(context, role)}
 
-      <div class="step2-added-summary">${escapeHtml(
-        startedCount ? t('step2.added.summary', { count: startedCount }) : emptySummary
-      )}</div>
+      ${
+        startedCount
+          ? `<div class="step2-added-summary">${escapeHtml(
+              t('step2.added.summary', { count: startedCount })
+            )}</div>`
+          : ''
+      }
 
       ${rows.length
         ? `
@@ -11101,6 +12388,7 @@ function bindScalarItemEditorEvents(params: {
 
   document.getElementById(params.addConditionButtonId)?.addEventListener('click', () => {
     syncStateBeforeMutation();
+    step2ScalarTemplatePicker = null;
 
     setScalarItemsForContext(params.context, [
       ...getScalarItemsForContext(params.context),
@@ -11111,6 +12399,7 @@ function bindScalarItemEditorEvents(params: {
 
   document.getElementById(params.addMetricButtonId)?.addEventListener('click', () => {
     syncStateBeforeMutation();
+    step2ScalarTemplatePicker = null;
 
     setScalarItemsForContext(params.context, [
       ...getScalarItemsForContext(params.context),
@@ -11119,22 +12408,63 @@ function bindScalarItemEditorEvents(params: {
     requestRender(true);
   });
 
-  document.querySelectorAll('[data-template-scalar-name]').forEach((button) => {
+  document.querySelectorAll('[data-step2-scalar-picker-toggle]').forEach((button) => {
     button.addEventListener('click', () => {
       const target = button as HTMLElement;
-      const context = target.dataset.templateScalarContext as ScalarItemEditContext | undefined;
-      const role = target.dataset.templateScalarRole as ScalarItemRole | undefined;
-      const name = target.dataset.templateScalarName || '';
-      const unit = target.dataset.templateScalarUnit || '';
-      if (context !== params.context || !role) {
+      const token = target.dataset.step2ScalarPickerToggle;
+      if (!token) {
+        return;
+      }
+
+      const [pickerContext, pickerRole] = token.split(':');
+      if (pickerContext !== params.context || (pickerRole !== 'condition' && pickerRole !== 'metric')) {
         return;
       }
 
       syncStateBeforeMutation();
-      setScalarItemsForContext(params.context, [
-        ...getScalarItemsForContext(params.context),
-        buildRecommendedScalarItem(role, { name, defaultUnit: unit })
-      ]);
+      toggleStep2ScalarTemplatePicker(params.context, pickerRole);
+      requestRender(true);
+    });
+  });
+
+  document.querySelectorAll('[data-step2-scalar-picker-search]').forEach((input) => {
+    input.addEventListener('input', (event) => {
+      const target = input as HTMLElement;
+      const token = target.dataset.step2ScalarPickerSearch;
+      if (!token || !step2ScalarTemplatePicker) {
+        return;
+      }
+
+      const [pickerContext, pickerRole] = token.split(':');
+      if (
+        pickerContext !== params.context ||
+        pickerRole !== step2ScalarTemplatePicker.role ||
+        step2ScalarTemplatePicker.context !== params.context
+      ) {
+        return;
+      }
+
+      const value = (event.target as HTMLInputElement).value;
+      step2ScalarTemplatePicker = {
+        ...step2ScalarTemplatePicker,
+        query: value
+      };
+      requestRender(true);
+    });
+  });
+
+  document.querySelectorAll('[data-step2-scalar-template-add]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const target = button as HTMLElement;
+      const templateId = target.dataset.step2ScalarTemplateAdd;
+      const rowContext = target.dataset.step2ScalarTemplateContext as ScalarItemEditContext | undefined;
+      const role = target.dataset.step2ScalarTemplateRole as ScalarItemRole | undefined;
+      if (!templateId || rowContext !== params.context || !role) {
+        return;
+      }
+
+      syncStateBeforeMutation();
+      addScalarItemFromTemplate(params.context, role, templateId);
       requestRender(true);
     });
   });
@@ -11147,6 +12477,7 @@ function bindScalarItemEditorEvents(params: {
       if (!rowId || rowContext !== params.context) return;
 
       syncStateBeforeMutation();
+      step2ScalarTemplatePicker = null;
 
       setScalarItemsForContext(
         params.context,
@@ -11165,6 +12496,7 @@ function bindScalarItemEditorEvents(params: {
       if (!rowId || rowContext !== params.context || !targetRole) return;
 
       syncStateBeforeMutation();
+      step2ScalarTemplatePicker = null;
 
       setScalarItemsForContext(
         params.context,
@@ -11236,7 +12568,10 @@ function renderTemplateBlockImportPreviewTable(block: TemplateBlockFormData) {
 
   return `
     <div class="import-preview-table-region-help">${escapeHtml(t('step2.import.regionHelp'))}</div>
-    <div class="import-preview-table-wrapper">
+    <div
+      class="import-preview-table-wrapper"
+      data-preserve-scroll-key="${escapeHtml(`import-preview:${block.id}`)}"
+    >
       <table class="import-preview-table-grid">
         <thead>
           <tr>
@@ -11245,8 +12580,11 @@ function renderTemplateBlockImportPreviewTable(block: TemplateBlockFormData) {
               const columnNumber = index + 1;
               const isX = review.xColumnIndex + 1 === columnNumber;
               const isY = yColumnNumber === columnNumber;
+              const columnSelected =
+                columnNumber >= range.startColumn &&
+                columnNumber <= range.endColumn;
               return `
-                <th class="import-preview-column-header ${isX ? 'column-x' : ''} ${isY ? 'column-y' : ''}">
+                <th class="import-preview-column-header ${columnSelected ? 'selected-range' : ''} ${isX ? 'column-x' : ''} ${isY ? 'column-y' : ''}">
                   <div class="import-preview-column-top">
                     <span>${escapeHtml(t('step2.import.columnNumber', { index: columnNumber }))}</span>
                     <span class="import-preview-column-badges">
@@ -11299,9 +12637,13 @@ function renderTemplateBlockImportPreviewTable(block: TemplateBlockFormData) {
                     const value = row.columns[index] || '';
                     const isX = review.xColumnIndex + 1 === columnNumber;
                     const isY = yColumnNumber === columnNumber;
+                    const columnSelected =
+                      columnNumber >= range.startColumn &&
+                      columnNumber <= range.endColumn;
+                    const cellSelected = rowSelected && columnSelected;
                     return `
-                      <td class="import-preview-cell ${rowSelected ? 'selected-range' : ''} ${isX ? 'column-x' : ''} ${
-                        isY ? 'column-y' : ''
+                      <td class="import-preview-cell ${cellSelected ? 'selected-range' : ''} ${cellSelected && isX ? 'column-x' : ''} ${
+                        cellSelected && isY ? 'column-y' : ''
                       }">
                         <button
                           type="button"
@@ -11672,6 +13014,41 @@ function getTemplateBlockFieldConfig(templateType?: TemplateBlockType) {
   };
 }
 
+function renderStructuredBlockFamilyDisplay(context: TemplateBlockEditContext) {
+  const familyContext = getStructuredFamilyContextDisplay(context);
+  if (familyContext.matchedFamily) {
+    return `
+      <div class="form-group template-block-compact-field">
+        <label class="form-label template-block-compact-label">${escapeHtml(t('step2.structured.purposeLabel'))}</label>
+        <div class="template-block-compact-control">
+          <div class="template-block-readonly-family">
+            <span class="template-block-readonly-family-value">${escapeHtml(familyContext.familyLabel)}</span>
+            <span class="template-block-readonly-family-hint">${escapeHtml(
+              t('step2.structured.familyFromStep1')
+            )}</span>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  return `
+    <div class="form-group template-block-compact-field">
+      <label class="form-label template-block-compact-label">${escapeHtml(t('step2.structured.purposeLabel'))}</label>
+      <div class="template-block-compact-control">
+        <div class="template-block-readonly-family template-block-readonly-family-warning">
+          <span class="template-block-readonly-family-value">${escapeHtml(
+            familyContext.testProject || t('step2.templateContext.unspecifiedProject')
+          )}</span>
+          <span class="template-block-readonly-family-hint">${escapeHtml(
+            t('step2.structured.familyNeedsStep1')
+          )}</span>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
 function renderEditableTemplateBlockBasicFields(
   context: TemplateBlockEditContext,
   block: TemplateBlockFormData,
@@ -11679,69 +13056,66 @@ function renderEditableTemplateBlockBasicFields(
 ) {
   return `
     <div class="template-block-grid">
-      <div class="form-group">
-        <label class="form-label">${escapeHtml(t('step2.structured.purposeLabel'))}</label>
-        <select id="template-block-purpose-${block.id}" class="form-input">
-          ${STRUCTURED_BLOCK_PURPOSE_OPTIONS.map(
-            (option) => `
-              <option value="${option.value}" ${block.purposeType === option.value ? 'selected' : ''}>
-                ${option.label}
-              </option>
-            `
-          ).join('')}
-        </select>
-      </div>
+      ${renderStructuredBlockFamilyDisplay(context)}
 
       ${context === 'create-step2' ? renderStructuredCurveTemplateSelector(context, block) : ''}
 
-      <div class="form-group">
-        <label class="form-label">${escapeHtml(t('step2.structured.blockTitleLabel'))} <span class="required-star">*</span></label>
-        <input
-          id="template-block-title-${block.id}"
-          class="form-input"
-          placeholder="${fieldConfig.titlePlaceholder}"
-          value="${escapeHtml(block.blockTitle)}"
-        />
+      <div class="form-group template-block-compact-field">
+        <label class="form-label template-block-compact-label">${escapeHtml(t('step2.structured.blockTitleLabel'))} <span class="required-star">*</span></label>
+        <div class="template-block-compact-control">
+          <input
+            id="template-block-title-${block.id}"
+            class="form-input"
+            placeholder="${fieldConfig.titlePlaceholder}"
+            value="${escapeHtml(block.blockTitle)}"
+          />
+        </div>
       </div>
 
-      <div class="form-group">
-        <label class="form-label">${fieldConfig.primaryLabelText}</label>
-        <input
-          id="template-block-primary-label-${block.id}"
-          class="form-input"
-          placeholder="${fieldConfig.primaryLabelPlaceholder}"
-          value="${escapeHtml(block.primaryLabel)}"
-        />
-      </div>
+      <div class="template-block-axis-section">
+        <div class="template-block-axis-row">
+          <div class="template-block-axis-row-label">${escapeHtml(t('step2.structured.primaryAxisShort'))}</div>
+          <div class="form-group">
+            <label class="form-label">${fieldConfig.primaryLabelText}</label>
+            <input
+              id="template-block-primary-label-${block.id}"
+              class="form-input"
+              placeholder="${fieldConfig.primaryLabelPlaceholder}"
+              value="${escapeHtml(block.primaryLabel)}"
+            />
+          </div>
+          <div class="form-group template-block-axis-unit-group">
+            <label class="form-label">${fieldConfig.primaryUnitText}</label>
+            <input
+              id="template-block-primary-unit-${block.id}"
+              class="form-input"
+              placeholder="${fieldConfig.primaryUnitPlaceholder}"
+              value="${escapeHtml(block.primaryUnit)}"
+            />
+          </div>
+        </div>
 
-      <div class="form-group">
-        <label class="form-label">${fieldConfig.primaryUnitText}</label>
-        <input
-          id="template-block-primary-unit-${block.id}"
-          class="form-input"
-          placeholder="${fieldConfig.primaryUnitPlaceholder}"
-          value="${escapeHtml(block.primaryUnit)}"
-        />
-      </div>
-
-      <div class="form-group">
-        <label class="form-label">${fieldConfig.secondaryLabelText}</label>
-        <input
-          id="template-block-secondary-label-${block.id}"
-          class="form-input"
-          placeholder="${fieldConfig.secondaryLabelPlaceholder}"
-          value="${escapeHtml(block.secondaryLabel)}"
-        />
-      </div>
-
-      <div class="form-group">
-        <label class="form-label">${fieldConfig.secondaryUnitText}</label>
-        <input
-          id="template-block-secondary-unit-${block.id}"
-          class="form-input"
-          placeholder="${fieldConfig.secondaryUnitPlaceholder}"
-          value="${escapeHtml(block.secondaryUnit)}"
-        />
+        <div class="template-block-axis-row">
+          <div class="template-block-axis-row-label">${escapeHtml(t('step2.structured.secondaryAxisShort'))}</div>
+          <div class="form-group">
+            <label class="form-label">${fieldConfig.secondaryLabelText}</label>
+            <input
+              id="template-block-secondary-label-${block.id}"
+              class="form-input"
+              placeholder="${fieldConfig.secondaryLabelPlaceholder}"
+              value="${escapeHtml(block.secondaryLabel)}"
+            />
+          </div>
+          <div class="form-group template-block-axis-unit-group">
+            <label class="form-label">${fieldConfig.secondaryUnitText}</label>
+            <input
+              id="template-block-secondary-unit-${block.id}"
+              class="form-input"
+              placeholder="${fieldConfig.secondaryUnitPlaceholder}"
+              value="${escapeHtml(block.secondaryUnit)}"
+            />
+          </div>
+        </div>
       </div>
     </div>
   `;
@@ -11832,7 +13206,11 @@ function renderTemplateBlockCards(
     .join('');
 }
 
-function renderReadonlyTemplateBlocks(blocks: TemplateBlockFormData[], showReadonlyHint = false) {
+function renderReadonlyTemplateBlocks(
+  blocks: TemplateBlockFormData[],
+  showReadonlyHint = false,
+  familyLabel = ''
+) {
   if (!blocks.length) {
     return `<div class="empty-tip">${escapeHtml(t('step2.structured.readonlyEmpty'))}</div>`;
   }
@@ -11865,9 +13243,20 @@ function renderReadonlyTemplateBlocks(blocks: TemplateBlockFormData[], showReado
 
           <div class="template-block-review-subrow">
             <div class="template-block-summary-chips">
-              <span class="template-block-summary-chip">${escapeHtml(
-                purposeLabel && purposeLabel !== '未指定' ? purposeLabel : 'Custom'
-              )}</span>
+              ${
+                familyLabel
+                  ? `<span class="template-block-summary-chip">${escapeHtml(
+                      `${t('step2.structured.purposeLabel')}：${familyLabel}`
+                    )}</span>`
+                  : ''
+              }
+              ${
+                purposeLabel && purposeLabel !== '未指定'
+                  ? `<span class="template-block-summary-chip">${escapeHtml(
+                      `${t('databaseDetail.curveDataTypeLabel')}：${purposeLabel}`
+                    )}</span>`
+                  : ''
+              }
             </div>
             ${
               block.sourceFileName
@@ -12128,7 +13517,11 @@ function bindStep1SuggestionInput(params: {
 
     const query = input.value;
     try {
-      await Promise.all([ensureDictionaryItemsLoaded(), ensureRecentEntrySuggestionsLoaded()]);
+      await Promise.all([
+        ensureDictionaryItemsLoaded(),
+        ensureRecentEntrySuggestionsLoaded(),
+        params.dictionaryType === 'testProject' ? ensureTemplateLibraryLoaded() : Promise.resolve()
+      ]);
       renderStep1Suggestions({
         containerId: params.containerId,
         dictionaryType: params.dictionaryType,
@@ -12142,7 +13535,11 @@ function bindStep1SuggestionInput(params: {
 
   input.addEventListener('focus', async () => {
     try {
-      await Promise.all([ensureDictionaryItemsLoaded(), ensureRecentEntrySuggestionsLoaded()]);
+      await Promise.all([
+        ensureDictionaryItemsLoaded(),
+        ensureRecentEntrySuggestionsLoaded(),
+        params.dictionaryType === 'testProject' ? ensureTemplateLibraryLoaded() : Promise.resolve()
+      ]);
       renderStep1Suggestions({
         containerId: params.containerId,
         dictionaryType: params.dictionaryType,
@@ -12156,7 +13553,11 @@ function bindStep1SuggestionInput(params: {
 
   input.addEventListener('click', async () => {
     try {
-      await Promise.all([ensureDictionaryItemsLoaded(), ensureRecentEntrySuggestionsLoaded()]);
+      await Promise.all([
+        ensureDictionaryItemsLoaded(),
+        ensureRecentEntrySuggestionsLoaded(),
+        params.dictionaryType === 'testProject' ? ensureTemplateLibraryLoaded() : Promise.resolve()
+      ]);
       renderStep1Suggestions({
         containerId: params.containerId,
         dictionaryType: params.dictionaryType,
@@ -12572,132 +13973,6 @@ function getTemplateLibrarySourceTypeLabel(sourceType: TemplateLibraryEditorDraf
   return t('templateLibrary.sourceType.builtin');
 }
 
-function renderTemplateLibraryRowEditor(
-  kind: 'conditions' | 'metrics',
-  rows: TemplateLibraryEditableRow[]
-) {
-  if (!rows.length) {
-    return `<div class="empty-tip">${escapeHtml(t('templateLibrary.rowsEmpty'))}</div>`;
-  }
-
-  return `
-    <div class="template-library-row-panel">
-      <div class="template-library-row-list">
-        ${rows
-          .map((row) => {
-            const rowToken = `${kind}:${row.id}`;
-            const isExpanded = templateLibraryExpandedRowToken === rowToken;
-            const summaryTokens = [
-              row.unit ? `${t('templateLibrary.row.unit')}: ${row.unit}` : '',
-              row.defaultValue ? `${t('templateLibrary.row.defaultValue')}: ${row.defaultValue}` : '',
-              row.priority ? `${t('templateLibrary.row.priority')}: ${row.priority}` : ''
-            ].filter(Boolean);
-
-            return `
-              <div class="template-library-row-editor ${isExpanded ? 'template-library-row-editor-expanded' : ''}">
-                <div class="template-library-row-summary">
-                  <div class="template-library-row-summary-main">
-                    <div class="template-library-row-summary-title">${escapeHtml(
-                      row.label.trim() || t('templateLibrary.rowUntitled')
-                    )}</div>
-                    ${
-                      summaryTokens.length
-                        ? `<div class="template-library-row-summary-meta">${summaryTokens
-                            .map((token) => `<span class="template-library-row-summary-chip">${escapeHtml(token)}</span>`)
-                            .join('')}</div>`
-                        : ''
-                    }
-                    ${
-                      row.note.trim()
-                        ? `<div class="template-library-row-summary-note">${escapeHtml(row.note)}</div>`
-                        : ''
-                    }
-                  </div>
-                  <div class="template-library-row-actions">
-                    <button
-                      type="button"
-                      class="secondary-btn action-btn template-library-compact-btn template-library-row-toggle-btn"
-                      data-template-row-toggle="${escapeHtml(rowToken)}"
-                    >
-                      ${escapeHtml(isExpanded ? t('common.done') : t('templateLibrary.edit'))}
-                    </button>
-                    <button
-                      type="button"
-                      class="secondary-btn action-btn template-library-row-remove-btn"
-                      data-template-row-remove="${kind}:${escapeHtml(row.id)}"
-                      title="${escapeHtml(t('templateLibrary.row.remove'))}"
-                      aria-label="${escapeHtml(t('templateLibrary.row.remove'))}"
-                    >
-                      ×
-                    </button>
-                  </div>
-                </div>
-                ${
-                  isExpanded
-                    ? `
-                      <div class="template-library-row-edit-grid">
-                        <label class="template-library-row-field template-library-row-field-label">
-                          <span class="template-library-row-field-name">${escapeHtml(t('templateLibrary.row.label'))}</span>
-                          <input
-                            class="form-input"
-                            data-template-row-field="${kind}:label:${escapeHtml(row.id)}"
-                            value="${escapeHtml(row.label)}"
-                            placeholder="${escapeHtml(t('templateLibrary.row.label'))}"
-                          />
-                        </label>
-                        <div class="template-library-row-meta">
-                          <label class="template-library-row-field">
-                            <span class="template-library-row-field-name">${escapeHtml(t('templateLibrary.row.unit'))}</span>
-                            <input
-                              class="form-input"
-                              data-template-row-field="${kind}:unit:${escapeHtml(row.id)}"
-                              value="${escapeHtml(row.unit)}"
-                              placeholder="${escapeHtml(t('templateLibrary.row.unit'))}"
-                            />
-                          </label>
-                          <label class="template-library-row-field">
-                            <span class="template-library-row-field-name">${escapeHtml(
-                              t('templateLibrary.row.defaultValue')
-                            )}</span>
-                            <input
-                              class="form-input"
-                              data-template-row-field="${kind}:defaultValue:${escapeHtml(row.id)}"
-                              value="${escapeHtml(row.defaultValue)}"
-                              placeholder="${escapeHtml(t('templateLibrary.row.defaultValue'))}"
-                            />
-                          </label>
-                          <label class="template-library-row-field">
-                            <span class="template-library-row-field-name">${escapeHtml(t('templateLibrary.row.priority'))}</span>
-                            <input
-                              class="form-input"
-                              data-template-row-field="${kind}:priority:${escapeHtml(row.id)}"
-                              value="${escapeHtml(row.priority)}"
-                              placeholder="${escapeHtml(t('templateLibrary.row.priority'))}"
-                            />
-                          </label>
-                          <label class="template-library-row-field template-library-row-field-note">
-                            <span class="template-library-row-field-name">${escapeHtml(t('templateLibrary.row.note'))}</span>
-                            <input
-                              class="form-input"
-                              data-template-row-field="${kind}:note:${escapeHtml(row.id)}"
-                              value="${escapeHtml(row.note)}"
-                              placeholder="${escapeHtml(t('templateLibrary.row.note'))}"
-                            />
-                          </label>
-                        </div>
-                      </div>
-                    `
-                    : ''
-                }
-              </div>
-            `;
-          })
-          .join('')}
-      </div>
-    </div>
-  `;
-}
-
 function renderTemplateLibraryPanel() {
   if (templateLibraryError) {
     return `<div class="error-message large-error">${escapeHtml(templateLibraryError)}</div>`;
@@ -12708,19 +13983,30 @@ function renderTemplateLibraryPanel() {
   }
 
   const families = templateLibraryResolved.scientificTemplates;
-  const familyTemplates = getTemplateLibraryCurvesForFamily(templateLibrarySelectedFamilyId);
+  const currentQuery = getTemplateLibraryNormalizedQuery();
+  const familyTemplates = getTemplateLibraryFamilyTemplates(
+    templateLibrarySelectedFamilyId,
+    templateLibrarySelectedKind
+  ).filter((template) => templateLibraryTemplateMatchesQuery(template, currentQuery));
   const searchResults = getTemplateLibrarySearchResults();
   const isSearchMode = Boolean(getTemplateLibraryNormalizedQuery());
   const editorDraft = templateLibraryEditorDraft;
   const editorTitle = editorDraft
-    ? editorDraft.displayName.trim() || editorDraft.blockTitleDefault.trim() || t('templateLibrary.editorTitle')
+    ? editorDraft.displayName.trim() ||
+      (editorDraft.templateType === 'curve' ? editorDraft.blockTitleDefault.trim() : '') ||
+      t('templateLibrary.editorTitle')
     : '';
-  const visibleTemplates =
-    templateLibrarySelectedKind === 'all' || templateLibrarySelectedKind === 'curves' ? familyTemplates : [];
-  const isDraftMode = Boolean(editorDraft && !templateLibrarySelectedCurveTemplateId);
+  const isDraftMode = Boolean(
+    editorDraft &&
+      !templateLibrarySelectedCurveTemplateId &&
+      editorDraft.templateType !== 'scientific'
+  );
   const renderTemplates: Array<{
     id: string;
+    templateType: 'scientific' | 'curve' | 'scalar';
     displayName: string;
+    section: ScalarTemplateSection | '';
+    unitDefault: string;
     purposeType: StructuredBlockPurpose;
     sourceType: TemplateLibraryEditorDraft['sourceType'];
     enabled: boolean;
@@ -12729,30 +14015,67 @@ function renderTemplateLibraryPanel() {
     ? [
         {
           id: '__draft__',
+          templateType: editorDraft?.templateType || 'curve',
           displayName: editorDraft?.displayName.trim() || t('templateLibrary.newDraftTitle'),
+          section: editorDraft?.templateType === 'scalar' ? editorDraft.scalarSection : '',
+          unitDefault: editorDraft?.templateType === 'scalar' ? editorDraft.unitDefault : '',
           purposeType: editorDraft?.purposeType || '',
           sourceType: 'user' as const,
           enabled: editorDraft?.enabled ?? true,
           isDraft: true
         },
-        ...visibleTemplates.map((template) => ({
-          id: template.id,
-          displayName: template.displayName,
-          purposeType: template.purposeType,
-          sourceType: getTemplateLibraryEffectiveSourceType(template),
-          enabled: isTemplateLibraryTemplateEnabled(template),
-          isDraft: false
-        }))
+        ...familyTemplates.map((template) =>
+          'purposeType' in template
+            ? {
+                id: template.id,
+                templateType: 'curve' as const,
+                displayName: template.displayName,
+                section: '' as const,
+                unitDefault: '',
+                purposeType: template.purposeType,
+                sourceType: getTemplateLibraryEffectiveSourceType(template, 'curve'),
+                enabled: isTemplateLibraryTemplateEnabled(template),
+                isDraft: false
+              }
+            : {
+                id: template.id,
+                templateType: 'scalar' as const,
+                displayName: template.displayName,
+                section: template.section,
+                unitDefault: template.unitDefault || '',
+                purposeType: '' as const,
+                sourceType: getTemplateLibraryEffectiveSourceType(template, 'scalar'),
+                enabled: isTemplateLibraryTemplateEnabled(template),
+                isDraft: false
+              }
+        )
       ]
-    : visibleTemplates.map((template) => ({
-        id: template.id,
-        displayName: template.displayName,
-        purposeType: template.purposeType,
-        sourceType: getTemplateLibraryEffectiveSourceType(template),
-        enabled: isTemplateLibraryTemplateEnabled(template),
-        isDraft: false
-      }));
-  const listCount = visibleTemplates.length;
+    : familyTemplates.map((template) =>
+        'purposeType' in template
+          ? {
+              id: template.id,
+              templateType: 'curve' as const,
+              displayName: template.displayName,
+              section: '' as const,
+              unitDefault: '',
+              purposeType: template.purposeType,
+              sourceType: getTemplateLibraryEffectiveSourceType(template, 'curve'),
+              enabled: isTemplateLibraryTemplateEnabled(template),
+              isDraft: false
+            }
+          : {
+              id: template.id,
+              templateType: 'scalar' as const,
+              displayName: template.displayName,
+              section: template.section,
+              unitDefault: template.unitDefault || '',
+              purposeType: '' as const,
+              sourceType: getTemplateLibraryEffectiveSourceType(template, 'scalar'),
+              enabled: isTemplateLibraryTemplateEnabled(template),
+              isDraft: false
+            }
+      );
+  const listCount = familyTemplates.length;
   const selectedFamilyName = getTemplateLibraryFamilyById(templateLibrarySelectedFamilyId)?.displayName || '-';
   const templateKindTabs: Array<{
     kind: TemplateLibraryTabKind;
@@ -12767,11 +14090,24 @@ function renderTemplateLibraryPanel() {
   }> = [
     { kind: 'all', labelKey: 'templateLibrary.kind.all', enabled: true },
     { kind: 'curves', labelKey: 'templateLibrary.kind.curves', enabled: true },
-    { kind: 'conditions', labelKey: 'templateLibrary.kind.conditions', enabled: false },
-    { kind: 'metrics', labelKey: 'templateLibrary.kind.metrics', enabled: false },
+    { kind: 'conditions', labelKey: 'templateLibrary.kind.conditions', enabled: true },
+    { kind: 'metrics', labelKey: 'templateLibrary.kind.metrics', enabled: true },
     { kind: 'calculations', labelKey: 'templateLibrary.kind.calculations', enabled: false },
     { kind: 'bundles', labelKey: 'templateLibrary.kind.bundles', enabled: false }
   ];
+  const isCreateDisabled = templateLibrarySelectedKind === 'all';
+  const createCardLabel = getTemplateLibraryCreateCardLabel(templateLibrarySelectedKind);
+  const createCardHtml = `
+    <button
+      type="button"
+      class="template-library-result-card template-library-create-card ${isCreateDisabled ? 'template-library-create-card-disabled' : ''}"
+      ${isCreateDisabled ? 'disabled' : 'data-template-list-create="true"'}
+      title="${escapeHtml(createCardLabel)}"
+      aria-label="${escapeHtml(createCardLabel)}"
+    >
+      <span class="template-library-create-card-plus">＋</span>
+    </button>
+  `;
 
   return `
     <div class="template-library-shell">
@@ -12810,25 +14146,60 @@ function renderTemplateLibraryPanel() {
                                 `;
                               }
 
+                              if (result.resultType === 'curve') {
+                                return `
+                                  <button
+                                    type="button"
+                                    class="template-library-search-item"
+                                    data-template-curve-id="${escapeHtml(result.templateId)}"
+                                  >
+                                    <div class="template-library-search-item-main">
+                                      <span class="template-library-search-item-title">${escapeHtml(result.title)}</span>
+                                      <span class="template-library-chip">${escapeHtml(t('templateLibrary.resultType.curve'))}</span>
+                                    </div>
+                                    <div class="template-library-search-item-meta">
+                                      <span class="template-library-chip">${escapeHtml(
+                                        getStructuredBlockPurposeLabel(result.purposeType)
+                                      )}</span>
+                                      <span class="template-library-chip">${escapeHtml(
+                                        getTemplateLibrarySourceTypeLabel(result.sourceType)
+                                      )}</span>
+                                      <span class="${escapeHtml(getTemplateLibraryStatusChipClass(result.enabled))}">${escapeHtml(
+                                        getTemplateLibraryStatusLabel(result.enabled)
+                                      )}</span>
+                                    </div>
+                                    <div class="template-library-search-item-subtitle">${escapeHtml(result.subtitle)}</div>
+                                  </button>
+                                `;
+                              }
+
                               return `
                                 <button
                                   type="button"
                                   class="template-library-search-item"
-                                  data-template-curve-id="${escapeHtml(result.templateId)}"
+                                  data-template-scalar-id="${escapeHtml(result.templateId)}"
                                 >
                                   <div class="template-library-search-item-main">
                                     <span class="template-library-search-item-title">${escapeHtml(result.title)}</span>
-                                    <span class="template-library-chip">${escapeHtml(t('templateLibrary.resultType.curve'))}</span>
+                                    <span class="template-library-chip">${escapeHtml(
+                                      result.resultType === 'metric'
+                                        ? t('templateLibrary.resultType.metric')
+                                        : t('templateLibrary.resultType.condition')
+                                    )}</span>
                                   </div>
                                   <div class="template-library-search-item-meta">
-                                    <span class="template-library-chip">${escapeHtml(
-                                      getStructuredBlockPurposeLabel(result.purposeType)
-                                    )}</span>
+                                    ${
+                                      result.unitDefault
+                                        ? `<span class="template-library-chip">${escapeHtml(
+                                            `${t('templateLibrary.field.unitDefault')}: ${result.unitDefault}`
+                                          )}</span>`
+                                        : ''
+                                    }
                                     <span class="template-library-chip">${escapeHtml(
                                       getTemplateLibrarySourceTypeLabel(result.sourceType)
                                     )}</span>
-                                    <span class="template-library-chip">${escapeHtml(
-                                      result.enabled ? t('templateLibrary.enabled') : t('templateLibrary.disabled')
+                                    <span class="${escapeHtml(getTemplateLibraryStatusChipClass(result.enabled))}">${escapeHtml(
+                                      getTemplateLibraryStatusLabel(result.enabled)
                                     )}</span>
                                   </div>
                                   <div class="template-library-search-item-subtitle">${escapeHtml(result.subtitle)}</div>
@@ -12843,22 +14214,17 @@ function renderTemplateLibraryPanel() {
                 : ''
             }
           </div>
-          <button
-            id="template-library-new-btn"
-            type="button"
-            class="secondary-btn action-btn template-library-compact-btn"
-          >
-            ${escapeHtml(t('templateLibrary.newTemplateCompact'))}
-          </button>
         </div>
       </div>
 
       <div class="detail-section template-library-family-section">
         <div class="detail-section-title">${escapeHtml(t('templateLibrary.familyListTitle'))}</div>
-        <div class="template-library-family-grid">
+        <div class="template-library-family-grid" data-preserve-scroll-key="template-library-family-grid">
           ${families
             .map((family) => {
-              const familyCount = getTemplateLibraryFamilyCurveCount(family.id);
+              const familyCount = getTemplateLibraryFamilyTemplateCount(family.id);
+              const familySourceType = getTemplateLibraryEffectiveSourceType(family, 'scientific');
+              const familyEnabled = isTemplateLibraryTemplateEnabled(family);
 
               return `
                 <button
@@ -12870,10 +14236,27 @@ function renderTemplateLibraryPanel() {
                   <span class="template-library-family-card-count">${escapeHtml(
                     t('templateLibrary.familyCountShort', { count: familyCount })
                   )}</span>
+                  <span class="template-library-family-card-meta">
+                    <span class="template-library-chip">${escapeHtml(
+                      getTemplateLibrarySourceTypeLabel(familySourceType)
+                    )}</span>
+                    <span class="${escapeHtml(getTemplateLibraryStatusChipClass(familyEnabled))}">${escapeHtml(
+                      getTemplateLibraryStatusLabel(familyEnabled)
+                    )}</span>
+                  </span>
                 </button>
               `;
             })
             .join('')}
+          <button
+            type="button"
+            class="template-library-family-card template-library-family-create-card"
+            data-template-family-create="true"
+            title="${escapeHtml(t('templateLibrary.newFamily'))}"
+            aria-label="${escapeHtml(t('templateLibrary.newFamily'))}"
+          >
+            <span class="template-library-create-card-plus">＋</span>
+          </button>
         </div>
       </div>
 
@@ -12900,28 +14283,33 @@ function renderTemplateLibraryPanel() {
       <div class="detail-section template-library-results-section">
         <div class="template-library-results-header">
           <div>
-            <div class="detail-section-title">${escapeHtml(t('templateLibrary.templateListTitle'))}</div>
+            <div class="detail-section-title">${escapeHtml(t('templateLibrary.templateListTitleGeneric'))}</div>
             <div class="detail-section-subtitle">${escapeHtml(
               t('templateLibrary.currentScopeHint', {
                 family: selectedFamilyName,
-                count: listCount
+                count: listCount,
+                kind: getTemplateLibraryKindLabel(templateLibrarySelectedKind)
               })
             )}</div>
           </div>
         </div>
-        <div class="template-library-result-grid">
+        <div
+          class="template-library-result-grid"
+          data-preserve-scroll-key="template-library-result-grid"
+        >
           ${
             renderTemplates.length
-              ? renderTemplates
-                  .map((template) => `
+              ? [
+                  ...renderTemplates.map((template) => `
                     <div
-                      class="template-library-result-card ${template.isDraft || templateLibrarySelectedCurveTemplateId === template.id ? 'template-library-result-card-active' : ''}"
+                      class="template-library-result-card ${template.isDraft || templateLibrarySelectedCurveTemplateId === template.id ? 'template-library-result-card-active' : ''} ${template.isDraft ? '' : 'template-library-result-card-clickable'}"
+                      ${
+                        template.isDraft
+                          ? ''
+                          : `data-template-card-id="${escapeHtml(template.id)}" data-template-card-type="${escapeHtml(template.templateType)}" tabindex="0" role="button" aria-pressed="${templateLibrarySelectedCurveTemplateId === template.id ? 'true' : 'false'}"`
+                      }
                     >
-                      <button
-                        type="button"
-                        class="template-library-result-card-main"
-                        ${template.isDraft ? '' : `data-template-curve-id="${escapeHtml(template.id)}"`}
-                      >
+                      <div class="template-library-result-card-main">
                         <div class="template-library-result-card-title-row">
                           <span class="template-library-result-card-title">${escapeHtml(template.displayName)}</span>
                           ${
@@ -12932,20 +14320,41 @@ function renderTemplateLibraryPanel() {
                         </div>
                         <div class="template-library-result-card-meta">
                           ${
-                            template.purposeType
+                            template.templateType === 'curve'
+                              ? `<span class="template-library-chip">${escapeHtml(
+                                  t('templateLibrary.resultType.curve')
+                                )}</span>`
+                              : ''
+                          }
+                          ${
+                            template.templateType === 'curve' && template.purposeType
                               ? `<span class="template-library-chip">${escapeHtml(
                                   getStructuredBlockPurposeLabel(template.purposeType)
+                                )}</span>`
+                              : ''
+                          }
+                          ${
+                            template.templateType === 'scalar'
+                              ? `<span class="template-library-chip">${escapeHtml(
+                                  getTemplateLibrarySectionLabel(template.section)
+                                )}</span>`
+                              : ''
+                          }
+                          ${
+                            template.templateType === 'scalar' && template.unitDefault
+                              ? `<span class="template-library-chip">${escapeHtml(
+                                  `${t('templateLibrary.field.unitDefault')}: ${template.unitDefault}`
                                 )}</span>`
                               : ''
                           }
                           <span class="template-library-chip">${escapeHtml(
                             getTemplateLibrarySourceTypeLabel(template.sourceType)
                           )}</span>
-                          <span class="template-library-chip">${escapeHtml(
-                            template.enabled ? t('templateLibrary.enabled') : t('templateLibrary.disabled')
+                          <span class="${escapeHtml(getTemplateLibraryStatusChipClass(template.enabled))}">${escapeHtml(
+                            getTemplateLibraryStatusLabel(template.enabled)
                           )}</span>
                         </div>
-                      </button>
+                      </div>
                       ${
                         template.isDraft
                           ? `
@@ -12962,9 +14371,10 @@ function renderTemplateLibraryPanel() {
                           : ''
                       }
                     </div>
-                  `)
-                  .join('')
-              : `<div class="empty-tip">${escapeHtml(t('templateLibrary.templateListEmpty'))}</div>`
+                  `),
+                  createCardHtml
+                ].join('')
+              : `${createCardHtml}<div class="empty-tip">${escapeHtml(t('templateLibrary.templateListEmpty'))}</div>`
           }
         </div>
       </div>
@@ -12983,20 +14393,24 @@ function renderTemplateLibraryPanel() {
                       )}</span>
                     </div>
                   </div>
-                  <div class="template-library-editor-header-side">
-                    <div class="template-library-meta-strip">
-                      <span class="template-library-chip">${escapeHtml(
-                        getTemplateLibrarySourceTypeLabel(editorDraft.sourceType)
-                      )}</span>
-                      <span class="template-library-chip">${escapeHtml(
-                        editorDraft.enabled ? t('templateLibrary.enabled') : t('templateLibrary.disabled')
-                      )}</span>
-                      <span class="template-library-chip">${escapeHtml(
-                        getStructuredBlockPurposeLabel(editorDraft.purposeType)
-                      )}</span>
-                    </div>
-                    <div class="template-library-editor-actions">
-                      ${
+                    <div class="template-library-editor-header-side">
+                      <div class="template-library-meta-strip">
+                        <span class="template-library-chip">${escapeHtml(
+                          getTemplateLibrarySourceTypeLabel(editorDraft.sourceType)
+                        )}</span>
+                        <span class="${escapeHtml(getTemplateLibraryStatusChipClass(editorDraft.enabled))}">${escapeHtml(
+                          getTemplateLibraryStatusLabel(editorDraft.enabled)
+                        )}</span>
+                        <span class="template-library-chip">${escapeHtml(
+                          editorDraft.templateType === 'scientific'
+                            ? t('templateLibrary.resultType.family')
+                            : editorDraft.templateType === 'curve'
+                            ? getStructuredBlockPurposeLabel(editorDraft.purposeType)
+                            : getTemplateLibrarySectionLabel(editorDraft.scalarSection)
+                        )}</span>
+                      </div>
+                      <div class="template-library-editor-actions">
+                        ${
                         editorDraft.isBuiltin && editorDraft.hasLocalOverride
                           ? `
                             <button
@@ -13006,6 +14420,22 @@ function renderTemplateLibraryPanel() {
                               ${templateLibrarySaving ? 'disabled' : ''}
                             >
                               ${escapeHtml(t('templateLibrary.resetOverride'))}
+                            </button>
+                          `
+                          : ''
+                      }
+                      ${
+                        !isDraftMode &&
+                        editorDraft.sourceType === 'user' &&
+                        (editorDraft.templateType !== 'scientific' || isPersistedScientificFamily(editorDraft.templateId))
+                          ? `
+                            <button
+                              id="template-library-delete-btn"
+                              type="button"
+                              class="danger-btn action-btn template-library-compact-btn"
+                              ${templateLibrarySaving ? 'disabled' : ''}
+                            >
+                              ${escapeHtml(t('templateLibrary.delete'))}
                             </button>
                           `
                           : ''
@@ -13024,7 +14454,13 @@ function renderTemplateLibraryPanel() {
                         class="primary-btn action-btn template-library-compact-btn"
                         ${templateLibrarySaving ? 'disabled' : ''}
                       >
-                        ${escapeHtml(templateLibrarySaving ? t('templateLibrary.saving') : t('common.save'))}
+                        ${escapeHtml(
+                          templateLibrarySaving
+                            ? t('templateLibrary.saving')
+                            : editorDraft.isBuiltin
+                              ? t('templateLibrary.saveOverride')
+                              : t('common.save')
+                        )}
                       </button>
                     </div>
                   </div>
@@ -13045,37 +14481,84 @@ function renderTemplateLibraryPanel() {
                       <div class="detail-label">${escapeHtml(t('templateLibrary.templateId'))}</div>
                       <div class="detail-value">${escapeHtml(editorDraft.templateId)}</div>
                     </div>
+                    ${
+                      editorDraft.templateType !== 'scientific'
+                        ? `
+                        <div class="template-library-readonly-meta">
+                          <div class="detail-label">${escapeHtml(t('templateLibrary.field.family'))}</div>
+                          <div class="detail-value">${escapeHtml(
+                            getTemplateLibraryFamilyById(editorDraft.familyId)?.displayName || editorDraft.familyId
+                          )}</div>
+                        </div>
+                      `
+                        : ''
+                    }
                     <div class="template-library-basic-grid">
                       <div class="form-group">
-                        <label class="form-label">${escapeHtml(t('templateLibrary.field.displayName'))}</label>
+                        <label class="form-label">${escapeHtml(
+                          editorDraft.templateType === 'scientific'
+                            ? t('templateLibrary.field.familyName')
+                            : editorDraft.templateType === 'curve'
+                            ? t('templateLibrary.field.curveName')
+                            : t('templateLibrary.field.displayName')
+                        )}</label>
                         <input id="template-library-display-name" class="form-input" value="${escapeHtml(
                           editorDraft.displayName
                         )}" />
                       </div>
+                      ${
+                        editorDraft.templateType === 'scientific'
+                          ? `
+                            <div class="form-group">
+                              <label class="form-label">${escapeHtml(t('templateLibrary.field.familyDescription'))}</label>
+                              <textarea id="template-library-description" class="form-input template-library-textarea template-library-textarea-compact">${escapeHtml(
+                                editorDraft.descriptionText
+                              )}</textarea>
+                            </div>
+                          `
+                          : editorDraft.templateType === 'curve'
+                          ? `<div class="empty-tip template-library-inline-hint">${escapeHtml(
+                              t('templateLibrary.curveNameHint')
+                            )}</div>`
+                          : `
+                            <div class="form-group">
+                              <label class="form-label">${escapeHtml(t('templateLibrary.field.scalarSection'))}</label>
+                              <select id="template-library-scalar-section" class="form-input">
+                                <option value="condition" ${editorDraft.scalarSection === 'condition' ? 'selected' : ''}>
+                                  ${escapeHtml(t('templateLibrary.resultType.condition'))}
+                                </option>
+                                <option value="metric" ${editorDraft.scalarSection === 'metric' ? 'selected' : ''}>
+                                  ${escapeHtml(t('templateLibrary.resultType.metric'))}
+                                </option>
+                              </select>
+                            </div>
+                          `
+                      }
                       <div class="form-group">
-                        <label class="form-label">${escapeHtml(t('templateLibrary.field.blockTitleDefault'))}</label>
-                        <input id="template-library-block-title" class="form-input" value="${escapeHtml(
-                          editorDraft.blockTitleDefault
-                        )}" />
-                      </div>
-                      <div class="form-group">
-                        <label class="form-label">${escapeHtml(t('templateLibrary.field.purposeType'))}</label>
-                        <select id="template-library-purpose-type" class="form-input">
-                          ${STRUCTURED_BLOCK_PURPOSE_OPTIONS.map(
-                            (option) => `
-                              <option value="${escapeHtml(option.value)}" ${editorDraft.purposeType === option.value ? 'selected' : ''}>
-                                ${escapeHtml(option.label)}
-                              </option>
-                            `
-                          ).join('')}
-                        </select>
-                      </div>
-                      <div class="form-group">
-                        <label class="form-label">${escapeHtml(t('templateLibrary.field.enabled'))}</label>
-                        <label class="checkbox-row">
-                          <input id="template-library-enabled" type="checkbox" ${editorDraft.enabled ? 'checked' : ''} />
-                          <span>${escapeHtml(t('templateLibrary.field.enabledHint'))}</span>
-                        </label>
+                        <label class="form-label">${escapeHtml(t('templateLibrary.field.status'))}</label>
+                        <div class="template-library-status-toggle" role="group" aria-label="${escapeHtml(
+                          t('templateLibrary.field.status')
+                        )}">
+                          <button
+                            type="button"
+                            id="template-library-status-enabled"
+                            class="secondary-btn action-btn template-library-status-option ${editorDraft.enabled ? 'template-library-status-option-active' : ''}"
+                            ${templateLibrarySaving ? 'disabled' : ''}
+                          >
+                            ${escapeHtml(t('templateLibrary.status.enabled'))}
+                          </button>
+                          <button
+                            type="button"
+                            id="template-library-status-disabled"
+                            class="secondary-btn action-btn template-library-status-option ${editorDraft.enabled ? '' : 'template-library-status-option-active template-library-status-option-danger'}"
+                            ${templateLibrarySaving ? 'disabled' : ''}
+                          >
+                            ${escapeHtml(t('templateLibrary.status.disabled'))}
+                          </button>
+                        </div>
+                        <div class="detail-section-subtitle template-library-status-hint">${escapeHtml(
+                          t('templateLibrary.field.enabledHint')
+                        )}</div>
                       </div>
                     </div>
                     <div class="form-group">
@@ -13086,141 +14569,162 @@ function renderTemplateLibraryPanel() {
                     </div>
                   </div>
 
-                  <div class="detail-section template-library-editor-section">
-                    <div class="detail-section-title">${escapeHtml(t('templateLibrary.section.axisDefaults'))}</div>
-                    <div class="template-library-axis-rows">
-                      <div class="template-library-axis-row">
-                        <div class="template-library-axis-tag">X</div>
-                        <input id="template-library-primary-label" class="form-input" value="${escapeHtml(
-                          editorDraft.primaryLabel
-                        )}" />
-                        <input id="template-library-primary-unit" class="form-input" value="${escapeHtml(
-                          editorDraft.primaryUnit
-                        )}" />
-                      </div>
-                      <div class="template-library-axis-row">
-                        <div class="template-library-axis-tag">Y</div>
-                        <input id="template-library-secondary-label" class="form-input" value="${escapeHtml(
-                          editorDraft.secondaryLabel
-                        )}" />
-                        <input id="template-library-secondary-unit" class="form-input" value="${escapeHtml(
-                          editorDraft.secondaryUnit
-                        )}" />
-                      </div>
-                    </div>
-                  </div>
-
-                  <div class="detail-section template-library-editor-section">
-                    <div class="template-library-section-header">
-                      <div class="detail-section-title">${escapeHtml(t('templateLibrary.conditionsTitle'))}</div>
-                      <button
-                        type="button"
-                        class="secondary-btn action-btn template-library-compact-btn template-library-inline-add-btn"
-                        id="template-library-add-condition-btn"
-                      >
-                        ${escapeHtml(t('templateLibrary.addCondition'))}
-                      </button>
-                    </div>
-                    ${renderTemplateLibraryRowEditor('conditions', editorDraft.recommendedConditions)}
-                  </div>
-
-                  <div class="detail-section template-library-editor-section">
-                    <div class="template-library-section-header">
-                      <div class="detail-section-title">${escapeHtml(t('templateLibrary.metricsTitle'))}</div>
-                      <button
-                        type="button"
-                        class="secondary-btn action-btn template-library-compact-btn template-library-inline-add-btn"
-                        id="template-library-add-metric-btn"
-                      >
-                        ${escapeHtml(t('templateLibrary.addMetric'))}
-                      </button>
-                    </div>
-                    ${renderTemplateLibraryRowEditor('metrics', editorDraft.recommendedMetrics)}
-                  </div>
-
-                  <details class="template-library-advanced-shell">
-                    <summary class="template-library-advanced-summary">
-                      <span class="detail-section-title">${escapeHtml(t('templateLibrary.section.advanced'))}</span>
-                    </summary>
-                    <div class="detail-section template-library-editor-section template-library-advanced-section">
-                      <div class="template-library-advanced-grid">
-                        <div class="form-group">
-                          <label class="form-label">${escapeHtml(t('templateLibrary.field.filenameHints'))}</label>
-                          <textarea id="template-library-filename-hints" class="form-input template-library-textarea template-library-textarea-compact">${escapeHtml(
-                            editorDraft.filenameHintsText
-                          )}</textarea>
+                  ${
+                    editorDraft.templateType === 'scientific'
+                      ? ''
+                      : editorDraft.templateType === 'scalar'
+                      ? `
+                        <div class="detail-section template-library-editor-section">
+                          <div class="detail-section-title">${escapeHtml(t('templateLibrary.section.scalarDefaults'))}</div>
+                          <div class="template-library-basic-grid">
+                            <div class="form-group">
+                              <label class="form-label">${escapeHtml(t('templateLibrary.field.unitDefault'))}</label>
+                              <input id="template-library-unit-default" class="form-input" value="${escapeHtml(
+                                editorDraft.unitDefault
+                              )}" />
+                            </div>
+                            <div class="form-group">
+                              <label class="form-label">${escapeHtml(t('templateLibrary.field.defaultValue'))}</label>
+                              <input id="template-library-default-value" class="form-input" value="${escapeHtml(
+                                editorDraft.defaultValue
+                              )}" />
+                            </div>
+                            <div class="form-group">
+                              <label class="form-label">${escapeHtml(t('templateLibrary.field.valueType'))}</label>
+                              <select id="template-library-value-type" class="form-input">
+                                <option value="" ${editorDraft.valueType ? '' : 'selected'}>${escapeHtml(
+                                  t('templateLibrary.valueType.empty')
+                                )}</option>
+                                <option value="number" ${editorDraft.valueType === 'number' ? 'selected' : ''}>${escapeHtml(
+                                  t('templateLibrary.valueType.number')
+                                )}</option>
+                                <option value="text" ${editorDraft.valueType === 'text' ? 'selected' : ''}>${escapeHtml(
+                                  t('templateLibrary.valueType.text')
+                                )}</option>
+                                <option value="date" ${editorDraft.valueType === 'date' ? 'selected' : ''}>${escapeHtml(
+                                  t('templateLibrary.valueType.date')
+                                )}</option>
+                                <option value="boolean" ${editorDraft.valueType === 'boolean' ? 'selected' : ''}>${escapeHtml(
+                                  t('templateLibrary.valueType.boolean')
+                                )}</option>
+                                <option value="option" ${editorDraft.valueType === 'option' ? 'selected' : ''}>${escapeHtml(
+                                  t('templateLibrary.valueType.option')
+                                )}</option>
+                              </select>
+                            </div>
+                          </div>
+                          <div class="form-group">
+                            <label class="form-label">${escapeHtml(t('templateLibrary.field.note'))}</label>
+                            <textarea id="template-library-note" class="form-input template-library-textarea template-library-textarea-compact">${escapeHtml(
+                              editorDraft.note
+                            )}</textarea>
+                          </div>
                         </div>
-                        <div class="template-library-future-note">
-                          <div class="detail-label">${escapeHtml(t('templateLibrary.importDefaultsTitle'))}</div>
-                          <div class="detail-section-subtitle">${escapeHtml(
-                            t('templateLibrary.importDefaultsFutureHint')
-                          )}</div>
+                      `
+                      : `
+                        <div class="detail-section template-library-editor-section">
+                          <div class="detail-section-title">${escapeHtml(t('templateLibrary.section.axisSettings'))}</div>
+                          <div class="template-library-axis-header" aria-hidden="true">
+                            <span>${escapeHtml(t('templateLibrary.axis.column.axis'))}</span>
+                            <span>${escapeHtml(t('templateLibrary.axis.column.name'))}</span>
+                            <span>${escapeHtml(t('templateLibrary.axis.column.unit'))}</span>
+                          </div>
+                          <div class="template-library-axis-rows">
+                            <div class="template-library-axis-row">
+                              <div class="template-library-axis-label">${escapeHtml(t('templateLibrary.axis.x'))}</div>
+                              <input
+                                id="template-library-primary-label"
+                                class="form-input"
+                                aria-label="${escapeHtml(t('templateLibrary.field.primaryLabel'))}"
+                                placeholder="${escapeHtml(t('templateLibrary.field.primaryLabelPlaceholder'))}"
+                                value="${escapeHtml(
+                                editorDraft.primaryLabel
+                              )}"
+                              />
+                              <input
+                                id="template-library-primary-unit"
+                                class="form-input"
+                                aria-label="${escapeHtml(t('templateLibrary.field.primaryUnit'))}"
+                                placeholder="${escapeHtml(t('templateLibrary.field.primaryUnitPlaceholder'))}"
+                                value="${escapeHtml(
+                                editorDraft.primaryUnit
+                              )}"
+                              />
+                            </div>
+                            <div class="template-library-axis-row">
+                              <div class="template-library-axis-label">${escapeHtml(t('templateLibrary.axis.y'))}</div>
+                              <input
+                                id="template-library-secondary-label"
+                                class="form-input"
+                                aria-label="${escapeHtml(t('templateLibrary.field.secondaryLabel'))}"
+                                placeholder="${escapeHtml(t('templateLibrary.field.secondaryLabelPlaceholder'))}"
+                                value="${escapeHtml(
+                                editorDraft.secondaryLabel
+                              )}"
+                              />
+                              <input
+                                id="template-library-secondary-unit"
+                                class="form-input"
+                                aria-label="${escapeHtml(t('templateLibrary.field.secondaryUnit'))}"
+                                placeholder="${escapeHtml(t('templateLibrary.field.secondaryUnitPlaceholder'))}"
+                                value="${escapeHtml(
+                                editorDraft.secondaryUnit
+                              )}"
+                              />
+                            </div>
+                          </div>
                         </div>
-                      </div>
-                    </div>
-                  </details>
+
+                        <details class="template-library-advanced-shell">
+                          <summary class="template-library-advanced-summary">
+                            <span class="detail-section-title">${escapeHtml(t('templateLibrary.section.advanced'))}</span>
+                          </summary>
+                          <div class="detail-section template-library-editor-section template-library-advanced-section">
+                            <div class="template-library-advanced-grid">
+                              <div class="form-group">
+                                <label class="form-label">${escapeHtml(t('templateLibrary.field.blockTitleOverride'))}</label>
+                                <input
+                                  id="template-library-block-title"
+                                  class="form-input"
+                                  placeholder="${escapeHtml(t('templateLibrary.field.blockTitleOverridePlaceholder'))}"
+                                  value="${escapeHtml(getTemplateLibraryVisibleBlockTitleOverride(editorDraft))}"
+                                />
+                              </div>
+                              <div class="form-group">
+                                <label class="form-label">${escapeHtml(t('templateLibrary.field.curveDataTypeAdvanced'))}</label>
+                                <select id="template-library-purpose-type" class="form-input">
+                                  ${STRUCTURED_BLOCK_PURPOSE_OPTIONS.map(
+                                    (option) => `
+                                      <option value="${escapeHtml(option.value)}" ${editorDraft.purposeType === option.value ? 'selected' : ''}>
+                                        ${escapeHtml(option.label)}
+                                      </option>
+                                    `
+                                  ).join('')}
+                                </select>
+                              </div>
+                              <div class="form-group">
+                                <label class="form-label">${escapeHtml(t('templateLibrary.field.filenameHints'))}</label>
+                                <textarea id="template-library-filename-hints" class="form-input template-library-textarea template-library-textarea-compact">${escapeHtml(
+                                  editorDraft.filenameHintsText
+                                )}</textarea>
+                              </div>
+                              <div class="template-library-future-note">
+                                <div class="detail-label">${escapeHtml(t('templateLibrary.importDefaultsTitle'))}</div>
+                                <div class="detail-section-subtitle">${escapeHtml(
+                                  t('templateLibrary.importDefaultsFutureHint')
+                                )}</div>
+                              </div>
+                            </div>
+                          </div>
+                        </details>
+                      `
+                  }
                 </div>
               </div>
             `
             : `<div class="empty-tip">${escapeHtml(t('templateLibrary.editorEmpty'))}</div>`
         }
       </div>
-    </div>
-  `;
-}
-
-function renderDictionaryManagementSection(dictionaryType: DictionaryType, label: string) {
-  const items = dictionaryItems[dictionaryType];
-  const inputValue = dictionaryInputValues[dictionaryType];
-  const errorMessage = dictionarySectionErrors[dictionaryType];
-  const isAdding = dictionarySubmittingType === dictionaryType;
-
-  return `
-    <div class="detail-section">
-      <div class="detail-section-title">${label}</div>
-      <div class="dictionary-add-row">
-        <input
-          id="dictionary-input-${dictionaryType}"
-          class="form-input"
-          value="${escapeHtml(inputValue)}"
-          placeholder="${escapeHtml(t('dictionary.placeholder', { label }))}"
-        />
-        <button
-          class="secondary-btn dictionary-add-btn"
-          type="button"
-          data-dictionary-add-type="${dictionaryType}"
-          ${isAdding || !!dictionaryDeletingId ? 'disabled' : ''}
-        >
-          ${escapeHtml(isAdding ? t('dictionary.adding') : t('dictionary.add'))}
-        </button>
-      </div>
-      <div class="error-message">${escapeHtml(errorMessage)}</div>
-      ${
-        items.length
-          ? `
-            <div class="detail-list">
-              ${items
-                .map(
-                  (item) => `
-                    <div class="detail-list-item dictionary-list-item">
-                      <div class="dictionary-list-value">${escapeHtml(item.value)}</div>
-                      <button
-                        class="danger-btn small-danger-btn"
-                        type="button"
-                        data-dictionary-delete-id="${escapeHtml(item.id)}"
-                        data-dictionary-delete-label="${escapeHtml(item.value)}"
-                        ${dictionaryDeletingId ? 'disabled' : ''}
-                      >
-                        ${escapeHtml(dictionaryDeletingId === item.id ? t('dictionary.deleting') : t('dictionary.delete'))}
-                      </button>
-                    </div>
-                  `
-                )
-                .join('')}
-            </div>
-          `
-          : `<div class="empty-tip">${escapeHtml(t('dictionary.empty'))}</div>`
-      }
     </div>
   `;
 }
@@ -13955,10 +15459,7 @@ async function render() {
                 <div class="form-group">
                   <label class="form-label">${escapeHtml(t('step1.field.testProject'))} <span class="required-star">*</span></label>
                   <div class="step1-suggestion-shell">
-                    <div class="input-plus-row">
-                      <input id="testProject" class="form-input" placeholder="${escapeHtml(t('step1.placeholder.testProject'))}" value="${escapeHtml(step1FormData.testProject)}" autocomplete="off" />
-                      <button id="project-plus-btn" class="icon-btn" type="button">＋</button>
-                    </div>
+                    <input id="testProject" class="form-input" placeholder="${escapeHtml(t('step1.placeholder.testProject'))}" value="${escapeHtml(step1FormData.testProject)}" autocomplete="off" />
                     <div id="testProject-suggestion-list" class="step1-suggestion-list"></div>
                   </div>
                   <div id="testProject-dictionary-feedback" class="field-feedback-message"></div>
@@ -14149,10 +15650,7 @@ async function render() {
                   </div>
                 </div>
 
-                ${renderStructuredRecommendationButtons(
-                  'create-step2',
-                  getActiveStep2TemplateFamily('create-step2')
-                )}
+                ${renderStructuredRecommendationButtons('create-step2')}
 
                 <div class="step2-added-summary">${escapeHtml(
                   step2TemplateBlocks.length
@@ -14955,7 +16453,10 @@ async function render() {
               originalFileName: block.originalFileName || '',
               originalFilePath: block.originalFilePath || '',
               createdAt: block.createdAt
-            })))
+            })),
+            false,
+            getStructuredFamilyContextDisplay('detail-readonly').familyLabel || currentDetail.testProject
+          )
           : `<div class="empty-tip">${escapeHtml(t('databaseDetail.structuredEmpty'))}</div>`
       }
               </div>
@@ -15527,13 +17028,7 @@ async function render() {
         ${recentOperationLogsHtml}
       </div>
     `;
-    const dictionaryManagementHtml = `
-      ${dictionaryLoadError ? `<div class="error-message large-error">${escapeHtml(dictionaryLoadError)}</div>` : ''}
-      ${dictionaryLoading && !dictionaryLoaded ? `<div class="empty-tip">${escapeHtml(t('dictionary.loading'))}</div>` : ''}
-      ${DICTIONARY_SECTION_META.map((type) =>
-        renderDictionaryManagementSection(type, getDictionarySectionLabel(getCurrentLanguage(), type))
-      ).join('')}
-    `;
+    const dictionaryManagementHtml = renderProvenanceManagementPanel();
     const templateLibraryHtml = renderTemplateLibraryPanel();
     const aboutSettingsHtml = `
       ${renderAboutSurface(appName, version)}
@@ -15692,7 +17187,92 @@ async function render() {
     });
 
     if (settingsSubView === 'dictionary') {
-      DICTIONARY_TYPES.forEach((dictionaryType) => {
+      const applyProvenanceSearch = () => {
+        const input = document.getElementById('provenance-search-input') as HTMLInputElement | null;
+        provenanceSearchQuery = input?.value || '';
+        requestRender(true);
+      };
+
+      document.getElementById('provenance-search-btn')?.addEventListener('click', () => {
+        applyProvenanceSearch();
+      });
+
+      document.getElementById('provenance-search-input')?.addEventListener('keydown', (event) => {
+        if (event.key !== 'Enter') {
+          return;
+        }
+
+        event.preventDefault();
+        applyProvenanceSearch();
+      });
+
+      document.getElementById('provenance-search-input')?.addEventListener('change', (event) => {
+        const target = event.target as HTMLInputElement;
+        provenanceSearchQuery = target.value;
+        requestRender(true);
+      });
+
+      document.querySelectorAll('[data-provenance-tab]').forEach((button) => {
+        button.addEventListener('click', () => {
+          const target = button as HTMLElement;
+          const dictionaryType = target.dataset.provenanceTab as ProvenanceDictionaryType | undefined;
+          if (!dictionaryType) {
+            return;
+          }
+
+          provenanceSelectedType = dictionaryType;
+          provenanceAddExpandedType = null;
+          provenanceHighlightedItemId = null;
+          requestRender(true);
+        });
+      });
+
+      document.querySelectorAll('[data-provenance-result-id]').forEach((button) => {
+        button.addEventListener('click', () => {
+          const target = button as HTMLElement;
+          const dictionaryType = target.dataset.provenanceResultType as ProvenanceDictionaryType | undefined;
+          const itemId = target.dataset.provenanceResultId;
+          if (!dictionaryType || !itemId) {
+            return;
+          }
+
+          provenanceSelectedType = dictionaryType;
+          provenanceHighlightedItemId = itemId;
+          provenanceSearchQuery = '';
+          provenanceAddExpandedType = null;
+          requestRender(true);
+        });
+      });
+
+      document.querySelectorAll('[data-provenance-chip-select]').forEach((button) => {
+        button.addEventListener('click', () => {
+          const target = button as HTMLElement;
+          const itemId = target.dataset.provenanceChipSelect;
+          if (!itemId) {
+            return;
+          }
+
+          provenanceHighlightedItemId = itemId;
+          requestRender(true);
+        });
+      });
+
+      document.querySelectorAll('[data-provenance-add-toggle]').forEach((button) => {
+        button.addEventListener('click', () => {
+          const target = button as HTMLElement;
+          const dictionaryType = target.dataset.provenanceAddToggle as ProvenanceDictionaryType | undefined;
+          if (!dictionaryType) {
+            return;
+          }
+
+          provenanceSelectedType = dictionaryType;
+          provenanceAddExpandedType = dictionaryType;
+          dictionarySectionErrors[dictionaryType] = '';
+          requestRender(true);
+        });
+      });
+
+      PROVENANCE_DICTIONARY_TYPES.forEach((dictionaryType) => {
         document
           .getElementById(`dictionary-input-${dictionaryType}`)
           ?.addEventListener('input', (event) => {
@@ -15703,16 +17283,44 @@ async function render() {
               dictionarySectionErrors[dictionaryType] = '';
             }
           });
+
+        document
+          .getElementById(`dictionary-input-${dictionaryType}`)
+          ?.addEventListener('keydown', async (event) => {
+            if (event.key !== 'Enter') {
+              return;
+            }
+
+            event.preventDefault();
+            const submitButton = document.querySelector(
+              `[data-provenance-add-submit="${dictionaryType}"]`
+            ) as HTMLButtonElement | null;
+            submitButton?.click();
+          });
       });
 
-      document.querySelectorAll('[data-dictionary-add-type]').forEach((button) => {
+      document.querySelectorAll('[data-provenance-add-cancel]').forEach((button) => {
+        button.addEventListener('click', () => {
+          const target = button as HTMLElement;
+          const dictionaryType = target.dataset.provenanceAddCancel as ProvenanceDictionaryType | undefined;
+          if (!dictionaryType) {
+            return;
+          }
+
+          provenanceAddExpandedType = null;
+          dictionarySectionErrors[dictionaryType] = '';
+          requestRender(true);
+        });
+      });
+
+      document.querySelectorAll('[data-provenance-add-submit]').forEach((button) => {
         button.addEventListener('click', async () => {
           if (dictionarySubmittingType || dictionaryDeletingId) {
             return;
           }
 
           const target = button as HTMLElement;
-          const dictionaryType = target.dataset.dictionaryAddType as DictionaryType | undefined;
+          const dictionaryType = target.dataset.provenanceAddSubmit as ProvenanceDictionaryType | undefined;
           if (!dictionaryType) {
             return;
           }
@@ -15729,14 +17337,17 @@ async function render() {
             });
 
             if (!result.success) {
-              dictionarySectionErrors[dictionaryType] = result.error || t('dictionary.addFailed');
+              dictionarySectionErrors[dictionaryType] = result.error || t('provenance.addFailed');
               return;
             }
 
+            provenanceSelectedType = dictionaryType;
+            provenanceHighlightedItemId = result.item?.id || null;
+            provenanceAddExpandedType = null;
             dictionaryInputValues[dictionaryType] = '';
             await reloadDictionaryItems();
           } catch (error) {
-            dictionarySectionErrors[dictionaryType] = getErrorMessage(error) || t('dictionary.addFailed');
+            dictionarySectionErrors[dictionaryType] = getErrorMessage(error) || t('provenance.addFailed');
           } finally {
             dictionarySubmittingType = null;
             requestRender(true);
@@ -15758,7 +17369,7 @@ async function render() {
           }
 
           const shouldContinue = window.confirm(
-            t('dictionary.deleteConfirm', { label })
+            t('provenance.deleteConfirm', { label })
           );
           if (!shouldContinue) {
             return;
@@ -15770,13 +17381,17 @@ async function render() {
           try {
             const result = await window.electronAPI.deactivateDictionaryItem({ id });
             if (!result.success) {
-              alert(result.error || t('dictionary.deleteFailed'));
+              alert(result.error || t('provenance.deleteFailed'));
               return;
+            }
+
+            if (provenanceHighlightedItemId === id) {
+              provenanceHighlightedItemId = null;
             }
 
             await reloadDictionaryItems();
           } catch (error) {
-            alert(getErrorMessage(error) || t('dictionary.deleteFailed'));
+            alert(getErrorMessage(error) || t('provenance.deleteFailed'));
           } finally {
             dictionaryDeletingId = null;
             requestRender(true);
@@ -15800,6 +17415,12 @@ async function render() {
         });
       });
 
+      document.querySelectorAll('[data-template-family-create]').forEach((button) => {
+        button.addEventListener('click', () => {
+          startTemplateLibraryNewFamily();
+        });
+      });
+
       document.querySelectorAll('[data-template-curve-id]').forEach((button) => {
         button.addEventListener('click', () => {
           const target = button as HTMLElement;
@@ -15809,6 +17430,49 @@ async function render() {
           }
 
           void selectTemplateLibraryCurveTemplate(templateId);
+        });
+      });
+
+      document.querySelectorAll('[data-template-scalar-id]').forEach((button) => {
+        button.addEventListener('click', () => {
+          const target = button as HTMLElement;
+          const templateId = target.dataset.templateScalarId;
+          if (!templateId) {
+            return;
+          }
+
+          void selectTemplateLibraryScalarTemplate(templateId);
+        });
+      });
+
+      document.querySelectorAll('[data-template-card-id]').forEach((card) => {
+        const activate = () => {
+          const target = card as HTMLElement;
+          const templateId = target.dataset.templateCardId;
+          const templateType = target.dataset.templateCardType;
+          if (!templateId || !templateType) {
+            return;
+          }
+
+          if (templateType === 'curve') {
+            void selectTemplateLibraryCurveTemplate(templateId);
+            return;
+          }
+
+          void selectTemplateLibraryScalarTemplate(templateId);
+        };
+
+        card.addEventListener('click', () => {
+          activate();
+        });
+
+        card.addEventListener('keydown', (event: KeyboardEvent) => {
+          if (event.key !== 'Enter' && event.key !== ' ') {
+            return;
+          }
+
+          event.preventDefault();
+          activate();
         });
       });
 
@@ -15839,19 +17503,41 @@ async function render() {
             return;
           }
 
-          templateLibrarySelectedKind = nextKind;
-          requestRender(true);
+          void selectTemplateLibraryKind(nextKind);
         });
       });
 
-      document.getElementById('template-library-new-btn')?.addEventListener('click', () => {
-        startTemplateLibraryNewTemplate();
+      document.querySelectorAll('[data-template-list-create]').forEach((button) => {
+        button.addEventListener('click', () => {
+          startTemplateLibraryNewTemplate();
+        });
       });
 
       document.querySelectorAll('[data-template-draft-discard]').forEach((button) => {
-        button.addEventListener('click', () => {
+        button.addEventListener('click', (event) => {
+          event.stopPropagation();
           discardTemplateLibraryDraft();
         });
+      });
+
+      document.getElementById('template-library-status-enabled')?.addEventListener('click', () => {
+        if (!templateLibraryEditorDraft || templateLibraryEditorDraft.enabled) {
+          return;
+        }
+
+        templateLibraryEditorDraft.enabled = true;
+        markTemplateLibraryDirty();
+        requestRender(true);
+      });
+
+      document.getElementById('template-library-status-disabled')?.addEventListener('click', () => {
+        if (!templateLibraryEditorDraft || !templateLibraryEditorDraft.enabled) {
+          return;
+        }
+
+        templateLibraryEditorDraft.enabled = false;
+        markTemplateLibraryDirty();
+        requestRender(true);
       });
 
       document.getElementById('template-library-duplicate-btn')?.addEventListener('click', () => {
@@ -15860,6 +17546,10 @@ async function render() {
 
       document.getElementById('template-library-reset-btn')?.addEventListener('click', () => {
         void resetTemplateLibraryEditorOverride();
+      });
+
+      document.getElementById('template-library-delete-btn')?.addEventListener('click', () => {
+        void deleteTemplateLibraryEditorTemplate();
       });
 
       document.getElementById('template-library-save-btn')?.addEventListener('click', () => {
@@ -15875,18 +17565,44 @@ async function render() {
       };
 
       bindDraftInput('template-library-display-name', (value) => {
-        if (templateLibraryEditorDraft) templateLibraryEditorDraft.displayName = value;
+        if (!templateLibraryEditorDraft) {
+          return;
+        }
+
+        const previousDisplayName = templateLibraryEditorDraft.displayName.trim();
+        const previousBlockTitle = templateLibraryEditorDraft.blockTitleDefault.trim();
+        templateLibraryEditorDraft.displayName = value;
+        if (
+          templateLibraryEditorDraft.templateType === 'curve' &&
+          (!previousBlockTitle || previousBlockTitle === previousDisplayName)
+        ) {
+          templateLibraryEditorDraft.blockTitleDefault = value;
+        }
       });
       bindDraftInput('template-library-block-title', (value) => {
-        if (templateLibraryEditorDraft) templateLibraryEditorDraft.blockTitleDefault = value;
+        if (!templateLibraryEditorDraft || templateLibraryEditorDraft.templateType !== 'curve') {
+          return;
+        }
+
+        templateLibraryEditorDraft.blockTitleDefault = value.trim()
+          ? value
+          : templateLibraryEditorDraft.displayName;
       });
       bindDraftInput('template-library-purpose-type', (value) => {
         if (templateLibraryEditorDraft) {
           templateLibraryEditorDraft.purposeType = value as StructuredBlockPurpose;
         }
       });
+      bindDraftInput('template-library-scalar-section', (value) => {
+        if (templateLibraryEditorDraft) {
+          templateLibraryEditorDraft.scalarSection = value === 'metric' ? 'metric' : 'condition';
+        }
+      });
       bindDraftInput('template-library-aliases', (value) => {
         if (templateLibraryEditorDraft) templateLibraryEditorDraft.aliasesText = value;
+      });
+      bindDraftInput('template-library-description', (value) => {
+        if (templateLibraryEditorDraft) templateLibraryEditorDraft.descriptionText = value;
       });
       bindDraftInput('template-library-primary-label', (value) => {
         if (templateLibraryEditorDraft) templateLibraryEditorDraft.primaryLabel = value;
@@ -15903,15 +17619,19 @@ async function render() {
       bindDraftInput('template-library-filename-hints', (value) => {
         if (templateLibraryEditorDraft) templateLibraryEditorDraft.filenameHintsText = value;
       });
-
-      document.getElementById('template-library-enabled')?.addEventListener('change', (event) => {
-        if (!templateLibraryEditorDraft) {
-          return;
+      bindDraftInput('template-library-unit-default', (value) => {
+        if (templateLibraryEditorDraft) templateLibraryEditorDraft.unitDefault = value;
+      });
+      bindDraftInput('template-library-default-value', (value) => {
+        if (templateLibraryEditorDraft) templateLibraryEditorDraft.defaultValue = value;
+      });
+      bindDraftInput('template-library-value-type', (value) => {
+        if (templateLibraryEditorDraft) {
+          templateLibraryEditorDraft.valueType = value as ScalarTemplateValueType | '';
         }
-
-        const target = event.target as HTMLInputElement;
-        templateLibraryEditorDraft.enabled = target.checked;
-        markTemplateLibraryDirty();
+      });
+      bindDraftInput('template-library-note', (value) => {
+        if (templateLibraryEditorDraft) templateLibraryEditorDraft.note = value;
       });
 
       document.querySelectorAll('[data-template-row-field]').forEach((input) => {
@@ -16354,16 +18074,6 @@ function bindStep1Events() {
   });
 
   bindStep1DictionaryAddAction({
-    inputId: 'testProject',
-    buttonId: 'project-plus-btn',
-    dictionaryType: 'testProject',
-    feedbackId: 'testProject-dictionary-feedback',
-    successMessage: t('step1.dictionaryAdded.testProject'),
-    suggestionContainerId: 'testProject-suggestion-list',
-    onSuccess: syncStep1ProgressUI
-  });
-
-  bindStep1DictionaryAddAction({
     inputId: 'tester',
     buttonId: 'tester-plus-btn',
     dictionaryType: 'tester',
@@ -16790,9 +18500,6 @@ function collectDetailEditState() {
   }));
 
   detailEditTemplateBlocks = detailEditTemplateBlocks.map((block) => {
-    const purposeType = document.getElementById(
-      `template-block-purpose-${block.id}`
-    ) as HTMLSelectElement | null;
     const blockTitle = document.getElementById(
       `template-block-title-${block.id}`
     ) as HTMLInputElement | null;
@@ -16817,7 +18524,6 @@ function collectDetailEditState() {
 
     return {
       ...block,
-      purposeType: (purposeType?.value as StructuredBlockPurpose | undefined) || block.purposeType || '',
       blockTitle: blockTitle ? blockTitle.value : block.blockTitle,
       primaryLabel: primaryLabel ? primaryLabel.value : block.primaryLabel,
       primaryUnit: primaryUnit ? primaryUnit.value : block.primaryUnit,
@@ -16884,9 +18590,6 @@ function saveStep2InputsToState() {
   });
 
   step2TemplateBlocks = step2TemplateBlocks.map((block) => {
-    const purposeType = document.getElementById(
-      `template-block-purpose-${block.id}`
-    ) as HTMLSelectElement | null;
     const blockTitle = document.getElementById(
       `template-block-title-${block.id}`
     ) as HTMLInputElement | null;
@@ -16911,7 +18614,6 @@ function saveStep2InputsToState() {
 
     return {
       ...block,
-      purposeType: (purposeType?.value as StructuredBlockPurpose | undefined) || block.purposeType || '',
       blockTitle: blockTitle ? blockTitle.value : block.blockTitle,
       primaryLabel: primaryLabel ? primaryLabel.value : block.primaryLabel,
       primaryUnit: primaryUnit ? primaryUnit.value : block.primaryUnit,
@@ -16952,11 +18654,6 @@ async function validateStep1DictionaryMembership() {
     value: string;
     message: string;
   }> = [
-    {
-      dictionaryType: 'testProject',
-      value: step1FormData.testProject,
-      message: t('step1.dictionaryMissing.testProject', { value: step1FormData.testProject })
-    },
     {
       dictionaryType: 'tester',
       value: step1FormData.tester,
